@@ -3,9 +3,15 @@ from pathlib import Path
 
 import numpy as np
 import cv2
-import torch
-from facenet_pytorch import MTCNN, InceptionResnetV1
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+
+# Lazy imports — torch/facenet may not be installed on lightweight backend
+try:
+    import torch
+    from facenet_pytorch import MTCNN, InceptionResnetV1
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,8 +24,8 @@ from app.permissions import user_camera_permission, check_permission
 
 router = APIRouter(prefix="/auth/face", tags=["auth-face"])
 
-_mtcnn: Optional[MTCNN] = None
-_embedder: Optional[InceptionResnetV1] = None
+_mtcnn = None
+_embedder = None
 _device: str = "cpu"
 
 
@@ -50,6 +56,11 @@ def _preprocess_frame(frame_bgr: np.ndarray) -> np.ndarray:
 
 def _face_models():
     global _mtcnn, _embedder, _device
+    if not _TORCH_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Face recognition unavailable: torch not installed on this server"
+        )
     if _mtcnn is not None and _embedder is not None:
         return _mtcnn, _embedder, _device
     _device = "cuda" if torch.cuda.is_available() else "cpu"
