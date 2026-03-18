@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/android/
+frontend/ios/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# Storage (runtime data)
+data/
+recordings/
+recordings_cache/
+snapshots/*.jpg
+*.db
+
+# Processor (runtime)
+processor/venv/
+processor/processor_config.json
+processor/run.sh
+processor/run.bat
+processor/run-gui.bat
+processor/cctv-processor.service
+processor/.env
+
+# SSL certificates (managed by certbot)
+certbot/
+
+# Installers / APK (large binaries)
+*.exe
+*.apk
+*.tar.gz
+
+# Mobile build artifacts
+mobile/node_modules/
+mobile/android/
+mobile/ios/
+mobile/dist/
+mobile/.expo/
+
+# Desktop build artifacts
+desktop/node_modules/
+desktop/release/
+desktop/installer_output/
+desktop/frontend/
+
+# Processor build artifacts
+processor/dist/
+processor/build/
+processor/installer_output/
+
+# Claude
+.claude/

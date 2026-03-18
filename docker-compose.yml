@@ -1,0 +1,85 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "0512"
+      POSTGRES_DB: cctv
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://postgres:0512@db:5432/cctv"
+      JWT_SECRET: "super-secret-key-change-me"
+      ENABLE_EMBEDDED_DETECTOR: "false"
+      PROCESSOR_API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    volumes:
+      - recordings:/app/recordings
+      - snapshots:/app/snapshots
+
+  processor:
+    build: ./processor
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
+      PROCESSOR_NAME: "processor-1"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+      - "8888:8888"
+    environment:
+      MTX_PROTOCOLS: tcp
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: "http://localhost:8000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  recordings:
+  snapshots:

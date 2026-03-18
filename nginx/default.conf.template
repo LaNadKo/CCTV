@@ -1,0 +1,141 @@
+# ============================================================
+#  CCTV Console — nginx reverse proxy
+#  ${DOMAIN} is substituted from docker-compose environment
+# ============================================================
+
+# Redirect HTTP → HTTPS (skip for localhost)
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    # Let's Encrypt challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # For localhost/IP development — serve directly without SSL
+    # In production, uncomment the return 301 below and comment out the locations
+    # return 301 https://$host$request_uri;
+
+    # --- Development: proxy without SSL ---
+    location / {
+        proxy_pass http://frontend:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # API proxy
+    location /api/ {
+        rewrite ^/api/(.*) /$1 break;
+        proxy_pass http://backend:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        client_max_body_size 50m;
+    }
+
+    location /health {
+        proxy_pass http://backend:8000/health;
+    }
+
+    # Backend API passthrough (all backend routes)
+    location ~ ^/(auth|users|homes|groups|persons|detections|recordings|admin|api-keys|processors|docs|redoc|openapi.json)(/|$) {
+        proxy_pass http://backend:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        client_max_body_size 50m;
+    }
+
+    # Camera list API (exact match, no trailing slash)
+    location = /cameras {
+        proxy_pass http://backend:8000/cameras;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 50m;
+    }
+
+    # Camera streams (MJPEG — long-lived HTTP, needs no buffering)
+    location /cameras/ {
+        proxy_pass http://backend:8000/cameras/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400;
+        chunked_transfer_encoding off;
+    }
+
+    # Recordings static files
+    location /recordings/static/ {
+        proxy_pass http://backend:8000/recordings/static/;
+        proxy_set_header Host $host;
+    }
+
+    # Snapshots static files
+    location /snapshots/ {
+        proxy_pass http://backend:8000/snapshots/;
+        proxy_set_header Host $host;
+    }
+}
+
+# ── HTTPS server (uncomment when SSL is ready) ────────────
+# server {
+#     listen 443 ssl;
+#     http2 on;
+#     server_name ${DOMAIN};
+#
+#     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+#     ssl_protocols TLSv1.2 TLSv1.3;
+#     ssl_ciphers HIGH:!aNULL:!MD5;
+#
+#     # Frontend SPA
+#     location / {
+#         proxy_pass http://frontend:80;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto https;
+#     }
+#
+#     # API
+#     location ~ ^/(auth|users|cameras|homes|groups|persons|detections|recordings|admin|api-keys|processors|health|docs|redoc|openapi.json)(/|$) {
+#         proxy_pass http://backend:8000;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto https;
+#         proxy_read_timeout 300s;
+#         client_max_body_size 50m;
+#     }
+#
+#     # Camera streams (MJPEG)
+#     location /cameras/ {
+#         proxy_pass http://backend:8000/cameras/;
+#         proxy_http_version 1.1;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_buffering off;
+#         proxy_cache off;
+#         proxy_read_timeout 86400;
+#         chunked_transfer_encoding off;
+#     }
+#
+#     # Static files
+#     location /recordings/static/ {
+#         proxy_pass http://backend:8000/recordings/static/;
+#     }
+#     location /snapshots/ {
+#         proxy_pass http://backend:8000/snapshots/;
+#     }
+# }

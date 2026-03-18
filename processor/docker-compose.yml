@@ -1,0 +1,21 @@
+# ============================================================
+#  CCTV Processor — standalone deployment for GPU machines
+#  Run: cp .env.example .env && nano .env && docker compose up -d
+# ============================================================
+
+services:
+  processor:
+    build: .
+    environment:
+      BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-1}
+      MAX_WORKERS: ${MAX_WORKERS:-4}
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

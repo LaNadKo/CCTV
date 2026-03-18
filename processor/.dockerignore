@@ -1,0 +1,15 @@
+venv/
+.env
+.env.example
+docker-compose.yml
+install.sh
+install.bat
+launcher.py
+run.sh
+run.bat
+run-gui.bat
+processor_config.json
+cctv-processor.service
+*.pyc
+__pycache__/
+.dockerignore
