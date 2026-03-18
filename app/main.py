@@ -104,6 +104,26 @@ app.mount("/snapshots", StaticFiles(directory="snapshots"), name="snapshots-stat
 detector_manager = None
 
 
+async def _ensure_admin_user():
+    """Auto-create default admin user (admin/admin) if no users exist."""
+    from app import models
+    from app.security import hash_password
+    from sqlalchemy import select, func as sa_func
+    async with db.SessionLocal() as session:
+        count = await session.scalar(select(sa_func.count()).select_from(models.User))
+        if count and count > 0:
+            return
+        admin = models.User(
+            login="admin",
+            password_hash=hash_password("admin"),
+            role_id=1,
+            must_change_password=True,
+        )
+        session.add(admin)
+        await session.commit()
+        logging.getLogger(__name__).info("Auto-created admin user (login: admin, password: admin)")
+
+
 async def _ensure_processor_api_key():
     """Auto-create processor API key from PROCESSOR_API_KEY env if not already in DB."""
     from app.security import hash_api_key, verify_api_key
@@ -128,6 +148,7 @@ async def _ensure_processor_api_key():
 @app.on_event("startup")
 async def startup_tasks():
     global detector_manager
+    await _ensure_admin_user()
     await _ensure_processor_api_key()
     if settings.enable_embedded_detector:
         from app.detector import DetectionManager
