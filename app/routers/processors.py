@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime
+import logging
+import secrets
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,13 +17,16 @@ from sqlalchemy.orm import selectinload
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_service_scopes
-from app.permissions import is_home_admin
+from app.permissions import is_admin
 from app.schemas.processors import (
     AssignCamerasIn,
     AssignedCameraInfo,
     CameraAssignment,
     EndpointInfo,
     GalleryEntry,
+    GenerateCodeOut,
+    ProcessorConnect,
+    ProcessorConnectOut,
     ProcessorEventIn,
     ProcessorEventOut,
     ProcessorHeartbeat,
@@ -29,9 +36,16 @@ from app.schemas.processors import (
     ProcessorRegister,
     ProcessorRegisterOut,
     StorageConfigOut,
+    SystemMetrics,
 )
+from app.security import hash_api_key
 
 router = APIRouter(prefix="/processors", tags=["processors"])
+log = logging.getLogger("app.processors")
+_gallery_cache: list[GalleryEntry] | None = None
+_gallery_cache_ts = 0.0
+_GALLERY_CACHE_TTL = 30.0
+_PROCESSOR_STORAGE_NAME = "Processor Media"
 
 
 # ── Helper: resolve API key scopes ──
@@ -49,12 +63,112 @@ def require_scope(scope: str):
     return _dep
 
 
-async def _ensure_admin(user: models.User, session: AsyncSession):
-    if user.role_id == 1:
-        return
-    if await is_home_admin(session, user.user_id):
-        return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+def _ensure_admin(user: models.User) -> None:
+    if not is_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+
+def _decode_snapshot_b64(snapshot_b64: str | None) -> bytes | None:
+    if not snapshot_b64:
+        return None
+    raw = snapshot_b64.strip()
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        return base64.b64decode(raw)
+    except Exception:
+        return None
+
+
+def _store_snapshot(event_id: int, snapshot_bytes: bytes) -> str:
+    snapshots_dir = Path("snapshots")
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshots_dir / f"event_{event_id}.jpg"
+    path.write_bytes(snapshot_bytes)
+    return str(path)
+
+
+# ── Connection code flow (universal: LAN + WAN) ──
+
+@router.post("/generate-code", response_model=GenerateCodeOut)
+async def generate_connection_code(
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Admin generates a short-lived code that a processor app uses to register."""
+    _ensure_admin(current_user)
+    code = secrets.token_urlsafe(6)[:8].upper()
+    expires = datetime.utcnow() + timedelta(hours=24)
+    rec = models.ProcessorConnectionCode(
+        code=code,
+        created_by_user_id=current_user.user_id,
+        expires_at=expires,
+    )
+    session.add(rec)
+    await session.commit()
+    return GenerateCodeOut(code=code, expires_at=expires)
+
+
+@router.post("/connect", response_model=ProcessorConnectOut)
+async def connect_processor(
+    payload: ProcessorConnect,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Processor exchanges a connection code for a permanent API key."""
+    result = await session.execute(
+        select(models.ProcessorConnectionCode).where(
+            models.ProcessorConnectionCode.code == payload.code,
+            models.ProcessorConnectionCode.used_at.is_(None),
+        )
+    )
+    code_rec = result.scalar_one_or_none()
+    if not code_rec:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or already used code")
+    if code_rec.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Code expired")
+
+    # Generate API key with processor scopes
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hash_api_key(raw_key)
+    api_key = models.ApiKey(
+        key_hash=key_hash,
+        description=f"Auto: processor {payload.name}",
+        scopes="processor:register,processor:heartbeat,processor:read,processor:write",
+        is_active=True,
+    )
+    session.add(api_key)
+    await session.flush()
+
+    # Detect IP from request
+    client_ip = payload.ip_address or (request.client.host if request.client else None)
+
+    # Create processor
+    proc = models.Processor(
+        name=payload.name,
+        api_key_id=api_key.api_key_id,
+        hostname=payload.hostname,
+        ip_address=client_ip,
+        os_info=payload.os_info,
+        version=payload.version,
+        status="online",
+        capabilities=json.dumps(payload.capabilities) if payload.capabilities else None,
+        last_heartbeat=datetime.utcnow(),
+    )
+    session.add(proc)
+    await session.flush()
+
+    # Mark code as used
+    code_rec.used_at = datetime.utcnow()
+    code_rec.used_by_processor_id = proc.processor_id
+
+    await session.commit()
+    return ProcessorConnectOut(
+        processor_id=proc.processor_id,
+        name=proc.name,
+        api_key=raw_key,
+        status=proc.status,
+    )
 
 
 # ── API-key scoped endpoints (for processor service) ──
@@ -80,6 +194,7 @@ async def register_processor(
 async def processor_heartbeat(
     processor_id: int,
     payload: ProcessorHeartbeat,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
@@ -91,6 +206,28 @@ async def processor_heartbeat(
         raise HTTPException(status_code=404, detail="Processor not found")
     proc.status = payload.status
     proc.last_heartbeat = datetime.utcnow()
+    # Store metrics
+    if payload.metrics:
+        proc.last_metrics = payload.metrics.model_dump_json()
+    elif payload.stats:
+        proc.last_metrics = json.dumps(payload.stats)
+    # Update IP if changed
+    if payload.ip_address:
+        proc.ip_address = payload.ip_address
+    elif request.client:
+        proc.ip_address = request.client.host
+    if payload.media_port is not None or payload.media_token:
+        capabilities = {}
+        if proc.capabilities:
+            try:
+                capabilities = json.loads(proc.capabilities)
+            except (json.JSONDecodeError, TypeError):
+                capabilities = {}
+        if payload.media_port is not None:
+            capabilities["media_port"] = payload.media_port
+        if payload.media_token:
+            capabilities["media_token"] = payload.media_token
+        proc.capabilities = json.dumps(capabilities)
     await session.commit()
     return {"ok": True}
 
@@ -150,13 +287,15 @@ async def push_event(
     scopes = await get_service_scopes(x_api_key, session)
     if "processor:write" not in scopes and "*" not in scopes:
         raise HTTPException(status_code=403, detail="Missing scope: processor:write")
-    # Resolve event type by name from DB instead of hardcoded IDs
     et_result = await session.execute(
         select(models.EventType).where(models.EventType.name == payload.event_type)
     )
     et = et_result.scalar_one_or_none()
     if et is None:
         raise HTTPException(status_code=400, detail=f"Unknown event type: {payload.event_type}")
+    cam = await session.get(models.Camera, payload.camera_id)
+    if cam is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
     event_type_id = et.event_type_id
     evt = models.Event(
         camera_id=payload.camera_id,
@@ -168,6 +307,14 @@ async def push_event(
     )
     session.add(evt)
     await session.flush()
+
+    snapshot_bytes = _decode_snapshot_b64(payload.snapshot_b64)
+    if snapshot_bytes:
+        try:
+            _store_snapshot(evt.event_id, snapshot_bytes)
+        except Exception:
+            log.exception("Failed to store snapshot for event %s", evt.event_id)
+
     review = models.EventReview(event_id=evt.event_id, status="pending")
     session.add(review)
     await session.commit()
@@ -203,12 +350,24 @@ async def push_recording(
         st_result = await session.execute(select(models.StorageTarget).limit(1))
         st = st_result.scalar_one_or_none()
     if not st:
-        raise HTTPException(status_code=500, detail="No storage target configured")
+        st = models.StorageTarget(
+            name=_PROCESSOR_STORAGE_NAME,
+            root_path="processor://",
+            device_kind="network",
+            purpose="recording",
+            is_primary_recording=True,
+            is_active=True,
+            storage_type="network",
+        )
+        session.add(st)
+        await session.flush()
     rf = models.RecordingFile(
         video_stream_id=vs.video_stream_id,
         storage_target_id=st.storage_target_id,
         file_kind=payload.file_kind,
         file_path=payload.file_path,
+        started_at=payload.started_at or datetime.utcnow(),
+        ended_at=payload.ended_at,
         duration_seconds=payload.duration_seconds,
         file_size_bytes=payload.file_size_bytes,
     )
@@ -224,10 +383,13 @@ async def get_gallery(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
+    global _gallery_cache, _gallery_cache_ts
     scopes = await get_service_scopes(x_api_key, session)
     if "processor:read" not in scopes and "*" not in scopes:
         raise HTTPException(status_code=403, detail="Missing scope: processor:read")
-    # Multi-embedding: return all entries from person_embeddings table
+    now = time.monotonic()
+    if _gallery_cache is not None and (now - _gallery_cache_ts) < _GALLERY_CACHE_TTL:
+        return _gallery_cache
     pe_result = await session.execute(
         select(models.PersonEmbedding, models.Person)
         .join(models.Person, models.PersonEmbedding.person_id == models.Person.person_id)
@@ -244,7 +406,6 @@ async def get_gallery(
                 embedding_b64=base64.b64encode(emb_row.embedding).decode(),
             ))
     else:
-        # Fallback to legacy single embedding
         result = await session.execute(select(models.Person).where(models.Person.embeddings.isnot(None)))
         persons = result.scalars().all()
         for p in persons:
@@ -255,6 +416,8 @@ async def get_gallery(
                 label=label,
                 embedding_b64=base64.b64encode(p.embeddings).decode(),
             ))
+    _gallery_cache = gallery
+    _gallery_cache_ts = now
     return gallery
 
 
@@ -292,7 +455,7 @@ async def list_processors(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     result = await session.execute(select(models.Processor))
     procs = result.scalars().all()
     out = []
@@ -307,7 +470,12 @@ async def list_processors(
                 caps = json.loads(p.capabilities)
             except (json.JSONDecodeError, TypeError):
                 pass
-        # get assigned camera details
+        metrics = None
+        if p.last_metrics:
+            try:
+                metrics = SystemMetrics(**json.loads(p.last_metrics))
+            except Exception:
+                pass
         cam_result = await session.execute(
             select(models.ProcessorCameraAssignment, models.Camera)
             .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
@@ -320,6 +488,10 @@ async def list_processors(
             status=p.status,
             last_heartbeat=p.last_heartbeat,
             capabilities=caps,
+            ip_address=p.ip_address,
+            os_info=p.os_info,
+            version=p.version,
+            metrics=metrics,
             created_at=p.created_at,
             camera_count=cnt,
             assigned_cameras=assigned,
@@ -334,7 +506,7 @@ async def assign_cameras(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     proc = await session.get(models.Processor, processor_id)
     if not proc:
         raise HTTPException(status_code=404, detail="Processor not found")
@@ -362,7 +534,7 @@ async def unassign_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     result = await session.execute(
         select(models.ProcessorCameraAssignment).where(
             models.ProcessorCameraAssignment.processor_id == processor_id,
@@ -382,7 +554,7 @@ async def delete_processor(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     proc = await session.get(models.Processor, processor_id)
     if not proc:
         raise HTTPException(status_code=404, detail="Processor not found")

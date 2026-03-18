@@ -86,6 +86,9 @@ class Camera(Base):
         ForeignKey("statuses.status_id", ondelete="SET NULL")
     )
     location: Mapped[Optional[str]] = mapped_column(String(255))
+    group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="SET NULL")
+    )
     detection_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     recording_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="continuous", server_default="continuous"
@@ -99,6 +102,7 @@ class Camera(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
 
     status: Mapped[Optional[Status]] = relationship()
+    group: Mapped[Optional[Group]] = relationship()
 
 
 class CameraEndpoint(Base):
@@ -472,6 +476,7 @@ class UserFaceTemplate(Base):
 Index("profiles_phone_unique_idx", Profile.phone, unique=True, postgresql_where=Profile.phone.isnot(None))
 Index("users_role_idx", User.role_id)
 Index("cameras_status_idx", Camera.status_id)
+Index("cameras_group_idx", Camera.group_id)
 Index("camera_endpoints_camera_idx", CameraEndpoint.camera_id)
 Index("video_streams_camera_idx", VideoStream.camera_id)
 Index("user_camera_permissions_camera_idx", UserCameraPermission.camera_id)
@@ -513,10 +518,28 @@ class Processor(Base):
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     api_key_id: Mapped[Optional[int]] = mapped_column(ForeignKey("api_keys.api_key_id", ondelete="SET NULL"))
     hostname: Mapped[Optional[str]] = mapped_column(String(255))
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45))
+    os_info: Mapped[Optional[str]] = mapped_column(String(255))
+    version: Mapped[Optional[str]] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="registered", server_default="registered")
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
+    last_metrics: Mapped[Optional[str]] = mapped_column(Text)
     capabilities: Mapped[Optional[str]] = mapped_column(Text)  # JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+
+class ProcessorConnectionCode(Base):
+    __tablename__ = "processor_connection_codes"
+
+    code_id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
+    used_by_processor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("processors.processor_id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+    created_by: Mapped[User] = relationship()
 
 
 class ProcessorCameraAssignment(Base):

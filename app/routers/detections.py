@@ -2,16 +2,18 @@ from typing import List
 from pathlib import Path
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Query
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_service_scopes
-from app.permissions import check_permission, user_camera_permission
+from app.permissions import check_permission, user_camera_permission_sync, is_admin
+from app.processor_media import get_processor_by_id, get_processor_media_base_url, get_processor_media_headers
 from app.schemas.detections import DetectionIn, DetectionResponse, EventReviewUpdate, PendingEvent
-from app.camera_utils import resolve_source
 
 router = APIRouter(prefix="/detections", tags=["detections"])
 
@@ -25,25 +27,9 @@ async def _find_event_type_id(session: AsyncSession, name: str) -> int:
 
 
 async def _notify_admins_for_camera(session: AsyncSession, camera_id: int, event_id: int) -> None:
-    # users with owner/admin role in groups that have camera permission OR global role_id=1
-    # global admins
-    admin_ids = set()
-    res_global = await session.execute(select(models.User.user_id).where(models.User.role_id == 1))
-    admin_ids.update(res_global.scalars().all())
-
-    # group owners/admins
-    sub_groups = (
-        select(models.GroupCameraPermission.group_id)
-        .where(models.GroupCameraPermission.camera_id == camera_id)
-        .subquery()
-    )
-    res_members = await session.execute(
-        select(models.UserGroup.user_id).where(
-            models.UserGroup.group_id.in_(select(sub_groups.c.group_id)),
-            models.UserGroup.membership_role.in_(["owner", "admin"]),
-        )
-    )
-    admin_ids.update(res_members.scalars().all())
+    """Notify all admins about unknown face detection."""
+    res_admins = await session.execute(select(models.User.user_id).where(models.User.role_id == 1))
+    admin_ids = set(res_admins.scalars().all())
 
     for user_id in admin_ids:
         notif = models.Notification(
@@ -78,8 +64,8 @@ async def create_detection(
         actor_user_id = None
     else:
         # Require at least control permission on camera
-        perm = await user_camera_permission(session, current_user.user_id, payload.camera_id)
-        if not check_permission(perm, "control") and current_user.role_id != 1:
+        perm = user_camera_permission_sync(current_user)
+        if not check_permission(perm, "control") and not is_admin(current_user):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission on camera")
         actor_user_id = current_user.user_id
 
@@ -118,6 +104,11 @@ async def list_pending(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[PendingEvent]:
+    # Only admins and users can see pending reviews
+    perm = user_camera_permission_sync(current_user)
+    if perm is None:
+        return []
+
     res = await session.execute(
         select(models.Event, models.EventReview)
         .join(models.EventReview, models.Event.event_id == models.EventReview.event_id)
@@ -126,29 +117,62 @@ async def list_pending(
     items: List[PendingEvent] = []
     rows = res.all()
     for event, review in rows:
-        perm = await user_camera_permission(session, current_user.user_id, event.camera_id)
-        if perm:
-            snapshot_path = Path("snapshots").resolve() / f"event_{event.event_id}.jpg"
-            person_label = None
-            if event.person_id:
-                person = await session.get(models.Person, event.person_id)
-                if person:
-                    parts = [person.last_name, person.first_name, person.middle_name]
-                    person_label = " ".join([p for p in parts if p]) or f"ID {person.person_id}"
-            items.append(
-                PendingEvent(
-                    event_id=event.event_id,
-                    camera_id=event.camera_id,
-                    event_type_id=event.event_type_id,
-                    event_ts=str(event.event_ts),
-                    person_id=event.person_id,
-                    person_label=person_label,
-                    recording_file_id=event.recording_file_id,
-                    confidence=float(event.confidence) if event.confidence is not None else None,
-                    snapshot_url=f"/snapshots/event_{event.event_id}.jpg" if snapshot_path.exists() else None,
-                )
+        snapshot_path = Path("snapshots").resolve() / f"event_{event.event_id}.jpg"
+        person_label = None
+        if event.person_id:
+            person = await session.get(models.Person, event.person_id)
+            if person:
+                parts = [person.last_name, person.first_name, person.middle_name]
+                person_label = " ".join([p for p in parts if p]) or f"ID {person.person_id}"
+        items.append(
+            PendingEvent(
+                event_id=event.event_id,
+                camera_id=event.camera_id,
+                event_type_id=event.event_type_id,
+                event_ts=str(event.event_ts),
+                person_id=event.person_id,
+                person_label=person_label,
+                recording_file_id=event.recording_file_id,
+                confidence=float(event.confidence) if event.confidence is not None else None,
+                snapshot_url=(
+                    f"/detections/events/{event.event_id}/snapshot"
+                    if event.processor_id
+                    else (f"/snapshots/event_{event.event_id}.jpg" if snapshot_path.exists() else None)
+                ),
             )
+        )
     return items
+
+
+@router.get("/events/{event_id}/snapshot")
+async def event_snapshot(
+    event_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    event = await session.get(models.Event, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    if event.processor_id is not None:
+        proc = await get_processor_by_id(session, event.processor_id)
+        if proc is not None:
+            url = f"{get_processor_media_base_url(proc)}/media/snapshots/event_{event_id}.jpg"
+            headers = get_processor_media_headers(proc)
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    upstream = await client.get(url, headers=headers)
+                if upstream.status_code < 400:
+                    return Response(
+                        content=upstream.content,
+                        media_type=upstream.headers.get("content-type", "image/jpeg"),
+                    )
+            except Exception:
+                pass
+
+    local_snapshot = Path("snapshots").resolve() / f"event_{event_id}.jpg"
+    if local_snapshot.exists():
+        return FileResponse(local_snapshot, media_type="image/jpeg")
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
 
 
 @router.post("/events/{event_id}/review", response_model=dict)
@@ -158,15 +182,13 @@ async def review_event(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> dict:
-    # must have admin/owner for camera or global admin
     evt = await session.get(models.Event, event_id)
     if evt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
-    if current_user.role_id != 1:
-        perm = await user_camera_permission(session, current_user.user_id, evt.camera_id)
-        # require at least control to review
-        if not check_permission(perm, "control"):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review this event")
+    # Require at least control permission (admin or user role)
+    perm = user_camera_permission_sync(current_user)
+    if not check_permission(perm, "control"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review this event")
 
     review = await session.execute(
         select(models.EventReview).where(models.EventReview.event_id == event_id)
@@ -182,6 +204,9 @@ async def review_event(
 
     if payload.person_id and evt.person_id is None:
         evt.person_id = payload.person_id
+    if payload.status == "approved" and payload.person_id:
+        face_recognized_type_id = await _find_event_type_id(session, "face_recognized")
+        evt.event_type_id = face_recognized_type_id
 
     await session.commit()
     return {"event_id": event_id, "status": review_obj.status, "person_id": review_obj.person_id}
@@ -194,9 +219,11 @@ async def stats_presence(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Простая статистика: сколько раз и когда видели людей (face_recognized события).
-    """
+    """Простая статистика: сколько раз и когда видели людей (face_recognized события)."""
+    perm = user_camera_permission_sync(current_user)
+    if perm is None:
+        return []
+
     stmt = select(models.Event).join(models.EventType).where(models.EventType.name == "face_recognized")
     if camera_id:
         stmt = stmt.where(models.Event.camera_id == camera_id)
@@ -206,10 +233,6 @@ async def stats_presence(
     rows = res.scalars().all()
     summary = {}
     for ev in rows:
-        # permission check per camera
-        perm = await user_camera_permission(session, current_user.user_id, ev.camera_id)
-        if not perm and current_user.role_id != 1:
-            continue
         key = (ev.person_id, ev.camera_id)
         rec = summary.setdefault(key, {"count": 0, "first_ts": ev.event_ts, "last_ts": ev.event_ts})
         rec["count"] += 1
@@ -246,6 +269,10 @@ async def timeline(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    perm = user_camera_permission_sync(current_user)
+    if perm is None:
+        return []
+
     stmt = select(models.Event, models.EventType).join(models.EventType)
     if camera_id:
         stmt = stmt.where(models.Event.camera_id == camera_id)
@@ -265,9 +292,6 @@ async def timeline(
     rows = res.all()
     out = []
     for ev, et in rows:
-        perm = await user_camera_permission(session, current_user.user_id, ev.camera_id)
-        if not perm and current_user.role_id != 1:
-            continue
         out.append(
             {
                 "event_id": ev.event_id,

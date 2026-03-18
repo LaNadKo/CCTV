@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 
 
 class BackendClient:
-    def __init__(self):
-        self.base = settings.backend_url.rstrip("/")
-        self.headers = {"X-Api-Key": settings.api_key, "Content-Type": "application/json"}
+    def __init__(self, base_url: str | None = None, api_key: str | None = None):
+        self.base = (base_url or settings.backend_url).rstrip("/")
+        key = api_key or settings.api_key
+        self.headers = {"X-Api-Key": key, "Content-Type": "application/json"}
         self._http = httpx.AsyncClient(timeout=30, headers=self.headers)
 
     async def register(self, name: str, capabilities: dict | None = None) -> dict:
@@ -18,8 +19,23 @@ class BackendClient:
         r.raise_for_status()
         return r.json()
 
-    async def heartbeat(self, processor_id: int, status: str = "online", stats: dict | None = None) -> dict:
-        r = await self._http.post(f"{self.base}/processors/{processor_id}/heartbeat", json={"status": status, "stats": stats or {}})
+    async def heartbeat(
+        self,
+        processor_id: int,
+        status: str = "online",
+        stats: dict | None = None,
+        metrics: dict | None = None,
+        media_port: int | None = None,
+        media_token: str | None = None,
+    ) -> dict:
+        payload = {"status": status, "stats": stats or {}}
+        if metrics:
+            payload["metrics"] = metrics
+        if media_port is not None:
+            payload["media_port"] = media_port
+        if media_token:
+            payload["media_token"] = media_token
+        r = await self._http.post(f"{self.base}/processors/{processor_id}/heartbeat", json=payload)
         r.raise_for_status()
         return r.json()
 

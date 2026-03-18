@@ -1,51 +1,35 @@
 from typing import List, Optional
+from datetime import datetime
 
-from pydantic import BaseModel, Field
-
-
-class GroupCameraPermissionIn(BaseModel):
-    camera_id: int
-    permission: str = Field(pattern="^(view|control|admin)$")
-    target_role: str = Field(default="member", pattern="^(admin|member)$")
+from pydantic import BaseModel
 
 
 class GroupCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    camera_permissions: List[GroupCameraPermissionIn] = []
-    user_ids: List[int] = []
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 
 class GroupOut(BaseModel):
     group_id: int
     name: str
     description: Optional[str] = None
-    membership_role: Optional[str] = None
+    created_at: datetime
+    camera_count: int = 0
 
     class Config:
         from_attributes = True
 
 
-class GroupCameraPermissionOut(BaseModel):
+class GroupCameraOut(BaseModel):
     camera_id: int
-    permission: str
-    target_role: str
+    name: str
+    location: Optional[str] = None
 
 
 class GroupDetail(GroupOut):
-    cameras: List[GroupCameraPermissionOut] = []
-    membership_role: Optional[str] = None
-
-
-class GroupInvite(BaseModel):
-    login: str
-    password: Optional[str] = None  # если пользователя нет — создать с этим паролем
-
-
-class GroupRoleUpdate(BaseModel):
-    role: str = Field(pattern="^(admin|member)$")
-
-
-class GroupTransferOwner(BaseModel):
-    new_owner_user_id: Optional[int] = None
-    login: Optional[str] = None
+    cameras: List[GroupCameraOut] = []

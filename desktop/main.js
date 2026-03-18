@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, protocol, net } = require("electron");
+const { app, BrowserWindow, Menu, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -6,8 +6,20 @@ const url = require("url");
 
 const isDev = process.argv.includes("--dev");
 let mainWindow = null;
-let tray = null;
 let localServer = null;
+let isQuitting = false;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 // Window state persistence
 const stateFile = path.join(app.getPath("userData"), "window-state.json");
@@ -60,6 +72,13 @@ function startLocalServer(frontendDir) {
 }
 
 async function createWindow() {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+
   const state = loadWindowState();
 
   mainWindow = new BrowserWindow({
@@ -91,12 +110,8 @@ async function createWindow() {
   }
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
-  mainWindow.on("close", (e) => {
+  mainWindow.on("close", () => {
     saveWindowState();
-    if (tray) {
-      e.preventDefault();
-      mainWindow.hide();
-    }
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 
@@ -116,47 +131,45 @@ async function createWindow() {
         { label: "Перезагрузить", role: "reload" },
         { label: "DevTools", role: "toggleDevTools" },
         { type: "separator" },
-        { label: "Выход", click: () => { tray = null; app.quit(); } },
+        { label: "Выход", click: () => { isQuitting = true; app.quit(); } },
       ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
-}
-
-function createTray() {
-  const iconPath = path.join(__dirname, "build", "icon.png");
-  try {
-    const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-    tray = new Tray(icon);
-  } catch {
-    // No icon available, skip tray
-    return;
-  }
-
-  tray.setToolTip("CCTV Console");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Открыть", click: () => mainWindow?.show() },
-      { type: "separator" },
-      { label: "Выход", click: () => { tray = null; app.quit(); } },
-    ])
-  );
-  tray.on("click", () => mainWindow?.show());
+  return mainWindow;
 }
 
 app.whenReady().then(async () => {
   await createWindow();
-  createTray();
 
   app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) await createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      await createWindow();
+      return;
+    }
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") {
+    isQuitting = true;
+    app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 
 app.on("will-quit", () => {
-  if (localServer) localServer.close();
+  isQuitting = true;
+  if (localServer) {
+    localServer.close();
+    localServer = null;
+  }
 });

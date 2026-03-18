@@ -10,8 +10,8 @@ from app import db
 from app.config import settings
 from app.routers import auth, groups, cameras, users, admin, detections, api_keys, recordings
 from app.routers import processors as processors_router
-from app.routers import homes as homes_router
 from app.routers import persons as persons_router
+from app.routers import reports as reports_router
 
 # face router requires torch/facenet — import conditionally
 try:
@@ -96,32 +96,12 @@ app.include_router(detections.router)
 app.include_router(api_keys.router)
 app.include_router(recordings.router)
 app.include_router(processors_router.router)
-app.include_router(homes_router.router)
 app.include_router(persons_router.router)
+app.include_router(reports_router.router)
 app.mount("/recordings/static", StaticFiles(directory="recordings"), name="recordings-static")
 app.mount("/snapshots", StaticFiles(directory="snapshots"), name="snapshots-static")
 
 detector_manager = None
-
-
-async def _ensure_admin_user():
-    """Auto-create default admin user (admin/admin) if no users exist."""
-    from app import models
-    from app.security import hash_password
-    from sqlalchemy import select, func as sa_func
-    async with db.SessionLocal() as session:
-        count = await session.scalar(select(sa_func.count()).select_from(models.User))
-        if count and count > 0:
-            return
-        admin = models.User(
-            login="admin",
-            password_hash=hash_password("admin"),
-            role_id=1,
-            must_change_password=True,
-        )
-        session.add(admin)
-        await session.commit()
-        logging.getLogger(__name__).info("Auto-created admin user (login: admin, password: admin)")
 
 
 async def _ensure_processor_api_key():
@@ -145,10 +125,64 @@ async def _ensure_processor_api_key():
         logging.getLogger(__name__).info("Auto-created processor API key")
 
 
+async def _seed_default_admin():
+    """Create default admin/admin user if no users exist."""
+    from app import models
+    from app.security import hash_password
+    from sqlalchemy import select, func
+    async with db.SessionLocal() as session:
+        count = (await session.execute(select(func.count()).select_from(models.User))).scalar() or 0
+        if count > 0:
+            return
+        # Ensure roles exist
+        for role_id, role_name in [(1, "admin"), (2, "user"), (3, "viewer")]:
+            existing = await session.execute(select(models.Role).where(models.Role.role_id == role_id))
+            if not existing.scalar_one_or_none():
+                session.add(models.Role(role_id=role_id, name=role_name))
+        await session.flush()
+        admin_user = models.User(
+            login="admin",
+            password_hash=hash_password("admin"),
+            role_id=1,
+            must_change_password=True,
+        )
+        session.add(admin_user)
+        await session.commit()
+        logging.getLogger(__name__).info("Created default admin user (login=admin, password=admin)")
+
+
+async def _seed_event_types():
+    """Ensure default event types exist by name (idempotent)."""
+    from app import models
+    from sqlalchemy import select, text
+    required_names = ["face_recognized", "face_unknown", "motion_detected", "person_detected"]
+    async with db.SessionLocal() as session:
+        # Keep the serial sequence in sync with existing rows before inserts.
+        await session.execute(
+            text(
+                """
+                SELECT setval(
+                    pg_get_serial_sequence('event_types', 'event_type_id'),
+                    COALESCE((SELECT MAX(event_type_id) FROM event_types), 1),
+                    true
+                )
+                """
+            )
+        )
+        for name in required_names:
+            existing = await session.execute(
+                select(models.EventType).where(models.EventType.name == name)
+            )
+            if existing.scalar_one_or_none() is None:
+                session.add(models.EventType(name=name))
+        await session.commit()
+
+
 @app.on_event("startup")
 async def startup_tasks():
     global detector_manager
-    await _ensure_admin_user()
+    await _seed_default_admin()
+    await _seed_event_types()
     await _ensure_processor_api_key()
     if settings.enable_embedded_detector:
         from app.detector import DetectionManager

@@ -10,3 +10,7 @@ scipy>=1.11
 filterpy>=1.4
 pydantic>=2.0
 pydantic-settings>=2.0
+customtkinter>=5.2
+psutil>=5.9
+pynvml>=11.5
+pyinstaller>=6.0

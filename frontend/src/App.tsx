@@ -1,19 +1,18 @@
 import { useState } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, NavLink } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { HomeProvider, useHome } from "./context/HomeContext";
 import { usePWA } from "./hooks/usePWA";
 import LoginPage from "./pages/Login";
-import RegisterPage from "./pages/Register";
 import CamerasPage from "./pages/Cameras";
 import ReviewsPage from "./pages/Reviews";
 import LivePage from "./pages/Live";
 import ProcessorsPage from "./pages/Processors";
-import HomesPage from "./pages/Homes";
-import HomeDetailPage from "./pages/HomeDetail";
+import GroupsPage from "./pages/Groups";
 import ApiKeysPage from "./pages/ApiKeys";
 import RecordingsPage from "./pages/Recordings";
 import PersonsPage from "./pages/Persons";
+import ReportsPage from "./pages/Reports";
+import UsersPage from "./pages/Users";
 import "./app.css";
 
 function RequireAuth() {
@@ -23,8 +22,6 @@ function RequireAuth() {
   if (!token) return <Navigate to="/login" state={{ from: location }} replace />;
   return <Outlet />;
 }
-
-const ROLE_LEVEL: Record<string, number> = { guest: 0, member: 1, admin: 2, owner: 3 };
 
 function InstallBanner() {
   const { canInstall, isIOS, install } = usePWA();
@@ -76,23 +73,24 @@ function InstallBanner() {
 
 function Layout() {
   const { user, logout } = useAuth();
-  const { homes, currentHome, currentRole, setCurrentHome } = useHome();
-  const isSystemAdmin = user?.role_id === 1;
-  const level = currentRole ? (ROLE_LEVEL[currentRole] ?? 0) : isSystemAdmin ? 3 : 0;
+  const isAdmin = user?.role_id === 1;
+  const isUser = user?.role_id === 1 || user?.role_id === 2;
   const [menuOpen, setMenuOpen] = useState(false);
 
   const allTabs = [
-    { to: "/live", label: "Live", minLevel: 0 },
-    { to: "/recordings", label: "Записи", minLevel: 0 },
-    { to: "/reviews", label: "Ревью", minLevel: 1 },
-    { to: "/cameras", label: "Камеры", minLevel: 2 },
-    { to: "/homes", label: "Дома", minLevel: 0 },
-    { to: "/persons", label: "Персоны", minLevel: 2 },
-    { to: "/processors", label: "Процессоры", minLevel: 2 },
-    { to: "/apikeys", label: "API-ключи", minLevel: 2 },
+    { to: "/live", label: "Live", show: true },
+    { to: "/recordings", label: "Записи", show: true },
+    { to: "/reviews", label: "Ревью", show: isUser },
+    { to: "/cameras", label: "Камеры", show: isAdmin },
+    { to: "/groups", label: "Группы", show: true },
+    { to: "/persons", label: "Персоны", show: isAdmin },
+    { to: "/reports", label: "Отчёты", show: isUser },
+    { to: "/processors", label: "Процессоры", show: isAdmin },
+    { to: "/users", label: "Пользователи", show: isAdmin },
+    { to: "/apikeys", label: "API-ключи", show: isAdmin },
   ];
 
-  const tabs = allTabs.filter((t) => isSystemAdmin || level >= t.minLevel);
+  const tabs = allTabs.filter((t) => t.show);
 
   return (
     <div className="shell">
@@ -100,7 +98,6 @@ function Layout() {
       <nav className="nav">
         <div className="brand">CCTV Console</div>
 
-        {/* Hamburger for mobile */}
         <button className="hamburger" onClick={() => setMenuOpen(!menuOpen)} aria-label="Меню">
           <span className={menuOpen ? "ham-line open" : "ham-line"} />
           <span className={menuOpen ? "ham-line open" : "ham-line"} />
@@ -122,27 +119,10 @@ function Layout() {
 
         {user && (
           <div className="user-chip">
-            <select
-              className="home-select"
-              value={currentHome?.home_id ?? ""}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (!id) {
-                  setCurrentHome(null);
-                } else {
-                  const h = homes.find((h) => h.home_id === Number(id));
-                  if (h) setCurrentHome(h);
-                }
-              }}
-            >
-              <option value="">{isSystemAdmin ? "Все дома" : "Выберите дом"}</option>
-              {homes.map((h) => (
-                <option key={h.home_id} value={h.home_id}>
-                  {h.name} ({h.my_role})
-                </option>
-              ))}
-            </select>
             <div className="user-name">{user.login}</div>
+            <span className="pill" style={{ fontSize: 11, color: isAdmin ? "#fbbf24" : "#60a5fa" }}>
+              {isAdmin ? "Админ" : user.role_id === 2 ? "Пользователь" : "Наблюдатель"}
+            </span>
             <button className="btn secondary" onClick={logout}>
               Выйти
             </button>
@@ -157,27 +137,25 @@ function Layout() {
 function App() {
   return (
     <AuthProvider>
-      <HomeProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route element={<RequireAuth />}>
-            <Route element={<Layout />}>
-              <Route index element={<Navigate to="/live" replace />} />
-              <Route path="/live" element={<LivePage />} />
-              <Route path="/reviews" element={<ReviewsPage />} />
-              <Route path="/recordings" element={<RecordingsPage />} />
-              <Route path="/cameras" element={<CamerasPage />} />
-              <Route path="/homes" element={<HomesPage />} />
-              <Route path="/homes/:id" element={<HomeDetailPage />} />
-              <Route path="/persons" element={<PersonsPage />} />
-              <Route path="/processors" element={<ProcessorsPage />} />
-              <Route path="/apikeys" element={<ApiKeysPage />} />
-            </Route>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route element={<RequireAuth />}>
+          <Route element={<Layout />}>
+            <Route index element={<Navigate to="/live" replace />} />
+            <Route path="/live" element={<LivePage />} />
+            <Route path="/reviews" element={<ReviewsPage />} />
+            <Route path="/recordings" element={<RecordingsPage />} />
+            <Route path="/cameras" element={<CamerasPage />} />
+            <Route path="/groups" element={<GroupsPage />} />
+            <Route path="/persons" element={<PersonsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/processors" element={<ProcessorsPage />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="/apikeys" element={<ApiKeysPage />} />
           </Route>
-          <Route path="*" element={<Navigate to="/live" replace />} />
-        </Routes>
-      </HomeProvider>
+        </Route>
+        <Route path="*" element={<Navigate to="/live" replace />} />
+      </Routes>
     </AuthProvider>
   );
 }

@@ -1,3 +1,5 @@
+import time
+
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
@@ -10,6 +12,8 @@ from app.security import decode_token, verify_api_key
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login-form")
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login-form", auto_error=False)
+_service_scope_cache: dict[str, tuple[float, list[str]]] = {}
+_SERVICE_SCOPE_CACHE_TTL = 300.0
 
 
 async def get_current_user(
@@ -60,13 +64,28 @@ async def get_service_scopes(
     api_key: str,
     session: AsyncSession = Depends(get_session),
 ) -> list[str]:
-    result = await session.execute(select(models.ApiKey).where(models.ApiKey.is_active.is_(True)))
-    keys = result.scalars().all()
+    now = time.monotonic()
+    cached = _service_scope_cache.get(api_key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    result = await session.execute(
+        select(models.ApiKey.key_hash, models.ApiKey.scopes, models.ApiKey.expires_at)
+        .where(models.ApiKey.is_active.is_(True))
+    )
+    keys = result.all()
     for k in keys:
-        if k.expires_at and k.expires_at < __import__("datetime").datetime.utcnow():
+        key_hash, scopes_raw, expires_at = k
+        if expires_at and expires_at < __import__("datetime").datetime.utcnow():
             continue
-        if verify_api_key(api_key, k.key_hash):
-            return k.scopes.split(",") if k.scopes else []
+        if verify_api_key(api_key, key_hash):
+            scopes = scopes_raw.split(",") if scopes_raw else []
+            _service_scope_cache[api_key] = (now + _SERVICE_SCOPE_CACHE_TTL, scopes)
+            if len(_service_scope_cache) > 256:
+                expired = [raw for raw, (deadline, _) in _service_scope_cache.items() if deadline <= now]
+                for raw in expired:
+                    _service_scope_cache.pop(raw, None)
+            return scopes
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid API key",
