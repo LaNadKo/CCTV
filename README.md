@@ -153,34 +153,50 @@
 
 ## Установка и запуск
 
-### Требования
+### Quick Start
 
-- Docker и Docker Compose
-- Python 3.11+
-- Node.js 20+
-- PostgreSQL 16 (или через Docker)
-
-### Быстрый старт (Docker)
+Один скрипт — полная установка сервера (Docker, PostgreSQL, Backend, MediaMTX):
 
 ```bash
-# Клонировать репозиторий
-git clone git@github.com:LaNadKo/CCTV.git
-cd CCTV
-
-# Создать .env файл
-cp .env.example .env
-# Отредактировать: задать DATABASE_URL, JWT_SECRET
-
-# Запустить все сервисы
-docker-compose up -d
-
-# Применить миграции
-docker-compose exec backend alembic upgrade head
+bash <(curl -Ls https://raw.githubusercontent.com/LaNadKo/CCTV/main/install.sh)
 ```
 
-Backend: `http://localhost:8000` | Frontend: `http://localhost:5173`
+Скрипт автоматически:
+- ✅ Проверит и установит Docker (если не установлен)
+- ✅ Предложит выбрать директорию установки
+- ✅ Склонирует репозиторий
+- ✅ Сгенерирует безопасные ключи и пароли (.env)
+- ✅ Поднимет PostgreSQL + Backend + MediaMTX
+- ✅ Применит миграции БД и создаст администратора
 
-### Локальный запуск
+> **Логин по умолчанию:** `admin` / `admin` (при первом входе потребуется сменить пароль)
+
+### Ручная установка
+
+```bash
+# Клонировать
+git clone https://github.com/LaNadKo/CCTV.git
+cd CCTV
+
+# Настроить окружение
+cp .env.example .env
+nano .env  # Задать пароли и секреты
+
+# Запустить сервер (без GPU-процессора)
+docker compose up -d --build db backend mediamtx
+```
+
+### Управление сервером
+
+```bash
+./scripts/start-server.sh     # Запуск
+./scripts/stop-server.sh      # Остановка
+./scripts/logs.sh             # Все логи
+./scripts/logs.sh backend     # Логи бэкенда
+./scripts/reset-db.sh         # Полный сброс БД
+```
+
+### Локальный запуск (без Docker)
 
 ```bash
 # Backend
@@ -191,7 +207,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 # Frontend
 cd frontend && npm install && npm run dev
 
-# Processor
+# Processor (на машине с GPU)
 cd processor && pip install -r requirements.txt && python main.py
 ```
 
