@@ -100,6 +100,7 @@ class Camera(Base):
         ForeignKey("persons.person_id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
 
     status: Mapped[Optional[Status]] = relationship()
     group: Mapped[Optional[Group]] = relationship()
@@ -294,6 +295,7 @@ class Person(Base):
     embeddings: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("person_categories.person_category_id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
 
     category: Mapped[Optional[PersonCategory]] = relationship()
     embeddings_list: Mapped[list["PersonEmbedding"]] = relationship(
@@ -698,6 +700,8 @@ Index("processor_assignments_camera_idx", ProcessorCameraAssignment.camera_id)
 Index("camera_presets_camera_idx", CameraPreset.camera_id)
 Index("camera_roi_zones_camera_idx", CameraRoiZone.camera_id)
 Index("events_processor_idx", Event.processor_id)
+Index("cameras_deleted_at_idx", Camera.deleted_at)
+Index("persons_deleted_at_idx", Person.deleted_at)
 Index("homes_created_by_idx", Home.created_by_user_id)
 Index("rooms_home_idx", Room.home_id)
 Index("room_cameras_camera_idx", RoomCamera.camera_id)

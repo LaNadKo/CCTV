@@ -6,6 +6,13 @@
 
 set -e
 
+CCTV_NONINTERACTIVE="${CCTV_NONINTERACTIVE:-0}"
+CCTV_SKIP_GIT="${CCTV_SKIP_GIT:-0}"
+CCTV_INSTALL_DIR="${CCTV_INSTALL_DIR:-}"
+CCTV_FORCE_OVERWRITE_ENV="${CCTV_FORCE_OVERWRITE_ENV:-0}"
+CCTV_DOMAIN="${CCTV_DOMAIN:-}"
+CCTV_DB_PASSWORD="${CCTV_DB_PASSWORD:-}"
+
 # Цвета
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,8 +43,10 @@ log_step()    { echo -e "${BLUE}[→]${NC} $1"; }
 check_root() {
     if [ "$EUID" -eq 0 ]; then
         log_warn "Скрипт запущен от root. Рекомендуется запускать от обычного пользователя."
-        read -p "Продолжить? (y/N): " confirm
-        [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && exit 0
+        if [ "$CCTV_NONINTERACTIVE" != "1" ]; then
+            read -p "Продолжить? (y/N): " confirm
+            [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && exit 0
+        fi
     fi
 }
 
@@ -127,6 +136,16 @@ install_dependencies() {
 
 # Выбор директории установки
 choose_install_dir() {
+    if [ -n "$CCTV_INSTALL_DIR" ]; then
+        INSTALL_DIR="$CCTV_INSTALL_DIR"
+        if [ ! -d "$(dirname "$INSTALL_DIR")" ]; then
+            sudo mkdir -p "$(dirname "$INSTALL_DIR")"
+            sudo chown "$USER:$USER" "$(dirname "$INSTALL_DIR")"
+        fi
+        log_info "Директория установки: $INSTALL_DIR"
+        return
+    fi
+
     echo ""
     echo -e "${CYAN}Куда установить CCTV?${NC}"
     echo ""
@@ -170,6 +189,12 @@ choose_install_dir() {
 
 # Клонирование или обновление репозитория
 clone_or_update() {
+    if [ "$CCTV_SKIP_GIT" = "1" ]; then
+        cd "$INSTALL_DIR"
+        log_info "Используются уже подготовленные файлы в $INSTALL_DIR"
+        return
+    fi
+
     if [ -d "$INSTALL_DIR/.git" ]; then
         log_step "Обновление существующей установки..."
         cd "$INSTALL_DIR"
@@ -187,8 +212,10 @@ clone_or_update() {
 setup_env() {
     if [ -f "$INSTALL_DIR/.env" ]; then
         log_warn "Файл .env уже существует"
-        read -p "Перезаписать? (y/N): " overwrite
-        [ "$overwrite" != "y" ] && [ "$overwrite" != "Y" ] && return
+        if [ "$CCTV_FORCE_OVERWRITE_ENV" != "1" ] && [ "$CCTV_NONINTERACTIVE" != "1" ]; then
+            read -p "Перезаписать? (y/N): " overwrite
+            [ "$overwrite" != "y" ] && [ "$overwrite" != "Y" ] && return
+        fi
     fi
 
     log_step "Настройка конфигурации..."
@@ -202,11 +229,21 @@ setup_env() {
     LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
     echo ""
-    read -p "Домен или IP сервера [$LOCAL_IP]: " DOMAIN
-    DOMAIN=${DOMAIN:-$LOCAL_IP}
+    if [ -n "$CCTV_DOMAIN" ]; then
+        DOMAIN="$CCTV_DOMAIN"
+    elif [ "$CCTV_NONINTERACTIVE" = "1" ]; then
+        DOMAIN="$LOCAL_IP"
+    else
+        read -p "Домен или IP сервера [$LOCAL_IP]: " DOMAIN
+        DOMAIN=${DOMAIN:-$LOCAL_IP}
+    fi
 
-    read -p "Пароль PostgreSQL [автогенерация]: " input_db_pass
-    DB_PASSWORD=${input_db_pass:-$DB_PASSWORD}
+    if [ -n "$CCTV_DB_PASSWORD" ]; then
+        DB_PASSWORD="$CCTV_DB_PASSWORD"
+    elif [ "$CCTV_NONINTERACTIVE" != "1" ]; then
+        read -p "Пароль PostgreSQL [автогенерация]: " input_db_pass
+        DB_PASSWORD=${input_db_pass:-$DB_PASSWORD}
+    fi
 
     cat > "$INSTALL_DIR/.env" << ENVEOF
 # CCTV Console Configuration

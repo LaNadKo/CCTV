@@ -1,8 +1,9 @@
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
@@ -61,6 +62,16 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 def _ensure_admin(user: models.User) -> None:
     if not is_admin(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+
+def _is_deleted(instance) -> bool:
+    return getattr(instance, "deleted_at", None) is not None
+
+
+def _invalidate_gallery_cache() -> None:
+    from app.routers import processors as processors_router
+
+    processors_router.invalidate_gallery_cache()
 
 
 # ── User management (admin creates users) ──
@@ -166,7 +177,7 @@ async def update_camera(
 ):
     _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
-    if cam is None:
+    if cam is None or _is_deleted(cam):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(cam, field, value)
@@ -184,7 +195,17 @@ async def delete_camera(
     cam = await session.get(models.Camera, camera_id)
     if cam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    await session.delete(cam)
+    if _is_deleted(cam):
+        return {}
+    cam.deleted_at = datetime.utcnow()
+    cam.detection_enabled = False
+    cam.tracking_enabled = False
+    cam.tracking_mode = "off"
+    await session.execute(
+        delete(models.ProcessorCameraAssignment).where(
+            models.ProcessorCameraAssignment.camera_id == camera_id
+        )
+    )
     await session.commit()
     return {}
 
@@ -198,7 +219,7 @@ async def add_stream(
 ):
     _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
-    if cam is None:
+    if cam is None or _is_deleted(cam):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
     vs = models.VideoStream(
         camera_id=camera_id,
@@ -238,7 +259,11 @@ async def list_persons(
     current_user: models.User = Depends(get_current_user),
 ):
     _ensure_admin(current_user)
-    result = await session.execute(select(models.Person).order_by(models.Person.person_id))
+    result = await session.execute(
+        select(models.Person)
+        .where(models.Person.deleted_at.is_(None))
+        .order_by(models.Person.person_id)
+    )
     persons = result.scalars().all()
     return [
         {
@@ -271,6 +296,7 @@ async def create_person(
     session.add(person)
     await session.commit()
     await session.refresh(person)
+    _invalidate_gallery_cache()
     return {"person_id": person.person_id}
 
 
@@ -283,11 +309,12 @@ async def update_person(
 ):
     _ensure_admin(current_user)
     person = await session.get(models.Person, person_id)
-    if person is None:
+    if person is None or _is_deleted(person):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(person, field, value)
     await session.commit()
+    _invalidate_gallery_cache()
     return {"person_id": person.person_id}
 
 
@@ -301,8 +328,16 @@ async def delete_person(
     person = await session.get(models.Person, person_id)
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
-    await session.delete(person)
+    if _is_deleted(person):
+        return {}
+    person.deleted_at = datetime.utcnow()
+    result = await session.execute(
+        select(models.Camera).where(models.Camera.tracking_target_person_id == person_id)
+    )
+    for camera in result.scalars().all():
+        camera.tracking_target_person_id = None
     await session.commit()
+    _invalidate_gallery_cache()
     return {}
 
 

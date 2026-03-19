@@ -64,6 +64,7 @@ processor/dist/
 processor/build/
 processor/installer_output/
 processor/*.spec
+yolov8n.pt
 
 # PyInstaller root artifacts
 build/

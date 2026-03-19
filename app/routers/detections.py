@@ -69,6 +69,14 @@ async def create_detection(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission on camera")
         actor_user_id = current_user.user_id
 
+    if payload.person_id is not None:
+        person = await session.get(models.Person, payload.person_id)
+        if person is None or person.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    camera = await session.get(models.Camera, payload.camera_id)
+    if camera is None or camera.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+
     if payload.person_id:
         et_id = await _find_event_type_id(session, payload.event_type or "face_recognized")
         review_required = False
@@ -104,10 +112,9 @@ async def list_pending(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[PendingEvent]:
-    # Only admins and users can see pending reviews
     perm = user_camera_permission_sync(current_user)
-    if perm is None:
-        return []
+    if not check_permission(perm, "control"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review events")
 
     res = await session.execute(
         select(models.Event, models.EventReview, models.EventType, models.Camera)
@@ -196,6 +203,10 @@ async def review_event(
     review_obj = review.scalar_one_or_none()
     if review_obj is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No review pending for this event")
+    if payload.person_id is not None:
+        person = await session.get(models.Person, payload.person_id)
+        if person is None or person.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
     review_obj.status = payload.status
     review_obj.reviewer_user_id = current_user.user_id
     review_obj.person_id = payload.person_id

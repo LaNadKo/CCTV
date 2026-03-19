@@ -25,6 +25,15 @@ function RequireAuth() {
   return <Outlet />;
 }
 
+function RequireRole({ allow }: { allow: number[] }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="shell">Загрузка...</div>;
+  if (!user || !allow.includes(user.role_id)) {
+    return <Navigate to="/live" replace />;
+  }
+  return <Outlet />;
+}
+
 function InstallBanner() {
   const { canInstall, isIOS, install } = usePWA();
   const [dismissed, setDismissed] = useState(false);
@@ -161,16 +170,20 @@ function App() {
           <Route element={<Layout />}>
             <Route index element={<Navigate to="/live" replace />} />
             <Route path="/live" element={<LivePage />} />
-            <Route path="/reviews" element={<ReviewsPage />} />
-            <Route path="/reports" element={<ReportsPage />} />
-            <Route path="/persons" element={<PersonsPage />} />
             <Route path="/recordings" element={<RecordingsPage />} />
             <Route path="/groups" element={<GroupsPage />} />
-            <Route path="/cameras" element={<CamerasPage />} />
-            <Route path="/processors" element={<ProcessorsPage />} />
-            <Route path="/users" element={<UsersPage />} />
-            <Route path="/apikeys" element={<ApiKeysPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route element={<RequireRole allow={[1, 2]} />}>
+              <Route path="/reviews" element={<ReviewsPage />} />
+              <Route path="/reports" element={<ReportsPage />} />
+            </Route>
+            <Route element={<RequireRole allow={[1]} />}>
+              <Route path="/persons" element={<PersonsPage />} />
+              <Route path="/cameras" element={<CamerasPage />} />
+              <Route path="/processors" element={<ProcessorsPage />} />
+              <Route path="/users" element={<UsersPage />} />
+              <Route path="/apikeys" element={<ApiKeysPage />} />
+            </Route>
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/live" replace />} />

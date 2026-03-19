@@ -60,9 +60,16 @@ async def list_cameras(
     current_user: models.User = Depends(get_current_user),
 ) -> List[CameraOut]:
     if group_id is not None:
-        result = await session.execute(select(models.Camera).where(models.Camera.group_id == group_id))
+        result = await session.execute(
+            select(models.Camera).where(
+                models.Camera.group_id == group_id,
+                models.Camera.deleted_at.is_(None),
+            )
+        )
     else:
-        result = await session.execute(select(models.Camera))
+        result = await session.execute(
+            select(models.Camera).where(models.Camera.deleted_at.is_(None))
+        )
     cams = result.scalars().all()
 
     perm = user_camera_permission_sync(current_user)
@@ -94,7 +101,12 @@ async def get_camera_permission(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> CameraPermissionOut:
-    result = await session.execute(select(models.Camera).where(models.Camera.camera_id == camera_id))
+    result = await session.execute(
+        select(models.Camera).where(
+            models.Camera.camera_id == camera_id,
+            models.Camera.deleted_at.is_(None),
+        )
+    )
     cam = result.scalar_one_or_none()
     if cam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
@@ -110,7 +122,7 @@ async def stream_camera(
     current_user: models.User = Depends(get_current_user_allow_query),
 ):
     cam = await session.get(models.Camera, camera_id)
-    if cam is None:
+    if cam is None or cam.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
 
     perm = user_camera_permission_sync(current_user)
@@ -120,7 +132,10 @@ async def stream_camera(
     assignment_result = await session.execute(
         select(models.ProcessorCameraAssignment, models.Processor)
         .join(models.Processor, models.Processor.processor_id == models.ProcessorCameraAssignment.processor_id)
-        .where(models.ProcessorCameraAssignment.camera_id == camera_id)
+        .where(
+            models.ProcessorCameraAssignment.camera_id == camera_id,
+            models.Processor.status == "online",
+        )
         .limit(1)
     )
     assignment_row = assignment_result.first()
