@@ -1,0 +1,56 @@
+{
+  "name": "cctv-console-desktop",
+  "version": "1.0.0",
+  "description": "CCTV Console — Desktop Application",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"cd ../frontend && npm run dev\" \"wait-on http://localhost:5173 && electron . --dev\"",
+    "build": "cd ../frontend && npm run build && cd ../desktop && electron-builder",
+    "build:win": "cd ../frontend && npm run build && cd ../desktop && electron-builder --win",
+    "build:mac": "cd ../frontend && npm run build && cd ../desktop && electron-builder --mac",
+    "build:linux": "cd ../frontend && npm run build && cd ../desktop && electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.cctv.console",
+    "productName": "CCTV Console",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": ["ru", "en_US"]
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "build/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png"
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.0",
+    "wait-on": "^8.0.0"
+  }
+}
