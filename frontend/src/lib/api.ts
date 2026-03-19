@@ -124,6 +124,8 @@ export async function getPending(token: string) {
     {
       event_id: number;
       camera_id: number;
+      camera_name?: string | null;
+      camera_location?: string | null;
       event_type_id: number;
       event_ts: string;
       person_id?: number;
@@ -244,8 +246,17 @@ export async function updateCamera(
   return request<{ camera_id: number }>(`/admin/cameras/${camera_id}`, "PATCH", token, payload);
 }
 
-export async function listRecordings(token: string, camera_id?: number) {
-  const search = camera_id ? `?camera_id=${camera_id}` : "";
+export async function listRecordings(
+  token: string,
+  camera_id?: number,
+  date_from?: string,
+  date_to?: string
+) {
+  const params = new URLSearchParams();
+  if (camera_id) params.append("camera_id", String(camera_id));
+  if (date_from) params.append("date_from", date_from);
+  if (date_to) params.append("date_to", date_to);
+  const search = params.toString();
   return request<
     {
       recording_file_id: number;
@@ -259,7 +270,7 @@ export async function listRecordings(token: string, camera_id?: number) {
       file_size_bytes?: number;
       checksum?: string;
     }[]
-  >(`/recordings${search}`, "GET", token);
+  >(`/recordings${search ? `?${search}` : ""}`, "GET", token);
 }
 
 // ── Persons ──
@@ -462,6 +473,8 @@ export type AppearanceItem = {
   event_ts: string;
   camera_id: number;
   camera_name?: string | null;
+  camera_location?: string | null;
+  group_name?: string | null;
   person_id?: number | null;
   person_label?: string | null;
   confidence?: number | null;

@@ -1,10 +1,12 @@
-﻿import { useEffect, useState } from "react";
-import { getPending, reviewEvent, enrollPersonFromPhoto, enrollPersonFromSnapshot, API_URL } from "../lib/api";
+import { useEffect, useState } from "react";
+import { API_URL, enrollPersonFromPhoto, enrollPersonFromSnapshot, getPending, reviewEvent } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 type Pending = {
   event_id: number;
   camera_id: number;
+  camera_name?: string | null;
+  camera_location?: string | null;
   event_type_id: number;
   event_ts: string;
   person_id?: number;
@@ -20,10 +22,10 @@ const ReviewsPage: React.FC = () => {
   const [personMap, setPersonMap] = useState<Record<number, string>>({});
   const [fioMap, setFioMap] = useState<Record<number, string>>({});
   const [videoOpenMap, setVideoOpenMap] = useState<Record<number, boolean>>({});
+  const [snapshotErrorMap, setSnapshotErrorMap] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // enroll form
   const [file, setFile] = useState<File | null>(null);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -48,13 +50,12 @@ const ReviewsPage: React.FC = () => {
     load();
   }, [token]);
 
-  const handleReview = async (event_id: number, status: "approved" | "rejected") => {
+  const handleReview = async (eventId: number, status: "approved" | "rejected") => {
     if (!token) return;
-    const person_id = personMap[event_id] ? Number(personMap[event_id]) : undefined;
+    const personId = personMap[eventId] ? Number(personMap[eventId]) : undefined;
     try {
-      await reviewEvent(token, event_id, status, person_id);
-      // удаляем карточку локально, без полного refetch
-      setItems((prev) => prev.filter((i) => i.event_id !== event_id));
+      await reviewEvent(token, eventId, status, personId);
+      setItems((prev) => prev.filter((item) => item.event_id !== eventId));
     } catch (e: any) {
       alert(e?.message || "Ошибка");
     }
@@ -67,7 +68,13 @@ const ReviewsPage: React.FC = () => {
     }
     try {
       setEnrollMsg("Отправка...");
-      const res = await enrollPersonFromPhoto(token, file, firstName || undefined, lastName || undefined, middleName || undefined);
+      const res = await enrollPersonFromPhoto(
+        token,
+        file,
+        firstName || undefined,
+        lastName || undefined,
+        middleName || undefined
+      );
       setEnrollMsg(`Создан person_id=${res.person_id}`);
       setFile(null);
       setFirstName("");
@@ -83,8 +90,8 @@ const ReviewsPage: React.FC = () => {
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <div>
-          <h2 className="title">Ревью событий</h2>
-          <div className="muted">Неопознанные лица попадают сюда. Можно привязать person_id.</div>
+          <h2 className="title">Ревью</h2>
+          <div className="muted">Сюда попадают только неизвестные лица. После подтверждения событие попадет в отчётность.</div>
         </div>
         <button className="btn secondary" onClick={load}>
           Обновить
@@ -92,7 +99,7 @@ const ReviewsPage: React.FC = () => {
       </div>
 
       <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Добавить персону из фото</h3>
+        <h3 style={{ marginTop: 0 }}>Добавить персону из файла</h3>
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 8 }}>
           <label className="field">
             <span className="label">Файл (jpg/png)</span>
@@ -114,7 +121,11 @@ const ReviewsPage: React.FC = () => {
         <button className="btn" style={{ marginTop: 10 }} onClick={handleEnroll} disabled={!file}>
           Загрузить и создать персону
         </button>
-        {enrollMsg && <div className="muted" style={{ marginTop: 6 }}>{enrollMsg}</div>}
+        {enrollMsg && (
+          <div className="muted" style={{ marginTop: 6 }}>
+            {enrollMsg}
+          </div>
+        )}
       </div>
 
       {error && <div className="danger">{error}</div>}
@@ -122,108 +133,141 @@ const ReviewsPage: React.FC = () => {
         <div className="card">Загрузка...</div>
       ) : (
         <div className="grid">
-          {items.map((ev) => (
-            <div key={ev.event_id} className="card">
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div>
-                  <div className="muted">Event #{ev.event_id}</div>
-                  <h3 style={{ margin: 0 }}>Камера {ev.camera_id}</h3>
+          {items.map((event) => {
+            const cameraLabel = event.camera_name || `Камера ${event.camera_id}`;
+            const snapshotAvailable = !!event.snapshot_url && !snapshotErrorMap[event.event_id];
+            return (
+              <div key={event.event_id} className="card">
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div className="stack" style={{ gap: 2 }}>
+                    <div className="muted">Событие #{event.event_id}</div>
+                    <h3 style={{ margin: 0 }}>{cameraLabel}</h3>
+                    <div className="muted">{event.camera_location || "Локация не указана"}</div>
+                  </div>
+                  <span className="pill">{new Date(event.event_ts).toLocaleString()}</span>
                 </div>
-                <span className="pill">ts {new Date(ev.event_ts).toLocaleString()}</span>
-              </div>
-              <div className="muted" style={{ marginTop: 8 }}>
-                Персона: {ev.person_label || (ev.person_id ? `ID ${ev.person_id}` : "неизвестно")} | confidence: {ev.confidence ?? "n/a"}
-              </div>
-              {token && (ev.snapshot_url || ev.recording_file_id) && (
-                <div className="grid" style={{ marginTop: 10, gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
-                  {ev.snapshot_url && (
+
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Уверенность детекции: {event.confidence != null ? event.confidence.toFixed(2) : "n/a"}
+                </div>
+
+                <div className="grid" style={{ marginTop: 10, gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
+                  {snapshotAvailable ? (
                     <div className="stack">
-                      <span className="label" style={{ color: "#9aa4b5" }}>Снимок</span>
+                      <span className="label">Снимок</span>
                       <img
-                        src={`${API_URL}${ev.snapshot_url}`}
-                        alt="snapshot"
+                        src={`${API_URL}${event.snapshot_url}`}
+                        alt={`event-${event.event_id}`}
                         loading="lazy"
-                        style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}
+                        style={{ width: "100%", minHeight: 180, borderRadius: 8, background: "#0d1b2a", objectFit: "cover" }}
+                        onError={() =>
+                          setSnapshotErrorMap((prev) => ({
+                            ...prev,
+                            [event.event_id]: true,
+                          }))
+                        }
                       />
                     </div>
-                  )}
-                  {ev.recording_file_id && (
+                  ) : (
                     <div className="stack">
-                      <span className="label" style={{ color: "#9aa4b5" }}>Открыть видео</span>
-                      {videoOpenMap[ev.event_id] ? (
-                        <video controls preload="none" style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}>
+                      <span className="label">Снимок</span>
+                      <div
+                        className="muted"
+                        style={{
+                          minHeight: 180,
+                          borderRadius: 8,
+                          border: "1px dashed var(--border)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: 12,
+                          background: "#0d1b2a",
+                          textAlign: "center",
+                        }}
+                      >
+                        Снимок пока недоступен.
+                      </div>
+                    </div>
+                  )}
+
+                  {event.recording_file_id && (
+                    <div className="stack">
+                      <span className="label">Видео</span>
+                      {videoOpenMap[event.event_id] ? (
+                        <video controls preload="none" style={{ width: "100%", borderRadius: 8, background: "#0d1b2a", minHeight: 180 }}>
                           <source
-                            src={`${API_URL}/recordings/file/${ev.recording_file_id}?token=${encodeURIComponent(token)}`}
+                            src={`${API_URL}/recordings/file/${event.recording_file_id}?token=${encodeURIComponent(token || "")}`}
                             type="video/mp4"
                           />
                         </video>
                       ) : (
                         <button
                           className="btn secondary"
-                          onClick={() => setVideoOpenMap((prev) => ({ ...prev, [ev.event_id]: true }))}
+                          style={{ minHeight: 180 }}
+                          onClick={() => setVideoOpenMap((prev) => ({ ...prev, [event.event_id]: true }))}
                         >
-                          Показать видео
+                          Открыть видео
                         </button>
                       )}
                     </div>
                   )}
                 </div>
-              )}
-              <div className="field" style={{ marginTop: 10 }}>
-                <span className="label">Назначить person_id (если знаете)</span>
-                <input
-                  className="input"
-                  value={personMap[ev.event_id] || ""}
-                  onChange={(e) => setPersonMap((prev) => ({ ...prev, [ev.event_id]: e.target.value }))}
-                  placeholder="ID персоны"
-                />
-              </div>
-              {ev.snapshot_url && (
-                <div className="stack" style={{ marginTop: 10 }}>
-                  <span className="label">Создать персону из снимка (ФИО опционально)</span>
+
+                <div className="field" style={{ marginTop: 10 }}>
+                  <span className="label">Назначить person_id (если знаете)</span>
                   <input
                     className="input"
-                    placeholder="Фамилия Имя Отчество"
-                    value={fioMap[ev.event_id] || ""}
-                    onChange={(e) => setFioMap((p) => ({ ...p, [ev.event_id]: e.target.value }))}
+                    value={personMap[event.event_id] || ""}
+                    onChange={(e) => setPersonMap((prev) => ({ ...prev, [event.event_id]: e.target.value }))}
+                    placeholder="ID персоны"
                   />
-                  <button
-                    className="btn secondary"
-                    onClick={async () => {
-                      if (!token) return;
-                      const fio = (fioMap[ev.event_id] || "").trim().split(" ").filter(Boolean);
-                      const last_name = fio[0];
-                      const first_name = fio[1];
-                      const middle_name = fio[2];
-                      try {
-                        const res = await enrollPersonFromSnapshot(token, {
-                          event_id: ev.event_id,
-                          first_name,
-                          last_name,
-                          middle_name,
-                        });
-                        alert(`Создан person_id=${res.person_id}`);
-                        await load();
-                      } catch (err: any) {
-                        alert(err?.message || "Не удалось создать персону");
-                      }
-                    }}
-                  >
-                    Персона из снимка
+                </div>
+
+                {event.snapshot_url && !snapshotErrorMap[event.event_id] && (
+                  <div className="stack" style={{ marginTop: 10 }}>
+                    <span className="label">Создать персону из снимка (ФИО опционально)</span>
+                    <input
+                      className="input"
+                      placeholder="Фамилия Имя Отчество"
+                      value={fioMap[event.event_id] || ""}
+                      onChange={(e) => setFioMap((prev) => ({ ...prev, [event.event_id]: e.target.value }))}
+                    />
+                    <button
+                      className="btn secondary"
+                      onClick={async () => {
+                        if (!token) return;
+                        const fio = (fioMap[event.event_id] || "").trim().split(" ").filter(Boolean);
+                        try {
+                          const res = await enrollPersonFromSnapshot(token, {
+                            event_id: event.event_id,
+                            last_name: fio[0],
+                            first_name: fio[1],
+                            middle_name: fio[2],
+                          });
+                          alert(`Создан person_id=${res.person_id}`);
+                          await load();
+                        } catch (err: any) {
+                          alert(err?.message || "Не удалось создать персону");
+                        }
+                      }}
+                    >
+                      Персона из снимка
+                    </button>
+                  </div>
+                )}
+
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button className="btn" onClick={() => handleReview(event.event_id, "approved")}>
+                    Одобрить
+                  </button>
+                  <button className="btn secondary" onClick={() => handleReview(event.event_id, "rejected")}>
+                    Отклонить
                   </button>
                 </div>
-              )}
-              <div className="row" style={{ marginTop: 12 }}>
-                <button className="btn" onClick={() => handleReview(ev.event_id, "approved")}>
-                  Одобрить
-                </button>
-                <button className="btn secondary" onClick={() => handleReview(ev.event_id, "rejected")}>
-                  Отклонить
-                </button>
               </div>
-            </div>
-          ))}
-          {items.length === 0 && <div className="card">Пока нет событий.</div>}
+            );
+          })}
+          {items.length === 0 && <div className="card">Пока нет событий на ревью.</div>}
         </div>
       )}
     </div>

@@ -98,6 +98,7 @@ class ProcessorEventIn(BaseModel):
     confidence: float | None = None
     track_id: int | None = None
     snapshot_b64: str | None = None
+    event_ts: datetime | None = None
 
 
 class ProcessorEventOut(BaseModel):

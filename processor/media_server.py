@@ -193,7 +193,7 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-            time.sleep(1 / 12)
+            time.sleep(1 / 15)
 
     def _serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():

@@ -9,13 +9,14 @@ import sys
 import urllib.request
 import numpy as np
 
+from processor.config import settings
+
 logger = logging.getLogger(__name__)
 
 _mtcnn = None
 _resnet = None
 _device = "cpu"
 
-_SIM_MARGIN = 0.05
 _FACE_PROB_MIN = 0.85
 _MTCNN_WEIGHT_URLS = {
     "pnet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/pnet.pt",
@@ -183,8 +184,14 @@ def detect_faces(frame_rgb: np.ndarray) -> list[dict]:
     return results
 
 
-def match_embedding(embedding: np.ndarray, gallery: list[dict], threshold: float = 0.25) -> tuple[int | None, float]:
+def match_embedding(
+    embedding: np.ndarray,
+    gallery: list[dict],
+    threshold: float | None = None,
+) -> tuple[int | None, float]:
     """Match embedding against gallery using cosine similarity (aligned with backend)."""
+    threshold = settings.face_match_threshold if threshold is None else threshold
+    sim_margin = settings.face_match_margin
     embedding = _normalize_vec(embedding)
 
     # Group best similarity per person (multi-embedding support)
@@ -212,7 +219,7 @@ def match_embedding(embedding: np.ndarray, gallery: list[dict], threshold: float
         elif sim > second_best:
             second_best = sim
 
-    margin_ok = best_sim - second_best >= _SIM_MARGIN
+    margin_ok = best_sim - second_best >= sim_margin
     if best_sim >= threshold and margin_ok:
         return best_id, best_sim
     return None, best_sim

@@ -1,17 +1,17 @@
-import { useState } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation, NavLink } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { usePWA } from "./hooks/usePWA";
-import LoginPage from "./pages/Login";
-import CamerasPage from "./pages/Cameras";
-import ReviewsPage from "./pages/Reviews";
-import LivePage from "./pages/Live";
-import ProcessorsPage from "./pages/Processors";
-import GroupsPage from "./pages/Groups";
 import ApiKeysPage from "./pages/ApiKeys";
-import RecordingsPage from "./pages/Recordings";
+import CamerasPage from "./pages/Cameras";
+import GroupsPage from "./pages/Groups";
+import LivePage from "./pages/Live";
+import LoginPage from "./pages/Login";
 import PersonsPage from "./pages/Persons";
+import ProcessorsPage from "./pages/Processors";
+import RecordingsPage from "./pages/Recordings";
 import ReportsPage from "./pages/Reports";
+import ReviewsPage from "./pages/Reviews";
 import UsersPage from "./pages/Users";
 import "./app.css";
 
@@ -36,11 +36,7 @@ function InstallBanner() {
         <button className="btn" style={{ padding: "6px 14px", fontSize: 13 }} onClick={install}>
           Установить
         </button>
-        <button
-          className="btn secondary"
-          style={{ padding: "6px 10px", fontSize: 13 }}
-          onClick={() => setDismissed(true)}
-        >
+        <button className="btn secondary" style={{ padding: "6px 10px", fontSize: 13 }} onClick={() => setDismissed(true)}>
           Позже
         </button>
       </div>
@@ -50,18 +46,8 @@ function InstallBanner() {
   if (isIOS) {
     return (
       <div className="install-banner">
-        <span>
-          Нажмите{" "}
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle" }}>
-            <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" />
-          </svg>{" "}
-          → «На экран Домой» для установки
-        </span>
-        <button
-          className="btn secondary"
-          style={{ padding: "6px 10px", fontSize: 13 }}
-          onClick={() => setDismissed(true)}
-        >
+        <span>Нажмите кнопку поделиться и выберите «На экран Домой», чтобы установить приложение.</span>
+        <button className="btn secondary" style={{ padding: "6px 10px", fontSize: 13 }} onClick={() => setDismissed(true)}>
           OK
         </button>
       </div>
@@ -72,25 +58,41 @@ function InstallBanner() {
 }
 
 function Layout() {
+  const location = useLocation();
   const { user, logout } = useAuth();
   const isAdmin = user?.role_id === 1;
   const isUser = user?.role_id === 1 || user?.role_id === 2;
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const allTabs = [
-    { to: "/live", label: "Live", show: true },
-    { to: "/recordings", label: "Записи", show: true },
-    { to: "/reviews", label: "Ревью", show: isUser },
-    { to: "/cameras", label: "Камеры", show: isAdmin },
-    { to: "/groups", label: "Группы", show: true },
-    { to: "/persons", label: "Персоны", show: isAdmin },
-    { to: "/reports", label: "Отчёты", show: isUser },
-    { to: "/processors", label: "Процессоры", show: isAdmin },
-    { to: "/users", label: "Пользователи", show: isAdmin },
-    { to: "/apikeys", label: "API-ключи", show: isAdmin },
-  ];
+  const primaryTabs = useMemo(
+    () =>
+      [
+        { to: "/live", label: "Live", show: true },
+        { to: "/reviews", label: "Ревью", show: isUser },
+        { to: "/reports", label: "Отчёты", show: isUser },
+        { to: "/persons", label: "Персоны", show: isAdmin },
+      ].filter((tab) => tab.show),
+    [isAdmin, isUser]
+  );
 
-  const tabs = allTabs.filter((t) => t.show);
+  const secondaryTabs = useMemo(
+    () =>
+      [
+        { to: "/recordings", label: "Записи", show: true },
+        { to: "/groups", label: "Группы", show: true },
+        { to: "/cameras", label: "Камеры", show: isAdmin },
+        { to: "/processors", label: "Процессоры", show: isAdmin },
+        { to: "/users", label: "Пользователи", show: isAdmin },
+        { to: "/apikeys", label: "API-ключи", show: isAdmin },
+      ].filter((tab) => tab.show),
+    [isAdmin]
+  );
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+
+  const menuActive = secondaryTabs.some((tab) => location.pathname.startsWith(tab.to));
 
   return (
     <div className="shell">
@@ -98,23 +100,33 @@ function Layout() {
       <nav className="nav">
         <div className="brand">CCTV Console</div>
 
-        <button className="hamburger" onClick={() => setMenuOpen(!menuOpen)} aria-label="Меню">
-          <span className={menuOpen ? "ham-line open" : "ham-line"} />
-          <span className={menuOpen ? "ham-line open" : "ham-line"} />
-          <span className={menuOpen ? "ham-line open" : "ham-line"} />
-        </button>
+        <div className="nav-center">
+          <div className="tabs primary-tabs">
+            {primaryTabs.map((tab) => (
+              <NavLink key={tab.to} to={tab.to} className={({ isActive }) => (isActive ? "tab active" : "tab")}>
+                {tab.label}
+              </NavLink>
+            ))}
+          </div>
 
-        <div className={`tabs ${menuOpen ? "tabs-open" : ""}`}>
-          {tabs.map((t) => (
-            <NavLink
-              key={t.to}
-              to={t.to}
-              className={({ isActive }) => (isActive ? "tab active" : "tab")}
-              onClick={() => setMenuOpen(false)}
+          <div className="menu-wrap">
+            <button
+              className={menuActive || menuOpen ? "tab menu-trigger active" : "tab menu-trigger"}
+              onClick={() => setMenuOpen((prev) => !prev)}
+              type="button"
             >
-              {t.label}
-            </NavLink>
-          ))}
+              Меню
+            </button>
+            {menuOpen && (
+              <div className="menu-dropdown">
+                {secondaryTabs.map((tab) => (
+                  <NavLink key={tab.to} to={tab.to} className={({ isActive }) => (isActive ? "menu-link active" : "menu-link")}>
+                    {tab.label}
+                  </NavLink>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {user && (
@@ -144,11 +156,11 @@ function App() {
             <Route index element={<Navigate to="/live" replace />} />
             <Route path="/live" element={<LivePage />} />
             <Route path="/reviews" element={<ReviewsPage />} />
-            <Route path="/recordings" element={<RecordingsPage />} />
-            <Route path="/cameras" element={<CamerasPage />} />
-            <Route path="/groups" element={<GroupsPage />} />
-            <Route path="/persons" element={<PersonsPage />} />
             <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/persons" element={<PersonsPage />} />
+            <Route path="/recordings" element={<RecordingsPage />} />
+            <Route path="/groups" element={<GroupsPage />} />
+            <Route path="/cameras" element={<CamerasPage />} />
             <Route path="/processors" element={<ProcessorsPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/apikeys" element={<ApiKeysPage />} />

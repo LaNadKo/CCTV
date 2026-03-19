@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from pathlib import Path
 import re
 from typing import List, Optional
@@ -99,6 +100,8 @@ def _processor_media_url(proc: models.Processor, prefix: str, relative_path: str
 @router.get("", response_model=List[RecordingOut])
 async def list_recordings(
     camera_id: Optional[int] = Query(default=None),
+    date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
+    date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
     limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
@@ -111,6 +114,16 @@ async def list_recordings(
     )
     if camera_id:
         stmt = stmt.where(models.VideoStream.camera_id == camera_id)
+    if date_from:
+        try:
+            stmt = stmt.where(models.RecordingFile.started_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            stmt = stmt.where(models.RecordingFile.started_at <= datetime.fromisoformat(date_to))
+        except ValueError:
+            pass
 
     res = await session.execute(stmt)
     rows = res.all()
@@ -127,8 +140,8 @@ async def list_recordings(
                 video_stream_id=recording.video_stream_id,
                 file_kind=recording.file_kind,
                 file_path=recording.file_path,
-                started_at=str(recording.started_at),
-                ended_at=str(recording.ended_at) if recording.ended_at else None,
+                started_at=recording.started_at.isoformat(),
+                ended_at=recording.ended_at.isoformat() if recording.ended_at else None,
                 duration_seconds=float(recording.duration_seconds) if recording.duration_seconds else None,
                 file_size_bytes=int(recording.file_size_bytes) if recording.file_size_bytes else None,
                 checksum=recording.checksum,
