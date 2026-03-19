@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { API_URL, enrollPersonFromPhoto, enrollPersonFromSnapshot, getPending, reviewEvent } from "../lib/api";
+import {
+  API_URL,
+  enrollPersonFromPhoto,
+  enrollPersonFromSnapshot,
+  getPending,
+  rejectAllPendingReviews,
+  reviewEvent,
+} from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 type Pending = {
@@ -24,6 +31,7 @@ const ReviewsPage: React.FC = () => {
   const [videoOpenMap, setVideoOpenMap] = useState<Record<number, boolean>>({});
   const [snapshotErrorMap, setSnapshotErrorMap] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -37,10 +45,9 @@ const ReviewsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await getPending(token);
-      setItems(res);
+      setItems(await getPending(token));
     } catch (e: any) {
-      setError(e?.message || "Не удалось загрузить ревью");
+      setError(e?.message || "Не удалось загрузить ревью.");
     } finally {
       setLoading(false);
     }
@@ -52,55 +59,78 @@ const ReviewsPage: React.FC = () => {
 
   const handleReview = async (eventId: number, status: "approved" | "rejected") => {
     if (!token) return;
-    const personId = personMap[eventId] ? Number(personMap[eventId]) : undefined;
     try {
+      const personId = personMap[eventId] ? Number(personMap[eventId]) : undefined;
       await reviewEvent(token, eventId, status, personId);
       setItems((prev) => prev.filter((item) => item.event_id !== eventId));
     } catch (e: any) {
-      alert(e?.message || "Ошибка");
+      alert(e?.message || "Ошибка при обработке ревью.");
+    }
+  };
+
+  const handleRejectAll = async () => {
+    if (!token || !items.length) return;
+    if (!window.confirm(`Отклонить все события ревью (${items.length})?`)) return;
+    setBulkBusy(true);
+    try {
+      const result = await rejectAllPendingReviews(token);
+      await load();
+      alert(`Отклонено событий: ${result.updated}`);
+    } catch (e: any) {
+      alert(e?.message || "Не удалось отклонить все события.");
+    } finally {
+      setBulkBusy(false);
     }
   };
 
   const handleEnroll = async () => {
     if (!token || !file) {
-      setEnrollMsg("Выберите файл");
+      setEnrollMsg("Выберите файл.");
       return;
     }
     try {
       setEnrollMsg("Отправка...");
-      const res = await enrollPersonFromPhoto(
+      const result = await enrollPersonFromPhoto(
         token,
         file,
         firstName || undefined,
         lastName || undefined,
         middleName || undefined
       );
-      setEnrollMsg(`Создан person_id=${res.person_id}`);
+      setEnrollMsg(`Создана персона ID ${result.person_id}`);
       setFile(null);
       setFirstName("");
       setLastName("");
       setMiddleName("");
       await load();
     } catch (e: any) {
-      setEnrollMsg(e?.message || "Ошибка при загрузке");
+      setEnrollMsg(e?.message || "Ошибка при загрузке снимка.");
     }
   };
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
-        <div>
+        <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Ревью</h2>
-          <div className="muted">Сюда попадают только неизвестные лица. После подтверждения событие попадет в отчётность.</div>
+          <div className="muted">
+            Здесь остаются только неизвестные лица. Подтверждённые появления уходят в отчётность, а в карточках ревью
+            больше не показываются имена распознанных персон.
+          </div>
         </div>
-        <button className="btn secondary" onClick={load}>
-          Обновить
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn secondary" onClick={load}>
+            Обновить
+          </button>
+          <button className="btn secondary" onClick={handleRejectAll} disabled={bulkBusy || items.length === 0}>
+            {bulkBusy ? "Отклонение..." : "Отклонить всё"}
+          </button>
+        </div>
       </div>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Добавить персону из файла</h3>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 8 }}>
+      <div className="card stack">
+        <h3 style={{ margin: 0 }}>Добавить персону из файла</h3>
+        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
           <label className="field">
             <span className="label">Файл (jpg/png)</span>
             <input className="input" type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
@@ -118,102 +148,82 @@ const ReviewsPage: React.FC = () => {
             <input className="input" value={middleName} onChange={(e) => setMiddleName(e.target.value)} />
           </label>
         </div>
-        <button className="btn" style={{ marginTop: 10 }} onClick={handleEnroll} disabled={!file}>
+        <button className="btn" onClick={handleEnroll} disabled={!file}>
           Загрузить и создать персону
         </button>
-        {enrollMsg && (
-          <div className="muted" style={{ marginTop: 6 }}>
-            {enrollMsg}
-          </div>
-        )}
+        {enrollMsg && <div className="muted">{enrollMsg}</div>}
       </div>
 
       {error && <div className="danger">{error}</div>}
+
       {loading ? (
         <div className="card">Загрузка...</div>
+      ) : items.length === 0 ? (
+        <div className="card">Событий на ревью пока нет.</div>
       ) : (
         <div className="grid">
           {items.map((event) => {
-            const cameraLabel = event.camera_name || `Камера ${event.camera_id}`;
             const snapshotAvailable = !!event.snapshot_url && !snapshotErrorMap[event.event_id];
+            const recordingUrl = event.recording_file_id
+              ? `${API_URL}/recordings/file/${event.recording_file_id}?token=${encodeURIComponent(token || "")}`
+              : null;
             return (
-              <div key={event.event_id} className="card">
+              <div key={event.event_id} className="card stack review-card">
                 <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div className="stack" style={{ gap: 2 }}>
-                    <div className="muted">Событие #{event.event_id}</div>
-                    <h3 style={{ margin: 0 }}>{cameraLabel}</h3>
+                    <div className="muted">Event #{event.event_id}</div>
+                    <h3 style={{ margin: 0 }}>{event.camera_name || `Камера ${event.camera_id}`}</h3>
                     <div className="muted">{event.camera_location || "Локация не указана"}</div>
                   </div>
                   <span className="pill">{new Date(event.event_ts).toLocaleString()}</span>
                 </div>
 
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Уверенность детекции: {event.confidence != null ? event.confidence.toFixed(2) : "n/a"}
+                <div className="muted">
+                  Confidence: {event.confidence != null ? `${Number(event.confidence).toFixed(1)}%` : "n/a"}
                 </div>
 
-                <div className="grid" style={{ marginTop: 10, gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
-                  {snapshotAvailable ? (
-                    <div className="stack">
-                      <span className="label">Снимок</span>
-                      <img
-                        src={`${API_URL}${event.snapshot_url}`}
-                        alt={`event-${event.event_id}`}
-                        loading="lazy"
-                        style={{ width: "100%", minHeight: 180, borderRadius: 8, background: "#0d1b2a", objectFit: "cover" }}
-                        onError={() =>
-                          setSnapshotErrorMap((prev) => ({
-                            ...prev,
-                            [event.event_id]: true,
-                          }))
-                        }
+                {snapshotAvailable ? (
+                  <img
+                    src={`${API_URL}${event.snapshot_url}`}
+                    alt={`event-${event.event_id}`}
+                    loading="lazy"
+                    className="review-snapshot"
+                    onError={() =>
+                      setSnapshotErrorMap((prev) => ({
+                        ...prev,
+                        [event.event_id]: true,
+                      }))
+                    }
+                  />
+                ) : (
+                  <div className="review-snapshot review-snapshot-empty">Снимок пока недоступен.</div>
+                )}
+
+                {event.recording_file_id && (
+                  videoOpenMap[event.event_id] ? (
+                    <div className="stack" style={{ gap: 8 }}>
+                      <video
+                        src={recordingUrl || undefined}
+                        className="review-video"
+                        controls
+                        preload="metadata"
+                        playsInline
                       />
+                      <a className="btn secondary" href={recordingUrl || undefined} target="_blank" rel="noreferrer">
+                        Оригинальный файл
+                      </a>
                     </div>
                   ) : (
-                    <div className="stack">
-                      <span className="label">Снимок</span>
-                      <div
-                        className="muted"
-                        style={{
-                          minHeight: 180,
-                          borderRadius: 8,
-                          border: "1px dashed var(--border)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          padding: 12,
-                          background: "#0d1b2a",
-                          textAlign: "center",
-                        }}
-                      >
-                        Снимок пока недоступен.
-                      </div>
-                    </div>
-                  )}
+                    <button
+                      className="btn secondary"
+                      onClick={() => setVideoOpenMap((prev) => ({ ...prev, [event.event_id]: true }))}
+                    >
+                      Открыть видео
+                    </button>
+                  )
+                )}
 
-                  {event.recording_file_id && (
-                    <div className="stack">
-                      <span className="label">Видео</span>
-                      {videoOpenMap[event.event_id] ? (
-                        <video controls preload="none" style={{ width: "100%", borderRadius: 8, background: "#0d1b2a", minHeight: 180 }}>
-                          <source
-                            src={`${API_URL}/recordings/file/${event.recording_file_id}?token=${encodeURIComponent(token || "")}`}
-                            type="video/mp4"
-                          />
-                        </video>
-                      ) : (
-                        <button
-                          className="btn secondary"
-                          style={{ minHeight: 180 }}
-                          onClick={() => setVideoOpenMap((prev) => ({ ...prev, [event.event_id]: true }))}
-                        >
-                          Открыть видео
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="field" style={{ marginTop: 10 }}>
+                <label className="field">
                   <span className="label">Назначить person_id (если знаете)</span>
                   <input
                     className="input"
@@ -221,10 +231,10 @@ const ReviewsPage: React.FC = () => {
                     onChange={(e) => setPersonMap((prev) => ({ ...prev, [event.event_id]: e.target.value }))}
                     placeholder="ID персоны"
                   />
-                </div>
+                </label>
 
                 {event.snapshot_url && !snapshotErrorMap[event.event_id] && (
-                  <div className="stack" style={{ marginTop: 10 }}>
+                  <div className="stack">
                     <span className="label">Создать персону из снимка (ФИО опционально)</span>
                     <input
                       className="input"
@@ -238,16 +248,16 @@ const ReviewsPage: React.FC = () => {
                         if (!token) return;
                         const fio = (fioMap[event.event_id] || "").trim().split(" ").filter(Boolean);
                         try {
-                          const res = await enrollPersonFromSnapshot(token, {
+                          const result = await enrollPersonFromSnapshot(token, {
                             event_id: event.event_id,
                             last_name: fio[0],
                             first_name: fio[1],
                             middle_name: fio[2],
                           });
-                          alert(`Создан person_id=${res.person_id}`);
+                          alert(`Создана персона ID ${result.person_id}`);
                           await load();
-                        } catch (err: any) {
-                          alert(err?.message || "Не удалось создать персону");
+                        } catch (e: any) {
+                          alert(e?.message || "Не удалось создать персону.");
                         }
                       }}
                     >
@@ -256,7 +266,7 @@ const ReviewsPage: React.FC = () => {
                   </div>
                 )}
 
-                <div className="row" style={{ marginTop: 12 }}>
+                <div className="row" style={{ gap: 8 }}>
                   <button className="btn" onClick={() => handleReview(event.event_id, "approved")}>
                     Одобрить
                   </button>
@@ -267,7 +277,6 @@ const ReviewsPage: React.FC = () => {
               </div>
             );
           })}
-          {items.length === 0 && <div className="card">Пока нет событий на ревью.</div>}
         </div>
       )}
     </div>

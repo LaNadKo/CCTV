@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createCamera, getCameras, updateCamera, API_URL } from "../lib/api";
+import { createCamera, deleteCamera, getCameras, updateCamera, API_URL } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 type Camera = {
@@ -188,6 +188,18 @@ const CamerasPage: React.FC = () => {
     }
   };
 
+  const removeSelected = async () => {
+    if (!token || !selected) return;
+    if (!confirm(`Удалить камеру "${selected.name}"?`)) return;
+    try {
+      await deleteCamera(token, selected.camera_id);
+      setSelectedId(null);
+      await load();
+    } catch (e: any) {
+      alert(e?.message || "Не удалось удалить камеру");
+    }
+  };
+
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
@@ -276,7 +288,14 @@ const CamerasPage: React.FC = () => {
           </div>
 
           <div className="card">
-            <h3 style={{ marginTop: 0 }}>Параметры камеры</h3>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ marginTop: 0, marginBottom: 0 }}>Параметры камеры</h3>
+              {selected && (
+                <button className="btn secondary" onClick={removeSelected}>
+                  Удалить камеру
+                </button>
+              )}
+            </div>
             {selected ? (
               <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 8 }}>
                 <label className="field">

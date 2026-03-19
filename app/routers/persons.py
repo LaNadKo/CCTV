@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
-from app.permissions import is_home_admin
+from app.permissions import is_admin
 from app.processor_media import get_processor_media_base_url, get_processor_media_headers
 from app.schemas.persons import PersonCreate, PersonOut, PersonUpdate
 from app.routers.face import _extract_best_face_embedding
@@ -20,9 +20,7 @@ router = APIRouter(prefix="/persons", tags=["persons"])
 
 
 async def _ensure_admin(user: models.User, session: AsyncSession) -> None:
-    if user.role_id == 1:
-        return
-    if await is_home_admin(session, user.user_id):
+    if is_admin(user):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 
@@ -252,6 +250,21 @@ async def update_person(
         embeddings_count=count,
         created_at=person.created_at,
     )
+
+
+@router.delete("/{person_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_person(
+    person_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    await _ensure_admin(current_user, session)
+    person = await session.get(models.Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    await session.delete(person)
+    await session.commit()
+    return None
 
 
 @router.post("/{person_id}/embeddings/photo")

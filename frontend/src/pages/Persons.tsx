@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import {
-  listPersons,
-  createPerson,
-  updatePerson,
-  addPersonEmbeddingFromPhoto,
-  getCameras,
   API_URL,
+  addPersonEmbeddingFromPhoto,
+  createPerson,
+  deletePerson,
+  getCameras,
+  listPersons,
+  updatePerson,
 } from "../lib/api";
+import { fuzzyFilter } from "../lib/fuzzy";
 
 type Person = {
   person_id: number;
@@ -18,71 +20,85 @@ type Person = {
   created_at: string | null;
 };
 
+type CameraOption = {
+  camera_id: number;
+  name: string;
+};
+
+function personLabel(person: Person): string {
+  return [person.last_name, person.first_name, person.middle_name].filter(Boolean).join(" ") || `ID ${person.person_id}`;
+}
+
 const PersonsPage: React.FC = () => {
   const { token } = useAuth();
   const [persons, setPersons] = useState<Person[]>([]);
-  const [cameras, setCameras] = useState<{ camera_id: number; name: string }[]>([]);
+  const [cameras, setCameras] = useState<CameraOption[]>([]);
+  const [search, setSearch] = useState("");
   const [liveCameraId, setLiveCameraId] = useState<number | null>(null);
-  const liveImgRef = useRef<HTMLImageElement | null>(null);
-  const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [autoCapture, setAutoCapture] = useState(false);
-  const [autoIntervalMs, setAutoIntervalMs] = useState(1500);
-  const [autoTarget, setAutoTarget] = useState(5);
+  const [autoIntervalMs, setAutoIntervalMs] = useState(1200);
+  const [autoTarget, setAutoTarget] = useState(6);
   const [autoAdded, setAutoAdded] = useState(0);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
-
   const [createFirst, setCreateFirst] = useState("");
   const [createLast, setCreateLast] = useState("");
   const [createMiddle, setCreateMiddle] = useState("");
-
   const [editFirst, setEditFirst] = useState("");
   const [editLast, setEditLast] = useState("");
   const [editMiddle, setEditMiddle] = useState("");
 
+  const liveImgRef = useRef<HTMLImageElement | null>(null);
+  const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const filteredPersons = useMemo(
+    () => fuzzyFilter(persons, search, (person) => [personLabel(person), String(person.person_id)]),
+    [persons, search]
+  );
+
   const selectedPerson = useMemo(
-    () => persons.find((p) => p.person_id === selectedPersonId) || null,
+    () => persons.find((person) => person.person_id === selectedPersonId) || null,
     [persons, selectedPersonId]
   );
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setError(null);
-    setSuccess(null);
     try {
-      const items = await listPersons(token);
-      setPersons(items);
-      if (!selectedPersonId && items.length > 0) {
-        setSelectedPersonId(items[0].person_id);
+      const [personItems, cameraItems] = await Promise.all([listPersons(token), getCameras(token)]);
+      setPersons(personItems);
+      setCameras(cameraItems.map((camera) => ({ camera_id: camera.camera_id, name: camera.name })));
+
+      if (!selectedPersonId && personItems.length > 0) {
+        setSelectedPersonId(personItems[0].person_id);
+      } else if (selectedPersonId && !personItems.some((person) => person.person_id === selectedPersonId)) {
+        setSelectedPersonId(personItems[0]?.person_id ?? null);
       }
-      const cams = await getCameras(token);
-      setCameras(cams.map((c) => ({ camera_id: c.camera_id, name: c.name })));
-      if (!liveCameraId && cams.length > 0) {
-        setLiveCameraId(cams[0].camera_id);
+
+      if (!liveCameraId && cameraItems.length > 0) {
+        setLiveCameraId(cameraItems[0].camera_id);
       }
     } catch (e: any) {
       setError(e?.message || "Не удалось загрузить список персон.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, selectedPersonId, liveCameraId]);
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [load]);
 
   useEffect(() => {
-    if (selectedPerson) {
-      setEditFirst(selectedPerson.first_name || "");
-      setEditLast(selectedPerson.last_name || "");
-      setEditMiddle(selectedPerson.middle_name || "");
-    }
+    if (!selectedPerson) return;
+    setEditFirst(selectedPerson.first_name || "");
+    setEditLast(selectedPerson.last_name || "");
+    setEditMiddle(selectedPerson.middle_name || "");
   }, [selectedPerson]);
 
   const handleCreate = async () => {
@@ -90,7 +106,7 @@ const PersonsPage: React.FC = () => {
     setError(null);
     setSuccess(null);
     try {
-      const res = await createPerson(token, {
+      const created = await createPerson(token, {
         first_name: createFirst || undefined,
         last_name: createLast || undefined,
         middle_name: createMiddle || undefined,
@@ -98,9 +114,9 @@ const PersonsPage: React.FC = () => {
       setCreateFirst("");
       setCreateLast("");
       setCreateMiddle("");
-      setSuccess(`Персона создана (ID ${res.person_id}).`);
+      setSelectedPersonId(created.person_id);
+      setSuccess(`Персона создана: ID ${created.person_id}.`);
       await load();
-      setSelectedPersonId(res.person_id);
     } catch (e: any) {
       setError(e?.message || "Не удалось создать персону.");
     }
@@ -123,57 +139,70 @@ const PersonsPage: React.FC = () => {
     }
   };
 
+  const handleDelete = async () => {
+    if (!token || !selectedPerson) return;
+    if (!window.confirm(`Удалить персону "${personLabel(selectedPerson)}"?`)) return;
+    setError(null);
+    setSuccess(null);
+    try {
+      await deletePerson(token, selectedPerson.person_id);
+      setSuccess("Персона удалена.");
+      setSelectedPersonId(null);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Не удалось удалить персону.");
+    }
+  };
 
   const captureFromLive = useCallback(async () => {
     if (!token || !selectedPersonId || !liveCameraId || captureBusy) return;
     const img = liveImgRef.current;
     if (!img || !img.complete) return;
+
     setCaptureBusy(true);
+    setError(null);
     try {
       let canvas = liveCanvasRef.current;
       if (!canvas) {
         canvas = document.createElement("canvas");
         liveCanvasRef.current = canvas;
       }
+
       const width = img.naturalWidth || img.width;
       const height = img.naturalHeight || img.height;
-      if (!width || !height) {
-        setCaptureBusy(false);
-        return;
-      }
+      if (!width || !height) return;
+
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        setCaptureBusy(false);
-        return;
-      }
+      if (!ctx) return;
+
       ctx.drawImage(img, 0, 0, width, height);
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas!.toBlob(resolve, "image/jpeg", 0.95)
-      );
-      if (!blob) {
-        setCaptureBusy(false);
-        return;
-      }
+      const blob = await new Promise<Blob | null>((resolve) => canvas!.toBlob(resolve, "image/jpeg", 0.95));
+      if (!blob) return;
+
       const file = new File([blob], `live_${Date.now()}.jpg`, { type: "image/jpeg" });
-      const res = await addPersonEmbeddingFromPhoto(token, selectedPersonId, file, liveCameraId);
-      if (res.status === "added") {
-        setAutoAdded((v) => v + 1);
+      const result = await addPersonEmbeddingFromPhoto(token, selectedPersonId, file, liveCameraId);
+
+      if (result.status === "added") {
+        setAutoAdded((value) => value + 1);
         setSuccess("Эмбеддинг добавлен из Live.");
-      } else if (res.status === "duplicate") {
-        setSuccess(`Дубликат (sim=${res.max_similarity?.toFixed(3) ?? "?"}).`);
-      } else if (res.status === "mismatch") {
-        setError(`Лицо не похоже на выбранную персону (sim=${res.max_similarity?.toFixed(3) ?? "?"}). Автосбор остановлен.`);
+      } else if (result.status === "duplicate") {
+        setSuccess(`Похожий ракурс уже есть: sim=${result.max_similarity?.toFixed(3) ?? "?"}.`);
+      } else if (result.status === "mismatch") {
+        setError(
+          `Лицо не похоже на выбранную персону: sim=${result.max_similarity?.toFixed(3) ?? "?"}. Автосбор остановлен.`
+        );
         setAutoCapture(false);
       }
+
       await load();
     } catch (e: any) {
-      setError(e?.message || "Не удалось добавить из Live.");
+      setError(e?.message || "Не удалось добавить снимок из Live.");
     } finally {
       setCaptureBusy(false);
     }
-  }, [token, selectedPersonId, liveCameraId, captureBusy]);
+  }, [token, selectedPersonId, liveCameraId, captureBusy, load]);
 
   useEffect(() => {
     if (!autoCapture) return;
@@ -181,18 +210,18 @@ const PersonsPage: React.FC = () => {
       setAutoCapture(false);
       return;
     }
-    const id = setInterval(() => {
+    const timer = window.setInterval(() => {
       captureFromLive();
     }, autoIntervalMs);
-    return () => clearInterval(id);
-  }, [autoCapture, autoIntervalMs, autoTarget, autoAdded, captureFromLive]);
+    return () => window.clearInterval(timer);
+  }, [autoCapture, autoAdded, autoIntervalMs, autoTarget, captureFromLive]);
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Персоны</h2>
-          <div className="muted">Создание и управление эмбеддингами</div>
+          <div className="muted">Создание, поиск, редактирование и сбор эмбеддингов из живого потока.</div>
         </div>
         <button className="btn secondary" onClick={load} disabled={loading}>
           Обновить
@@ -204,25 +233,37 @@ const PersonsPage: React.FC = () => {
 
       <div className="grid">
         <div className="card stack">
-          <h3 style={{ margin: 0 }}>Список персон</h3>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Список персон</h3>
+            <span className="pill">{filteredPersons.length}</span>
+          </div>
+          <label className="field">
+            <span className="label">Поиск по ФИО или ID</span>
+            <input
+              className="input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Неточный поиск"
+            />
+          </label>
           {loading && <div className="muted">Загрузка...</div>}
-          {!loading && persons.length === 0 && <div className="muted">Персон пока нет.</div>}
+          {!loading && filteredPersons.length === 0 && <div className="muted">Совпадений не найдено.</div>}
           <div className="stack" style={{ gap: 8 }}>
-            {persons.map((p) => {
-              const label = [p.last_name, p.first_name, p.middle_name].filter(Boolean).join(" ") || `ID ${p.person_id}`;
-              const active = p.person_id === selectedPersonId;
+            {filteredPersons.map((person) => {
+              const active = person.person_id === selectedPersonId;
               return (
                 <button
-                  key={p.person_id}
+                  key={person.person_id}
                   className={`hour-card${active ? " active" : ""}`}
-                  onClick={() => setSelectedPersonId(p.person_id)}
+                  onClick={() => setSelectedPersonId(person.person_id)}
+                  style={{ color: "var(--text)" }}
                 >
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <div>{label}</div>
-                    <span className="pill">{p.embeddings_count} emb</span>
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ color: "var(--text)", fontWeight: 600 }}>{personLabel(person)}</div>
+                    <span className="pill">{person.embeddings_count} emb</span>
                   </div>
-                  <div className="muted" style={{ marginTop: 4 }}>
-                    ID {p.person_id} • {p.created_at ? new Date(p.created_at).toLocaleString() : "—"}
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    ID {person.person_id} · {person.created_at ? new Date(person.created_at).toLocaleString() : "—"}
                   </div>
                 </button>
               );
@@ -232,40 +273,47 @@ const PersonsPage: React.FC = () => {
 
         <div className="card stack">
           <h3 style={{ margin: 0 }}>Создать персону</h3>
-          <div className="field">
-            <label className="label">Фамилия</label>
+          <label className="field">
+            <span className="label">Фамилия</span>
             <input className="input" value={createLast} onChange={(e) => setCreateLast(e.target.value)} />
-          </div>
-          <div className="field">
-            <label className="label">Имя</label>
+          </label>
+          <label className="field">
+            <span className="label">Имя</span>
             <input className="input" value={createFirst} onChange={(e) => setCreateFirst(e.target.value)} />
-          </div>
-          <div className="field">
-            <label className="label">Отчество</label>
+          </label>
+          <label className="field">
+            <span className="label">Отчество</span>
             <input className="input" value={createMiddle} onChange={(e) => setCreateMiddle(e.target.value)} />
-          </div>
+          </label>
           <button className="btn" onClick={handleCreate}>
             Создать
           </button>
         </div>
 
         <div className="card stack">
-          <h3 style={{ margin: 0 }}>Редактировать</h3>
-          {!selectedPerson && <div className="muted">Выберите персону в списке.</div>}
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Редактирование</h3>
+            {selectedPerson && (
+              <button className="btn secondary" onClick={handleDelete}>
+                Удалить
+              </button>
+            )}
+          </div>
+          {!selectedPerson && <div className="muted">Выберите персону в списке слева.</div>}
           {selectedPerson && (
             <>
-              <div className="field">
-                <label className="label">Фамилия</label>
+              <label className="field">
+                <span className="label">Фамилия</span>
                 <input className="input" value={editLast} onChange={(e) => setEditLast(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="label">Имя</label>
+              </label>
+              <label className="field">
+                <span className="label">Имя</span>
                 <input className="input" value={editFirst} onChange={(e) => setEditFirst(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="label">Отчество</label>
+              </label>
+              <label className="field">
+                <span className="label">Отчество</span>
                 <input className="input" value={editMiddle} onChange={(e) => setEditMiddle(e.target.value)} />
-              </div>
+              </label>
               <button className="btn secondary" onClick={handleUpdate}>
                 Сохранить
               </button>
@@ -274,41 +322,45 @@ const PersonsPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="card stack">
+      <div className="card stack persons-live-card">
         <h3 style={{ margin: 0 }}>Live-сбор эмбеддингов</h3>
         {!selectedPerson && <div className="muted">Сначала выберите персону.</div>}
         {selectedPerson && (
           <>
-            <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <select
-                className="input"
-                value={liveCameraId ?? ""}
-                onChange={(e) => setLiveCameraId(e.target.value ? Number(e.target.value) : null)}
-              >
-                {cameras.map((c) => (
-                  <option key={c.camera_id} value={c.camera_id}>
-                    {c.name} (#{c.camera_id})
-                  </option>
-                ))}
-              </select>
-              <div className="field" style={{ minWidth: 140 }}>
-                <label className="label">Интервал (мс)</label>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+              <label className="field">
+                <span className="label">Камера</span>
+                <select
+                  className="input"
+                  value={liveCameraId ?? ""}
+                  onChange={(e) => setLiveCameraId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  {cameras.map((camera) => (
+                    <option key={camera.camera_id} value={camera.camera_id}>
+                      {camera.name} (#{camera.camera_id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="label">Интервал (мс)</span>
                 <input
                   className="input"
                   value={autoIntervalMs}
-                  onChange={(e) => setAutoIntervalMs(Number(e.target.value) || 1500)}
+                  onChange={(e) => setAutoIntervalMs(Number(e.target.value) || 1200)}
                 />
-              </div>
-              <div className="field" style={{ minWidth: 120 }}>
-                <label className="label">Цель (шт.)</label>
+              </label>
+              <label className="field">
+                <span className="label">Цель (шт.)</span>
                 <input
                   className="input"
                   value={autoTarget}
-                  onChange={(e) => setAutoTarget(Number(e.target.value) || 5)}
+                  onChange={(e) => setAutoTarget(Number(e.target.value) || 6)}
                 />
-              </div>
+              </label>
             </div>
-            <div className="live-preview">
+
+            <div className="live-preview persons-live-preview">
               {liveCameraId && token ? (
                 <img
                   ref={liveImgRef}
@@ -317,11 +369,12 @@ const PersonsPage: React.FC = () => {
                   src={`${API_URL}/cameras/${liveCameraId}/stream?annotate=false&token=${encodeURIComponent(token)}`}
                 />
               ) : (
-                <div className="muted" style={{ padding: 16 }}>
-                  Выберите камеру.
+                <div className="muted" style={{ padding: 20 }}>
+                  Выберите камеру для live-сбора.
                 </div>
               )}
             </div>
+
             <div className="row" style={{ gap: 10 }}>
               <button className="btn secondary" onClick={captureFromLive} disabled={captureBusy || !liveCameraId}>
                 Снимок из Live
@@ -330,18 +383,17 @@ const PersonsPage: React.FC = () => {
                 className="btn"
                 onClick={() => {
                   setAutoAdded(0);
-                  setAutoCapture((v) => !v);
+                  setAutoCapture((value) => !value);
                 }}
                 disabled={!liveCameraId}
               >
                 {autoCapture ? "Остановить автосбор" : "Запустить автосбор"}
               </button>
-              <div className="muted" style={{ alignSelf: "center" }}>
-                Добавлено: {autoAdded} / {autoTarget}
-              </div>
+              <div className="muted">Добавлено: {autoAdded} / {autoTarget}</div>
             </div>
+
             <div className="muted">
-              Советы: поверни голову влево/вправо и немного меняй расстояние — автосбор добавит разные эмбеддинги.
+              Для более качественной базы слегка меняйте угол головы, наклон и дистанцию до камеры.
             </div>
           </>
         )}

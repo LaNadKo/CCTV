@@ -80,6 +80,17 @@ class CameraWorker:
 
         ensure_media_dirs()
 
+    def _similarity_to_confidence(self, sim: float | None, recognized: bool) -> float | None:
+        if sim is None:
+            return None
+        sim = max(0.0, min(float(sim), 1.0))
+        threshold = max(0.01, min(float(settings.face_match_threshold), 0.99))
+        if recognized:
+            value = 60.0 + ((sim - threshold) / max(1.0 - threshold, 1e-6)) * 40.0
+        else:
+            value = min(59.0, (sim / threshold) * 59.0)
+        return round(max(0.0, min(100.0, value)), 2)
+
     async def set_gallery(self, gallery: list[dict]):
         self._gallery = gallery
 
@@ -120,7 +131,7 @@ class CameraWorker:
                 if motion:
                     self._last_activity_ts = time.time()
 
-                if self.assignment.get("detection_enabled", True) and (now - last_face_scan) >= max(settings.face_scan_interval, 1):
+                if self.assignment.get("detection_enabled", True) and (now - last_face_scan) >= max(settings.face_scan_interval, 0.5):
                     last_face_scan = now
                     self._scan_faces(frame)
 
@@ -216,7 +227,7 @@ class CameraWorker:
 
             if faces and any(
                 ((face["box"][2] - face["box"][0]) * (face["box"][3] - face["box"][1])) / frame_area
-                < settings.antispoof_small_face_ratio
+                < max(settings.antispoof_small_face_ratio * 2.0, 0.2)
                 for face in faces
             ):
                 try:
@@ -260,7 +271,7 @@ class CameraWorker:
                     "event_type": event_type,
                     "camera_id": self.camera_id,
                     "person_id": person_id,
-                    "confidence": round(sim, 4) if sim else None,
+                    "confidence": self._similarity_to_confidence(sim, recognized),
                     "snapshot_b64": snapshot_b64,
                     "event_ts": datetime.now().isoformat(),
                 }
@@ -352,7 +363,10 @@ class CameraWorker:
         frame_area = max(frame.shape[0] * frame.shape[1], 1)
         face_area_ratio = ((x2 - x1) * (y2 - y1)) / frame_area
         large_face = face_area_ratio >= settings.antispoof_small_face_ratio
-        body_supported = True if bodies is None else (large_face or self._face_supported_by_body(box, bodies))
+        if bodies is None:
+            body_supported = face_area_ratio >= 0.2
+        else:
+            body_supported = self._face_supported_by_body(box, bodies) or face_area_ratio >= 0.2
         if not body_supported:
             return False
 
@@ -406,11 +420,7 @@ class CameraWorker:
 
         if not large_face:
             return movement_ok and stable_hits >= 2
-        if movement_ok:
-            return True
-        if large_face and stable_hits >= 3:
-            return True
-        return False
+        return movement_ok
 
     def _snapshot_bytes_from_box(self, frame: np.ndarray, box: tuple[int, int, int, int]) -> bytes:
         x1, y1, x2, y2 = box

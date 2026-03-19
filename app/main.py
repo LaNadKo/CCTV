@@ -131,15 +131,16 @@ async def _seed_default_admin():
     from app.security import hash_password
     from sqlalchemy import select, func
     async with db.SessionLocal() as session:
-        count = (await session.execute(select(func.count()).select_from(models.User))).scalar() or 0
-        if count > 0:
-            return
         # Ensure roles exist
         for role_id, role_name in [(1, "admin"), (2, "user"), (3, "viewer")]:
             existing = await session.execute(select(models.Role).where(models.Role.role_id == role_id))
             if not existing.scalar_one_or_none():
                 session.add(models.Role(role_id=role_id, name=role_name))
         await session.flush()
+        count = (await session.execute(select(func.count()).select_from(models.User))).scalar() or 0
+        if count > 0:
+            await session.commit()
+            return
         admin_user = models.User(
             login="admin",
             password_hash=hash_password("admin"),

@@ -282,14 +282,23 @@ const ProcessorsPage: React.FC = () => {
 
                 {/* Info row */}
                 <div className="row" style={{ gap: 16, marginTop: 6, fontSize: 12, color: "var(--muted)", flexWrap: "wrap" }}>
+                  {p.capabilities && (p.capabilities as any).hostname && <span>Host: {(p.capabilities as any).hostname}</span>}
                   {p.ip_address && <span>IP: {p.ip_address}</span>}
                   {p.os_info && <span>{p.os_info}</span>}
+                  {p.capabilities && (p.capabilities as any).platform_version && <span>Build: {(p.capabilities as any).platform_version}</span>}
+                  {p.capabilities && (p.capabilities as any).cpu_count && <span>CPU: {(p.capabilities as any).cpu_count} threads</span>}
                   <span>Камер: {p.camera_count}</span>
                   {p.capabilities && (p.capabilities as any).gpu && (
                     <span>GPU: {(p.capabilities as any).gpu}</span>
                   )}
+                  {p.capabilities && (p.capabilities as any).inference_device && (
+                    <span>Inference: {(p.capabilities as any).inference_device}</span>
+                  )}
                   {p.capabilities && (p.capabilities as any).ram_gb && (
                     <span>RAM: {(p.capabilities as any).ram_gb} GB</span>
+                  )}
+                  {p.capabilities && (p.capabilities as any).python && (
+                    <span>Python: {(p.capabilities as any).python}</span>
                   )}
                 </div>
 
