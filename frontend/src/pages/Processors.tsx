@@ -1,13 +1,13 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  listProcessors,
-  deleteProcessor,
   assignCamerasToProcessor,
-  unassignCameraFromProcessor,
+  deleteProcessor,
   generateProcessorCode,
   getCameras,
+  listProcessors,
   type ProcessorOut,
   type SystemMetrics,
+  unassignCameraFromProcessor,
 } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
@@ -17,71 +17,99 @@ type Camera = {
   location?: string;
 };
 
-function MetricBar({ value, max, label, unit, color }: { value: number; max: number; label: string; unit?: string; color?: string }) {
+function MetricBar({
+  value,
+  max,
+  label,
+  unit,
+  color,
+}: {
+  value: number;
+  max: number;
+  label: string;
+  unit?: string;
+  color?: string;
+}) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   return (
-    <div style={{ flex: 1, minWidth: 100 }}>
+    <div style={{ flex: 1, minWidth: 110 }}>
       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 700 }}>
-        {value.toFixed(1)}{unit && <span style={{ fontSize: 11, fontWeight: 400 }}> {unit}</span>}
+        {value.toFixed(1)}
+        {unit && <span style={{ fontSize: 11, fontWeight: 400 }}> {unit}</span>}
       </div>
-      <div style={{ background: "var(--bg)", borderRadius: 4, height: 6, marginTop: 4, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: color || "var(--accent)", borderRadius: 4, transition: "width 0.5s" }} />
+      <div style={{ background: "var(--surface-muted)", borderRadius: 999, height: 7, marginTop: 6, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: color || "var(--accent)", borderRadius: 999 }} />
       </div>
     </div>
   );
 }
 
-function MetricsPanel({ m }: { m: SystemMetrics }) {
-  const uptimeStr = m.uptime_seconds
-    ? `${Math.floor(m.uptime_seconds / 3600)}ч ${Math.floor((m.uptime_seconds % 3600) / 60)}м`
+function MetricsPanel({ metrics }: { metrics: SystemMetrics }) {
+  const uptimeStr = metrics.uptime_seconds
+    ? `${Math.floor(metrics.uptime_seconds / 3600)}ч ${Math.floor((metrics.uptime_seconds % 3600) / 60)}м`
     : "—";
+
   return (
-    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10 }}>
-      <MetricBar value={m.cpu_percent ?? 0} max={100} label="CPU" unit="%" color={
-        (m.cpu_percent ?? 0) > 80 ? "#ff6b6b" : (m.cpu_percent ?? 0) > 50 ? "#ffc107" : "#65ffa0"
-      } />
-      <MetricBar value={m.ram_used_gb ?? 0} max={m.ram_total_gb ?? 1} label="RAM"
-        unit={`/ ${(m.ram_total_gb ?? 0).toFixed(1)} GB`}
-        color={(m.ram_percent ?? 0) > 80 ? "#ff6b6b" : "#65ffa0"} />
-      {m.gpu_name && (
-        <MetricBar value={m.gpu_util_percent ?? 0} max={100} label={m.gpu_name.substring(0, 18)} unit="%"
-          color={(m.gpu_util_percent ?? 0) > 80 ? "#ff6b6b" : "#65ffa0"} />
+    <div className="summary-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", marginTop: 14 }}>
+      <div className="summary-card" style={{ padding: 14 }}>
+        <MetricBar
+          value={metrics.cpu_percent ?? 0}
+          max={100}
+          label="CPU"
+          unit="%"
+          color={(metrics.cpu_percent ?? 0) > 80 ? "#ff6b6b" : (metrics.cpu_percent ?? 0) > 50 ? "#fbbf24" : "#22c55e"}
+        />
+      </div>
+      <div className="summary-card" style={{ padding: 14 }}>
+        <MetricBar
+          value={metrics.ram_used_gb ?? 0}
+          max={metrics.ram_total_gb ?? 1}
+          label="RAM"
+          unit={`/ ${(metrics.ram_total_gb ?? 0).toFixed(1)} GB`}
+          color={(metrics.ram_percent ?? 0) > 80 ? "#ff6b6b" : "#22c55e"}
+        />
+      </div>
+      {metrics.gpu_name && (
+        <div className="summary-card" style={{ padding: 14 }}>
+          <MetricBar
+            value={metrics.gpu_util_percent ?? 0}
+            max={100}
+            label={metrics.gpu_name.substring(0, 18)}
+            unit="%"
+            color={(metrics.gpu_util_percent ?? 0) > 80 ? "#ff6b6b" : "#22c55e"}
+          />
+        </div>
       )}
-      <div style={{ flex: 1, minWidth: 80 }}>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>Сеть</div>
-        <div style={{ fontSize: 13 }}>
-          <span style={{ color: "#65ffa0" }}>↑{(m.net_sent_mbps ?? 0).toFixed(1)}</span>{" "}
-          <span style={{ color: "#6bc5ff" }}>↓{(m.net_recv_mbps ?? 0).toFixed(1)}</span>{" "}
-          <span style={{ fontSize: 10, color: "var(--muted)" }}>Мбит/с</span>
+      <div className="summary-card" style={{ padding: 14 }}>
+        <div className="summary-card__label">Сеть</div>
+        <div className="summary-card__hint" style={{ marginTop: 8 }}>
+          <span style={{ color: "#22c55e" }}>↑{(metrics.net_sent_mbps ?? 0).toFixed(1)}</span>{" "}
+          <span style={{ color: "#38bdf8" }}>↓{(metrics.net_recv_mbps ?? 0).toFixed(1)}</span> Мбит/с
         </div>
       </div>
-      {m.gpu_temp_c != null && (
-        <div style={{ flex: "0 0 auto", minWidth: 60 }}>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>GPU Temp</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: m.gpu_temp_c > 75 ? "#ff6b6b" : "#65ffa0" }}>
-            {m.gpu_temp_c}°C
-          </div>
+      <div className="summary-card" style={{ padding: 14 }}>
+        <div className="summary-card__label">GPU Temp</div>
+        <div className="summary-card__value" style={{ fontSize: 22, marginTop: 8 }}>
+          {metrics.gpu_temp_c != null ? `${metrics.gpu_temp_c}°C` : "—"}
         </div>
-      )}
-      <div style={{ flex: "0 0 auto", minWidth: 60 }}>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>Камеры</div>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{m.active_cameras ?? 0}</div>
       </div>
-      <div style={{ flex: "0 0 auto", minWidth: 60 }}>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>Аптайм</div>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>{uptimeStr}</div>
+      <div className="summary-card" style={{ padding: 14 }}>
+        <div className="summary-card__label">Камер / аптайм</div>
+        <div className="summary-card__hint" style={{ marginTop: 8 }}>
+          {metrics.active_cameras ?? 0} камер · {uptimeStr}
+        </div>
       </div>
     </div>
   );
 }
 
 function timeSince(dateStr: string): string {
-  const secs = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (secs < 60) return `${secs}с назад`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}м назад`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}ч назад`;
-  return `${Math.floor(secs / 86400)}д назад`;
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}с назад`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}м назад`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}ч назад`;
+  return `${Math.floor(seconds / 86400)}д назад`;
 }
 
 const ProcessorsPage: React.FC = () => {
@@ -97,32 +125,34 @@ const ProcessorsPage: React.FC = () => {
   const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
+    setError(null);
     try {
-      const [p, c] = await Promise.all([listProcessors(token), getCameras(token)]);
-      setProcessors(p);
-      setCameras(c);
-    } catch (e: any) {
-      setError(e?.message || "Не удалось загрузить");
+      const [processorItems, cameraItems] = await Promise.all([listProcessors(token), getCameras(token)]);
+      setProcessors(processorItems);
+      setCameras(cameraItems);
+    } catch (event: any) {
+      setError(event?.message || "Не удалось загрузить данные");
     } finally {
       setLoading(false);
     }
   }, [token]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  // Auto-refresh every 10s
   useEffect(() => {
     const id = setInterval(load, 10000);
     return () => clearInterval(id);
   }, [load]);
 
   const handleDelete = async (id: number) => {
-    if (!token || !confirm("Удалить процессор?")) return;
+    if (!token || !window.confirm("Удалить процессор?")) return;
     try {
       await deleteProcessor(token, id);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка удаления");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка удаления");
     }
   };
 
@@ -130,192 +160,206 @@ const ProcessorsPage: React.FC = () => {
     if (!token) return;
     setCodeLoading(true);
     try {
-      const data = await generateProcessorCode(token);
-      setConnCode(data);
-    } catch (e: any) {
-      alert(e?.message || "Ошибка генерации кода");
+      setConnCode(await generateProcessorCode(token));
+    } catch (event: any) {
+      alert(event?.message || "Ошибка генерации кода");
     } finally {
       setCodeLoading(false);
     }
   };
 
-  const handleAssignCamera = async (procId: number, camId: number) => {
+  const handleAssignCamera = async (processorId: number, cameraId: number) => {
     if (!token) return;
     try {
-      await assignCamerasToProcessor(token, procId, [camId]);
+      await assignCamerasToProcessor(token, processorId, [cameraId]);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка назначения");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка назначения");
     }
   };
 
-  const handleUnassign = async (procId: number, camId: number) => {
+  const handleUnassign = async (processorId: number, cameraId: number) => {
     if (!token) return;
     try {
-      await unassignCameraFromProcessor(token, procId, camId);
+      await unassignCameraFromProcessor(token, processorId, cameraId);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
     }
   };
 
-  const statusColor = (s: string, hb?: string | null) => {
-    if (s === "online" && hb) {
-      const ago = (Date.now() - new Date(hb).getTime()) / 1000;
-      if (ago > 90) return "#ffc107"; // stale
+  const statusColor = (status: string, heartbeat?: string | null) => {
+    if (status === "online" && heartbeat) {
+      const ago = (Date.now() - new Date(heartbeat).getTime()) / 1000;
+      if (ago > 90) return "#fbbf24";
     }
-    if (s === "online") return "#65ffa0";
-    if (s === "offline") return "#ff6b6b";
+    if (status === "online") return "#22c55e";
+    if (status === "offline") return "#f87171";
     return "var(--muted)";
   };
 
-  const selectedProcessor = processors.find((p) => p.processor_id === selectedProc);
-  const assignedCamIds = selectedProcessor?.assigned_cameras?.map((ac) => ac.camera_id) ?? [];
-  const availableCameras = cameras.filter((c) => !assignedCamIds.includes(c.camera_id));
+  const selectedProcessor = processors.find((processor) => processor.processor_id === selectedProc);
+  const assignedCamIds = selectedProcessor?.assigned_cameras?.map((camera) => camera.camera_id) ?? [];
+  const availableCameras = cameras.filter((camera) => !assignedCamIds.includes(camera.camera_id));
+
+  const stats = useMemo(
+    () => ({
+      total: processors.length,
+      online: processors.filter((processor) => processor.status === "online").length,
+      cameras: processors.reduce((sum, processor) => sum + processor.camera_count, 0),
+    }),
+    [processors]
+  );
 
   return (
-    <div className="stack" style={{ marginTop: 18 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
-        <div>
+    <div className="stack">
+      <section className="page-hero">
+        <div className="page-hero__content">
+          <div className="page-hero__eyebrow">Processing</div>
           <h2 className="title">Процессоры</h2>
-          <div className="muted">Внешние сервисы обработки видео. Подключаются по коду.</div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <button className="btn secondary" onClick={load}>Обновить</button>
+        <div className="page-actions">
+          <button className="btn secondary" onClick={load}>
+            Обновить
+          </button>
           <button className="btn" onClick={handleGenerateCode} disabled={codeLoading}>
             {codeLoading ? "..." : "+ Код подключения"}
           </button>
         </div>
-      </div>
+      </section>
 
-      {/* Connection code banner */}
-      {connCode && (
-        <div className="card" style={{ border: "1px solid var(--accent)", background: "var(--card-active)" }}>
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 4 }}>
-                Код подключения (действует 24 часа)
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: 4, fontFamily: "monospace" }}>
-                {connCode.code}
-              </div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                Введите этот код в приложении процессора
-              </div>
-            </div>
-            <div className="stack" style={{ gap: 4 }}>
-              <button className="btn secondary" style={{ fontSize: 12 }} onClick={() => {
-                navigator.clipboard.writeText(connCode.code);
-              }}>
-                Копировать
-              </button>
-              <button className="btn secondary" style={{ fontSize: 12 }} onClick={() => setConnCode(null)}>
-                Скрыть
-              </button>
-            </div>
-          </div>
+      <section className="summary-grid">
+        <div className="summary-card">
+          <div className="summary-card__label">Всего процессоров</div>
+          <div className="summary-card__value">{stats.total}</div>
+          <div className="summary-card__hint">Все зарегистрированные узлы обработки video pipeline.</div>
         </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Онлайн</div>
+          <div className="summary-card__value">{stats.online}</div>
+          <div className="summary-card__hint">Живые узлы с heartbeat в пределах допустимого окна.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Назначено камер</div>
+          <div className="summary-card__value">{stats.cameras}</div>
+          <div className="summary-card__hint">Суммарное число камер, уже распределённых по процессорам.</div>
+        </div>
+      </section>
+
+      {connCode && (
+        <section className="panel-card" style={{ borderColor: "rgba(94, 240, 255, 0.32)" }}>
+          <div className="panel-card__header">
+            <div>
+              <h3 className="panel-card__title">Код подключения</h3>
+              <div className="panel-card__lead">Действует 24 часа. Введите его в CCTV Processor на ПК, который нужно привязать.</div>
+            </div>
+            <span className="pill">до {new Date(connCode.expires_at).toLocaleString()}</span>
+          </div>
+          <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: 6, fontFamily: "monospace", marginBottom: 12 }}>
+            {connCode.code}
+          </div>
+          <div className="page-actions">
+            <button className="btn secondary" onClick={() => navigator.clipboard.writeText(connCode.code)}>
+              Копировать
+            </button>
+            <button className="btn secondary" onClick={() => setConnCode(null)}>
+              Скрыть
+            </button>
+          </div>
+        </section>
       )}
 
       {error && <div className="danger">{error}</div>}
 
       {loading && processors.length === 0 ? (
-        <div className="muted">Загрузка...</div>
+        <div className="panel-card">Загрузка...</div>
       ) : processors.length === 0 ? (
-        <div className="card">
-          <div className="muted" style={{ textAlign: "center", padding: 20 }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🖥</div>
-            Нет подключённых процессоров.<br />
-            Нажмите <b>«+ Код подключения»</b>, чтобы сгенерировать код,<br />
-            затем введите его в приложении CCTV Processor на ПК.
+        <div className="panel-card">
+          <div className="panel-card__header">
+            <div>
+              <h3 className="panel-card__title">Процессоров пока нет</h3>
+              <div className="panel-card__lead">
+                Сгенерируйте код подключения и введите его в установленный CCTV Processor, чтобы добавить первый узел.
+              </div>
+            </div>
           </div>
         </div>
       ) : (
-        <div className="stack" style={{ gap: 12 }}>
-          {processors.map((p) => {
-            const isSelected = selectedProc === p.processor_id;
-            const isOnline = p.status === "online" && p.last_heartbeat &&
-              (Date.now() - new Date(p.last_heartbeat).getTime()) / 1000 < 90;
+        <div className="list-shell">
+          {processors.map((processor) => {
+            const isSelected = selectedProc === processor.processor_id;
+            const isOnline =
+              processor.status === "online" &&
+              processor.last_heartbeat &&
+              (Date.now() - new Date(processor.last_heartbeat).getTime()) / 1000 < 90;
+
             return (
-              <div
-                key={p.processor_id}
-                className="card"
-                style={{
-                  border: isSelected ? "1px solid var(--accent)" : undefined,
-                  cursor: "pointer",
-                }}
-                onClick={() => setSelectedProc(isSelected ? null : p.processor_id)}
-              >
-                {/* Header row */}
-                <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                  <div className="row" style={{ gap: 10, alignItems: "center" }}>
-                    <span style={{
-                      width: 10, height: 10, borderRadius: "50%",
-                      background: statusColor(p.status, p.last_heartbeat),
-                      display: "inline-block",
-                      boxShadow: isOnline ? "0 0 6px #65ffa0" : undefined,
-                    }} />
-                    <span style={{ fontWeight: 700, fontSize: 16 }}>{p.name}</span>
-                    <span className="pill" style={{
-                      color: statusColor(p.status, p.last_heartbeat),
-                      fontSize: 11,
-                    }}>
-                      {isOnline ? "online" : p.status}
-                    </span>
-                    {p.version && <span style={{ fontSize: 11, color: "var(--muted)" }}>v{p.version}</span>}
-                  </div>
-                  <div className="row" style={{ gap: 6 }}>
-                    {p.last_heartbeat && (
-                      <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                        {timeSince(p.last_heartbeat)}
+              <section key={processor.processor_id} className="panel-card">
+                <div className="panel-card__header">
+                  <div className="stack" style={{ gap: 8 }}>
+                    <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                      <span
+                        style={{
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          background: statusColor(processor.status, processor.last_heartbeat),
+                          display: "inline-block",
+                          boxShadow: isOnline ? "0 0 8px #22c55e" : undefined,
+                        }}
+                      />
+                      <h3 className="panel-card__title" style={{ margin: 0 }}>
+                        {processor.name}
+                      </h3>
+                      <span className="pill" style={{ color: statusColor(processor.status, processor.last_heartbeat) }}>
+                        {isOnline ? "online" : processor.status}
                       </span>
-                    )}
-                    <button
-                      className="btn secondary"
-                      style={{ fontSize: 11, padding: "3px 8px" }}
-                      onClick={(e) => { e.stopPropagation(); handleDelete(p.processor_id); }}
-                    >
+                      {processor.version && <span className="muted">v{processor.version}</span>}
+                    </div>
+                    <div className="chip-row">
+                      {processor.ip_address && <span className="pill">IP: {processor.ip_address}</span>}
+                      {processor.os_info && <span className="pill">{processor.os_info}</span>}
+                      {processor.capabilities && (processor.capabilities as any).platform_version && (
+                        <span className="pill">Build: {(processor.capabilities as any).platform_version}</span>
+                      )}
+                      {processor.capabilities && (processor.capabilities as any).gpu && (
+                        <span className="pill">GPU: {(processor.capabilities as any).gpu}</span>
+                      )}
+                      {processor.capabilities && (processor.capabilities as any).inference_device && (
+                        <span className="pill">Inference: {(processor.capabilities as any).inference_device}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="page-actions">
+                    {processor.last_heartbeat && <span className="muted">{timeSince(processor.last_heartbeat)}</span>}
+                    <button className="btn secondary" onClick={() => setSelectedProc(isSelected ? null : processor.processor_id)}>
+                      {isSelected ? "Скрыть назначения" : "Назначения"}
+                    </button>
+                    <button className="btn secondary" onClick={() => handleDelete(processor.processor_id)}>
                       Удалить
                     </button>
                   </div>
                 </div>
 
-                {/* Info row */}
-                <div className="row" style={{ gap: 16, marginTop: 6, fontSize: 12, color: "var(--muted)", flexWrap: "wrap" }}>
-                  {p.capabilities && (p.capabilities as any).hostname && <span>Host: {(p.capabilities as any).hostname}</span>}
-                  {p.ip_address && <span>IP: {p.ip_address}</span>}
-                  {p.os_info && <span>{p.os_info}</span>}
-                  {p.capabilities && (p.capabilities as any).platform_version && <span>Build: {(p.capabilities as any).platform_version}</span>}
-                  {p.capabilities && (p.capabilities as any).cpu_count && <span>CPU: {(p.capabilities as any).cpu_count} threads</span>}
-                  <span>Камер: {p.camera_count}</span>
-                  {p.capabilities && (p.capabilities as any).gpu && (
-                    <span>GPU: {(p.capabilities as any).gpu}</span>
-                  )}
-                  {p.capabilities && (p.capabilities as any).inference_device && (
-                    <span>Inference: {(p.capabilities as any).inference_device}</span>
-                  )}
-                  {p.capabilities && (p.capabilities as any).ram_gb && (
-                    <span>RAM: {(p.capabilities as any).ram_gb} GB</span>
-                  )}
-                  {p.capabilities && (p.capabilities as any).python && (
-                    <span>Python: {(p.capabilities as any).python}</span>
-                  )}
-                </div>
+                {processor.metrics && <MetricsPanel metrics={processor.metrics} />}
 
-                {/* Metrics */}
-                {p.metrics && <MetricsPanel m={p.metrics} />}
-
-                {/* Assigned cameras */}
-                {p.assigned_cameras && p.assigned_cameras.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>Назначенные камеры:</div>
-                    <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                      {p.assigned_cameras.map((ac) => (
-                        <span key={ac.camera_id} className="pill" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          {ac.name}
+                {processor.assigned_cameras && processor.assigned_cameras.length > 0 && (
+                  <div className="panel-card" style={{ marginTop: 14, padding: 16 }}>
+                    <div className="panel-card__header" style={{ marginBottom: 10 }}>
+                      <div>
+                        <h3 className="panel-card__title">Назначенные камеры</h3>
+                        <div className="panel-card__lead">Текущий состав обработчика и быстрое снятие назначения.</div>
+                      </div>
+                    </div>
+                    <div className="chip-row">
+                      {processor.assigned_cameras.map((camera) => (
+                        <span key={camera.camera_id} className="pill" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {camera.name}
                           <button
-                            style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 0, fontSize: 12 }}
-                            onClick={(e) => { e.stopPropagation(); handleUnassign(p.processor_id, ac.camera_id); }}
+                            style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0 }}
+                            onClick={() => handleUnassign(processor.processor_id, camera.camera_id)}
+                            type="button"
                           >
                             ×
                           </button>
@@ -325,29 +369,32 @@ const ProcessorsPage: React.FC = () => {
                   </div>
                 )}
 
-                {/* Expand: camera assignment */}
                 {isSelected && (
-                  <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Назначить камеры</div>
+                  <div className="panel-card" style={{ marginTop: 14, padding: 16 }}>
+                    <div className="panel-card__header" style={{ marginBottom: 10 }}>
+                      <div>
+                        <h3 className="panel-card__title">Свободные камеры</h3>
+                        <div className="panel-card__lead">Выберите камеры, которые ещё не назначены на текущий Processor.</div>
+                      </div>
+                    </div>
                     {availableCameras.length > 0 ? (
-                      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                        {availableCameras.map((c) => (
+                      <div className="chip-row">
+                        {availableCameras.map((camera) => (
                           <button
-                            key={c.camera_id}
+                            key={camera.camera_id}
                             className="btn secondary"
-                            style={{ fontSize: 12, padding: "4px 10px" }}
-                            onClick={(e) => { e.stopPropagation(); handleAssignCamera(p.processor_id, c.camera_id); }}
+                            onClick={() => handleAssignCamera(processor.processor_id, camera.camera_id)}
                           >
-                            + {c.name}
+                            + {camera.name}
                           </button>
                         ))}
                       </div>
                     ) : (
-                      <div className="muted" style={{ fontSize: 12 }}>Все камеры назначены.</div>
+                      <div className="muted">Все камеры уже назначены.</div>
                     )}
                   </div>
                 )}
-              </div>
+              </section>
             );
           })}
         </div>

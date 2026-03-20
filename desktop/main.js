@@ -9,21 +9,20 @@ let mainWindow = null;
 let localServer = null;
 let isQuitting = false;
 let tray = null;
+const LOCAL_SERVER_PORT = 32145;
 
 app.setAppUserModelId("com.cctv.console");
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
-  app.quit();
+  app.exit(0);
 } else {
   app.on("second-instance", async () => {
     if (!mainWindow) {
       await createWindow();
       return;
     }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
 }
 
@@ -42,6 +41,14 @@ function saveWindowState() {
   fs.writeFileSync(stateFile, JSON.stringify(bounds));
 }
 
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.focus();
+}
+
 // Mime types for local server
 const MIME = {
   ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
@@ -52,6 +59,10 @@ const MIME = {
 
 function startLocalServer(frontendDir) {
   return new Promise((resolve) => {
+    if (localServer && localServer.listening) {
+      resolve(LOCAL_SERVER_PORT);
+      return;
+    }
     localServer = http.createServer((req, res) => {
       const parsed = url.parse(req.url);
       let filePath = path.join(frontendDir, parsed.pathname === "/" ? "index.html" : parsed.pathname);
@@ -70,18 +81,16 @@ function startLocalServer(frontendDir) {
         res.end("Not found");
       }
     });
-    localServer.listen(0, "127.0.0.1", () => {
-      const port = localServer.address().port;
-      resolve(port);
+    localServer.once("error", (error) => {
+      console.error("Failed to start local frontend server", error);
     });
+    localServer.listen(LOCAL_SERVER_PORT, "127.0.0.1", () => resolve(LOCAL_SERVER_PORT));
   });
 }
 
 async function createWindow() {
   if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
     return mainWindow;
   }
 
@@ -176,9 +185,7 @@ function ensureTray() {
             if (mainWindow.isVisible()) {
               mainWindow.hide();
             } else {
-              if (mainWindow.isMinimized()) mainWindow.restore();
-              mainWindow.show();
-              mainWindow.focus();
+              showMainWindow();
             }
           },
         },
@@ -207,9 +214,7 @@ app.whenReady().then(async () => {
       return;
     }
     if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
+      showMainWindow();
     }
   });
 });

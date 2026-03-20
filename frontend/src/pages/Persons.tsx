@@ -44,7 +44,6 @@ const PersonsPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
   const [createFirst, setCreateFirst] = useState("");
   const [createLast, setCreateLast] = useState("");
   const [createMiddle, setCreateMiddle] = useState("");
@@ -83,8 +82,8 @@ const PersonsPage: React.FC = () => {
       if (!liveCameraId && cameraItems.length > 0) {
         setLiveCameraId(cameraItems[0].camera_id);
       }
-    } catch (e: any) {
-      setError(e?.message || "Не удалось загрузить список персон.");
+    } catch (event: any) {
+      setError(event?.message || "Не удалось загрузить список персон.");
     } finally {
       setLoading(false);
     }
@@ -117,8 +116,8 @@ const PersonsPage: React.FC = () => {
       setSelectedPersonId(created.person_id);
       setSuccess(`Персона создана: ID ${created.person_id}.`);
       await load();
-    } catch (e: any) {
-      setError(e?.message || "Не удалось создать персону.");
+    } catch (event: any) {
+      setError(event?.message || "Не удалось создать персону.");
     }
   };
 
@@ -134,8 +133,8 @@ const PersonsPage: React.FC = () => {
       });
       setSuccess("Данные персоны обновлены.");
       await load();
-    } catch (e: any) {
-      setError(e?.message || "Не удалось обновить персону.");
+    } catch (event: any) {
+      setError(event?.message || "Не удалось обновить персону.");
     }
   };
 
@@ -149,8 +148,8 @@ const PersonsPage: React.FC = () => {
       setSuccess("Персона удалена.");
       setSelectedPersonId(null);
       await load();
-    } catch (e: any) {
-      setError(e?.message || "Не удалось удалить персону.");
+    } catch (event: any) {
+      setError(event?.message || "Не удалось удалить персону.");
     }
   };
 
@@ -197,8 +196,8 @@ const PersonsPage: React.FC = () => {
       }
 
       await load();
-    } catch (e: any) {
-      setError(e?.message || "Не удалось добавить снимок из Live.");
+    } catch (event: any) {
+      setError(event?.message || "Не удалось добавить снимок из Live.");
     } finally {
       setCaptureBusy(false);
     }
@@ -217,187 +216,260 @@ const PersonsPage: React.FC = () => {
   }, [autoCapture, autoAdded, autoIntervalMs, autoTarget, captureFromLive]);
 
   return (
-    <div className="stack" style={{ marginTop: 18 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div className="stack" style={{ gap: 4 }}>
+    <div className="stack">
+      <section className="page-hero">
+        <div className="page-hero__content">
+          <div className="page-hero__eyebrow">Faces</div>
           <h2 className="title">Персоны</h2>
-          <div className="muted">Создание, поиск, редактирование и сбор эмбеддингов из живого потока.</div>
         </div>
-        <button className="btn secondary" onClick={load} disabled={loading}>
-          Обновить
-        </button>
-      </div>
+        <div className="page-actions">
+          <button className="btn secondary" onClick={load} disabled={loading}>
+            Обновить
+          </button>
+        </div>
+      </section>
+
+      <section className="summary-grid">
+        <div className="summary-card">
+          <div className="summary-card__label">Всего персон</div>
+          <div className="summary-card__value">{persons.length}</div>
+          <div className="summary-card__hint">Карточки людей, доступные для распознавания и отчётности.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">В поиске</div>
+          <div className="summary-card__value">{filteredPersons.length}</div>
+          <div className="summary-card__hint">Используется неточный поиск по ФИО и ID.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Автосбор</div>
+          <div className="summary-card__value">{autoAdded}/{autoTarget}</div>
+          <div className="summary-card__hint">Прогресс добавления эмбеддингов из live-потока камеры.</div>
+        </div>
+      </section>
 
       {error && <div className="danger">{error}</div>}
       {success && <div className="success">{success}</div>}
 
-      <div className="grid">
-        <div className="card stack">
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>Список персон</h3>
+      <section className="persons-shell">
+        <div className="panel-card stack">
+          <div className="panel-card__header">
+            <div>
+              <h3 className="panel-card__title">Список персон</h3>
+              <div className="panel-card__lead">Поиск, выбор и быстрый обзор количества эмбеддингов.</div>
+            </div>
             <span className="pill">{filteredPersons.length}</span>
           </div>
+
           <label className="field">
             <span className="label">Поиск по ФИО или ID</span>
             <input
               className="input"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Неточный поиск"
             />
           </label>
+
           {loading && <div className="muted">Загрузка...</div>}
           {!loading && filteredPersons.length === 0 && <div className="muted">Совпадений не найдено.</div>}
-          <div className="stack" style={{ gap: 8 }}>
-            {filteredPersons.map((person) => {
-              const active = person.person_id === selectedPersonId;
-              return (
-                <button
-                  key={person.person_id}
-                  className={`hour-card${active ? " active" : ""}`}
-                  onClick={() => setSelectedPersonId(person.person_id)}
-                  style={{ color: "var(--text)" }}
-                >
-                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ color: "var(--text)", fontWeight: 600 }}>{personLabel(person)}</div>
-                    <span className="pill">{person.embeddings_count} emb</span>
-                  </div>
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    ID {person.person_id} · {person.created_at ? new Date(person.created_at).toLocaleString() : "—"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
 
-        <div className="card stack">
-          <h3 style={{ margin: 0 }}>Создать персону</h3>
-          <label className="field">
-            <span className="label">Фамилия</span>
-            <input className="input" value={createLast} onChange={(e) => setCreateLast(e.target.value)} />
-          </label>
-          <label className="field">
-            <span className="label">Имя</span>
-            <input className="input" value={createFirst} onChange={(e) => setCreateFirst(e.target.value)} />
-          </label>
-          <label className="field">
-            <span className="label">Отчество</span>
-            <input className="input" value={createMiddle} onChange={(e) => setCreateMiddle(e.target.value)} />
-          </label>
-          <button className="btn" onClick={handleCreate}>
-            Создать
-          </button>
-        </div>
-
-        <div className="card stack">
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>Редактирование</h3>
-            {selectedPerson && (
-              <button className="btn secondary" onClick={handleDelete}>
-                Удалить
-              </button>
-            )}
-          </div>
-          {!selectedPerson && <div className="muted">Выберите персону в списке слева.</div>}
-          {selectedPerson && (
-            <>
-              <label className="field">
-                <span className="label">Фамилия</span>
-                <input className="input" value={editLast} onChange={(e) => setEditLast(e.target.value)} />
-              </label>
-              <label className="field">
-                <span className="label">Имя</span>
-                <input className="input" value={editFirst} onChange={(e) => setEditFirst(e.target.value)} />
-              </label>
-              <label className="field">
-                <span className="label">Отчество</span>
-                <input className="input" value={editMiddle} onChange={(e) => setEditMiddle(e.target.value)} />
-              </label>
-              <button className="btn secondary" onClick={handleUpdate}>
-                Сохранить
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="card stack persons-live-card">
-        <h3 style={{ margin: 0 }}>Live-сбор эмбеддингов</h3>
-        {!selectedPerson && <div className="muted">Сначала выберите персону.</div>}
-        {selectedPerson && (
-          <>
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
-              <label className="field">
-                <span className="label">Камера</span>
-                <select
-                  className="input"
-                  value={liveCameraId ?? ""}
-                  onChange={(e) => setLiveCameraId(e.target.value ? Number(e.target.value) : null)}
-                >
-                  {cameras.map((camera) => (
-                    <option key={camera.camera_id} value={camera.camera_id}>
-                      {camera.name} (#{camera.camera_id})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="label">Интервал (мс)</span>
-                <input
-                  className="input"
-                  value={autoIntervalMs}
-                  onChange={(e) => setAutoIntervalMs(Number(e.target.value) || 1200)}
-                />
-              </label>
-              <label className="field">
-                <span className="label">Цель (шт.)</span>
-                <input
-                  className="input"
-                  value={autoTarget}
-                  onChange={(e) => setAutoTarget(Number(e.target.value) || 6)}
-                />
-              </label>
-            </div>
-
-            <div className="live-preview persons-live-preview">
-              {liveCameraId && token ? (
-                <img
-                  ref={liveImgRef}
-                  crossOrigin="anonymous"
-                  alt="live"
-                  src={`${API_URL}/cameras/${liveCameraId}/stream?annotate=false&token=${encodeURIComponent(token)}`}
-                />
-              ) : (
-                <div className="muted" style={{ padding: 20 }}>
-                  Выберите камеру для live-сбора.
+          <div className="list-shell">
+            {filteredPersons.map((person) => (
+              <button
+                key={person.person_id}
+                className={`list-item${person.person_id === selectedPersonId ? " active" : ""}`}
+                onClick={() => setSelectedPersonId(person.person_id)}
+                type="button"
+              >
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="list-item__title">{personLabel(person)}</div>
+                  <span className="pill">{person.embeddings_count} emb</span>
                 </div>
+                <div className="list-item__meta">
+                  ID {person.person_id} · {person.created_at ? new Date(person.created_at).toLocaleString() : "—"}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="stack-grid">
+          <div className="panel-card stack">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Карточка персоны</h3>
+                <div className="panel-card__lead">
+                  {selectedPerson ? "Редактирование текущей карточки и контроль качества базы." : "Выберите персону в списке слева."}
+                </div>
+              </div>
+              {selectedPerson && (
+                <button className="btn secondary" onClick={handleDelete}>
+                  Удалить
+                </button>
               )}
             </div>
 
-            <div className="row" style={{ gap: 10 }}>
-              <button className="btn secondary" onClick={captureFromLive} disabled={captureBusy || !liveCameraId}>
-                Снимок из Live
-              </button>
-              <button
-                className="btn"
-                onClick={() => {
-                  setAutoAdded(0);
-                  setAutoCapture((value) => !value);
-                }}
-                disabled={!liveCameraId}
-              >
-                {autoCapture ? "Остановить автосбор" : "Запустить автосбор"}
-              </button>
-              <div className="muted">Добавлено: {autoAdded} / {autoTarget}</div>
+            {selectedPerson ? (
+              <>
+                <div className="persons-meta">
+                  <div className="persons-meta__tile">
+                    <div className="persons-meta__label">ФИО</div>
+                    <div className="persons-meta__value">{personLabel(selectedPerson)}</div>
+                  </div>
+                  <div className="persons-meta__tile">
+                    <div className="persons-meta__label">ID</div>
+                    <div className="persons-meta__value">{selectedPerson.person_id}</div>
+                  </div>
+                  <div className="persons-meta__tile">
+                    <div className="persons-meta__label">Эмбеддингов</div>
+                    <div className="persons-meta__value">{selectedPerson.embeddings_count}</div>
+                  </div>
+                </div>
+
+                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+                  <label className="field">
+                    <span className="label">Фамилия</span>
+                    <input className="input" value={editLast} onChange={(event) => setEditLast(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span className="label">Имя</span>
+                    <input className="input" value={editFirst} onChange={(event) => setEditFirst(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span className="label">Отчество</span>
+                    <input className="input" value={editMiddle} onChange={(event) => setEditMiddle(event.target.value)} />
+                  </label>
+                </div>
+
+                <div className="page-actions">
+                  <button className="btn" onClick={handleUpdate}>
+                    Сохранить
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="muted">Персона пока не выбрана.</div>
+            )}
+          </div>
+
+          <div className="panel-card stack">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Создать персону</h3>
+                <div className="panel-card__lead">Быстрое добавление новой карточки перед наполнением эмбеддингами.</div>
+              </div>
             </div>
 
-            <div className="muted">
-              Для более качественной базы слегка меняйте угол головы, наклон и дистанцию до камеры.
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+              <label className="field">
+                <span className="label">Фамилия</span>
+                <input className="input" value={createLast} onChange={(event) => setCreateLast(event.target.value)} />
+              </label>
+              <label className="field">
+                <span className="label">Имя</span>
+                <input className="input" value={createFirst} onChange={(event) => setCreateFirst(event.target.value)} />
+              </label>
+              <label className="field">
+                <span className="label">Отчество</span>
+                <input className="input" value={createMiddle} onChange={(event) => setCreateMiddle(event.target.value)} />
+              </label>
             </div>
-          </>
-        )}
-      </div>
+
+            <button className="btn" onClick={handleCreate}>
+              Создать
+            </button>
+          </div>
+
+          <div className="panel-card stack">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Live-сбор эмбеддингов</h3>
+                <div className="panel-card__lead">
+                  Поток теперь встроен в рамку рабочего блока и не ломает сетку всей страницы.
+                </div>
+              </div>
+            </div>
+
+            {!selectedPerson ? (
+              <div className="muted">Сначала выберите персону.</div>
+            ) : (
+              <>
+                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
+                  <label className="field">
+                    <span className="label">Камера</span>
+                    <select
+                      className="input"
+                      value={liveCameraId ?? ""}
+                      onChange={(event) => setLiveCameraId(event.target.value ? Number(event.target.value) : null)}
+                    >
+                      {cameras.map((camera) => (
+                        <option key={camera.camera_id} value={camera.camera_id}>
+                          {camera.name} (#{camera.camera_id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="label">Интервал (мс)</span>
+                    <input
+                      className="input"
+                      value={autoIntervalMs}
+                      onChange={(event) => setAutoIntervalMs(Number(event.target.value) || 1200)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span className="label">Цель (шт.)</span>
+                    <input
+                      className="input"
+                      value={autoTarget}
+                      onChange={(event) => setAutoTarget(Number(event.target.value) || 6)}
+                    />
+                  </label>
+                </div>
+
+                <div className="media-frame">
+                  {liveCameraId && token ? (
+                    <img
+                      ref={liveImgRef}
+                      crossOrigin="anonymous"
+                      alt="live"
+                      src={`${API_URL}/cameras/${liveCameraId}/stream?annotate=false&token=${encodeURIComponent(token)}`}
+                      style={{ width: "100%", maxHeight: 560, objectFit: "contain", background: "rgba(8,18,33,0.84)" }}
+                    />
+                  ) : (
+                    <div className="muted" style={{ padding: 20 }}>
+                      Выберите камеру для live-сбора.
+                    </div>
+                  )}
+                </div>
+
+                <div className="page-actions">
+                  <button className="btn secondary" onClick={captureFromLive} disabled={captureBusy || !liveCameraId}>
+                    Снимок из Live
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setAutoAdded(0);
+                      setAutoCapture((value) => !value);
+                    }}
+                    disabled={!liveCameraId}
+                  >
+                    {autoCapture ? "Остановить автосбор" : "Запустить автосбор"}
+                  </button>
+                  <span className="hero-badge">
+                    Прогресс <strong>{autoAdded} / {autoTarget}</strong>
+                  </span>
+                </div>
+
+                <div className="muted">
+                  Для более качественной базы слегка меняйте угол головы, наклон и дистанцию до камеры.
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
     </div>
   );
 };

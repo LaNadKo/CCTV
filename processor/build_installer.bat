@@ -7,6 +7,22 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Installing dependencies...
+set TORCH_INDEX=https://download.pytorch.org/whl/cpu
+where nvidia-smi >nul 2>&1
+if %errorlevel%==0 (
+    echo Detected NVIDIA GPU. Installing CUDA-enabled PyTorch...
+    set TORCH_INDEX=https://download.pytorch.org/whl/cu124
+) else (
+    echo NVIDIA GPU not detected. Installing CPU-only PyTorch...
+)
+
+pip install --upgrade --force-reinstall torch torchvision --index-url %TORCH_INDEX% --quiet
+if errorlevel 1 (
+    echo ERROR: Failed to install PyTorch from %TORCH_INDEX%
+    pause
+    exit /b 1
+)
+
 pip install -r requirements.txt --quiet
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies

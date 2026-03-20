@@ -20,6 +20,27 @@ from processor.paths import RECORDINGS_DIR, SNAPSHOTS_DIR, ensure_media_dirs
 
 logger = logging.getLogger(__name__)
 
+_POSE_SKELETON_EDGES = (
+    (5, 6),
+    (5, 7),
+    (7, 9),
+    (6, 8),
+    (8, 10),
+    (5, 11),
+    (6, 12),
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (0, 1),
+    (0, 2),
+    (1, 3),
+    (2, 4),
+    (0, 5),
+    (0, 6),
+)
+
 
 @lru_cache(maxsize=8)
 def _load_overlay_font(size: int) -> ImageFont.ImageFont:
@@ -53,20 +74,35 @@ class CameraWorker:
         self._event_dedup_seconds = 10.0
         self._overlay_ttl = max(float(settings.face_scan_interval) + 1.0, 3.0)
         self._record_event_tail_seconds = 10.0
-        self._live_publish_interval = 1.0 / 15.0
+        self._live_publish_interval = 1.0 / 12.0
         self._last_publish_ts = 0.0
+        self._publish_frame_counter = 0
+        self._overlay_refresh_frames = {4, 8, 12, 15}
+        self._last_overlay_refresh_mark = 0
 
         self._last_faces_info: list[tuple[tuple[int, int, int, int], str, bool]] = []
         self._last_faces_ts = 0.0
+        self._last_body_info: list[dict[str, object]] = []
+        self._last_body_ts = 0.0
         self._last_activity_ts = 0.0
         self._last_motion_ts = 0.0
         self._liveness_state: dict[str, dict[str, object]] = {}
+        self._identity_state: dict[str, dict[str, object]] = {}
+        self._body_tracks: dict[int, dict[str, object]] = {}
+        self._next_body_track_id = 1
+        self._body_support_cache: list[dict] | None = None
+        self._body_support_ts = 0.0
+        self._body_support_interval = 0.45
+        self._body_max_side = 800
 
         self._capture_lock = threading.Lock()
         self._capture_ready = threading.Event()
         self._capture_frame: np.ndarray | None = None
         self._capture_seq = 0
         self._capture_thread: threading.Thread | None = None
+        self._scan_lock = threading.Lock()
+        self._scan_inflight = False
+        self._scan_max_side = 960
 
         self._frame_lock = threading.Lock()
         self._latest_raw_jpeg: bytes | None = None
@@ -133,14 +169,33 @@ class CameraWorker:
                     self._last_motion_ts = time.time()
                     self._last_activity_ts = time.time()
 
-                if self.assignment.get("detection_enabled", True) and (now - last_face_scan) >= max(settings.face_scan_interval, 0.5):
-                    last_face_scan = now
-                    self._scan_faces(frame)
+                recent_face_track = (time.time() - self._last_faces_ts) <= self._overlay_ttl
+                recent_motion = motion or (time.time() - self._last_motion_ts) <= 1.2
+                scan_interval = max(
+                    0.18,
+                    float(settings.face_scan_interval) * (0.35 if (recent_face_track or recent_motion) else 1.0),
+                )
+                should_publish = (now - self._last_publish_ts) >= self._live_publish_interval
+                publish_mark = self._next_publish_frame_mark() if should_publish else 0
+                force_scan_mark = publish_mark in self._overlay_refresh_frames and (recent_face_track or recent_motion)
 
-                self._record_frame(frame, motion)
-                if (now - self._last_publish_ts) >= self._live_publish_interval:
-                    self._publish_live_frames(frame)
+                if self.assignment.get("detection_enabled", True) and (
+                    (now - last_face_scan) >= scan_interval
+                    or (force_scan_mark and (now - last_face_scan) >= 0.08)
+                ):
+                    if self._try_start_scan():
+                        last_face_scan = now
+                        scan_frame = frame.copy()
+                        threading.Thread(
+                            target=self._scan_faces_guarded,
+                            args=(scan_frame,),
+                            daemon=True,
+                        ).start()
+
+                if should_publish:
+                    self._publish_live_frames(frame, publish_mark=publish_mark)
                     self._last_publish_ts = now
+                self._record_frame(frame, motion)
                 self._rotate_recording_if_needed(frame.shape[1], frame.shape[0])
         finally:
             self._running = False
@@ -176,6 +231,12 @@ class CameraWorker:
             if self._capture_frame is None or self._capture_seq == last_processed_seq:
                 return last_processed_seq, None
             return self._capture_seq, self._capture_frame.copy()
+
+    def _next_publish_frame_mark(self) -> int:
+        self._publish_frame_counter += 1
+        if self._publish_frame_counter > 15:
+            self._publish_frame_counter = 1
+        return self._publish_frame_counter
 
     def _open_capture(self) -> cv2.VideoCapture:
         source = self.source
@@ -220,35 +281,38 @@ class CameraWorker:
         try:
             from processor.vision import detect_faces, match_embedding
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            scan_frame, scale_x, scale_y = self._prepare_scan_frame(frame)
+            rgb = cv2.cvtColor(scan_frame, cv2.COLOR_BGR2RGB)
             faces = detect_faces(rgb)
             now = time.time()
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
-            bodies: list[dict] | None = []
-            frame_area = max(frame.shape[0] * frame.shape[1], 1)
-
-            if faces and any(
-                ((face["box"][2] - face["box"][0]) * (face["box"][3] - face["box"][1])) / frame_area
-                < max(settings.antispoof_small_face_ratio * 2.0, 0.2)
-                for face in faces
-            ):
-                try:
-                    from processor.body_detector import detect_bodies
-
-                    bodies = detect_bodies(frame, conf=0.45)
-                except Exception:
-                    logger.exception("Body support detection failed on camera %s", self.camera_id)
-                    bodies = None
+            want_body_support = bool(faces) or (now - self._last_faces_ts) <= self._overlay_ttl or (now - self._last_motion_ts) <= 1.2
+            bodies = self._get_body_support(frame, now) if want_body_support else []
+            body_tracks = self._update_body_tracks(bodies, now)
 
             for face in faces:
-                box = tuple(int(v) for v in face["box"])
-                if not self._is_live_face(frame, box, bodies, now):
+                box = self._rescale_box(face["box"], frame.shape[1], frame.shape[0], scale_x, scale_y)
+                track_id = self._find_body_track_for_face(box, body_tracks)
+                person_id, sim = match_embedding(face["embedding"], self._gallery)
+                if person_id is None:
+                    if track_id is not None:
+                        person_id = self._recover_track_identity(track_id, sim, now)
+                if person_id is None:
+                    person_id = self._recover_recent_identity(box, sim, now)
+                recognized = person_id is not None
+                label = self._label_for_person(person_id) if recognized else "Неизвестно"
+                if not self._is_live_face(frame, box, bodies, now, strict_unknown=not recognized):
                     logger.debug("Camera %s: suppressed non-live/spoof-like face %s", self.camera_id, box)
                     continue
-                person_id, sim = match_embedding(face["embedding"], self._gallery)
-                recognized = person_id is not None
+                if recognized:
+                    self._remember_identity(box, person_id, sim, now)
+                    if track_id is not None:
+                        self._remember_track_identity(track_id, person_id, label, now)
                 if not recognized:
                     recent_motion = (time.time() - self._last_motion_ts) <= settings.unknown_face_requires_motion_seconds
+                    if not recent_motion and track_id is not None:
+                        track_state = self._body_tracks.get(track_id)
+                        recent_motion = bool(track_state and int(track_state.get("hits", 0)) >= 2)
                     if not recent_motion:
                         logger.debug(
                             "Camera %s: suppressed unknown face without recent scene motion box=%s",
@@ -256,9 +320,8 @@ class CameraWorker:
                             box,
                         )
                         continue
-                event_type = "face_recognized" if recognized else "face_unknown"
-                label = self._label_for_person(person_id) if recognized else "Unknown"
                 overlay_items.append((box, label, recognized))
+                event_type = "face_recognized" if recognized else "face_unknown"
 
                 dedup_key = person_id
                 last_ts = self._last_event.get(dedup_key, 0)
@@ -288,19 +351,328 @@ class CameraWorker:
                 }
                 self._dispatch_event(payload, local_snapshot=snapshot if snapshot_b64 else None)
 
+            body_overlay_items = self._build_body_overlay_items(body_tracks, now)
             if overlay_items:
                 self._last_faces_info = overlay_items
                 self._last_faces_ts = now
+            elif now - self._last_faces_ts > self._overlay_ttl:
+                self._last_faces_info = []
+            if body_overlay_items:
+                self._last_body_info = body_overlay_items
+                self._last_body_ts = now
+            elif now - self._last_body_ts > max(self._overlay_ttl, 4.0):
+                self._last_body_info = []
         except Exception:
             logger.exception("Face scan error on camera %s", self.camera_id)
 
+    def _try_start_scan(self) -> bool:
+        with self._scan_lock:
+            if self._scan_inflight:
+                return False
+            self._scan_inflight = True
+            return True
+
+    def _scan_faces_guarded(self, frame: np.ndarray) -> None:
+        try:
+            self._scan_faces(frame)
+        finally:
+            with self._scan_lock:
+                self._scan_inflight = False
+
     def _label_for_person(self, person_id: int | None) -> str:
         if person_id is None:
-            return "Unknown"
+            return "Неизвестно"
         for entry in self._gallery:
             if entry.get("person_id") == person_id:
                 return str(entry.get("label") or f"ID {person_id}")
         return f"ID {person_id}"
+
+    def _prepare_scan_frame(self, frame: np.ndarray) -> tuple[np.ndarray, float, float]:
+        height, width = frame.shape[:2]
+        max_side = max(height, width)
+        if max_side <= self._scan_max_side:
+            return frame, 1.0, 1.0
+        scale = self._scan_max_side / float(max_side)
+        resized = cv2.resize(
+            frame,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+        return resized, width / float(resized.shape[1]), height / float(resized.shape[0])
+
+    def _rescale_box(
+        self,
+        box: tuple[float, float, float, float] | list[float],
+        width: int,
+        height: int,
+        scale_x: float,
+        scale_y: float,
+    ) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = [float(v) for v in box]
+        return (
+            max(0, min(width - 1, int(round(x1 * scale_x)))),
+            max(0, min(height - 1, int(round(y1 * scale_y)))),
+            max(0, min(width, int(round(x2 * scale_x)))),
+            max(0, min(height, int(round(y2 * scale_y)))),
+        )
+
+    def _get_body_support(self, frame: np.ndarray, now: float) -> list[dict]:
+        if self._body_support_cache is not None and (now - self._body_support_ts) < self._body_support_interval:
+            return self._body_support_cache
+
+        try:
+            from processor.body_detector import detect_bodies
+
+            body_frame, scale_x, scale_y = self._prepare_body_frame(frame)
+            detected = detect_bodies(body_frame, conf=0.35)
+            bodies = []
+            for body in detected:
+                payload = {
+                    "box": self._rescale_box(
+                        body["box"],
+                        frame.shape[1],
+                        frame.shape[0],
+                        scale_x,
+                        scale_y,
+                    ),
+                    "confidence": body.get("confidence"),
+                }
+                keypoints = body.get("keypoints")
+                if isinstance(keypoints, list):
+                    payload["keypoints"] = [
+                        [float(point[0]) * scale_x, float(point[1]) * scale_y]
+                        for point in keypoints
+                        if isinstance(point, list) or isinstance(point, tuple)
+                    ]
+                keypoint_conf = body.get("keypoint_conf")
+                if isinstance(keypoint_conf, list):
+                    payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
+                bodies.append(payload)
+        except Exception:
+            logger.exception("Body support scan failed on camera %s", self.camera_id)
+            bodies = []
+
+        self._body_support_cache = bodies
+        self._body_support_ts = now
+        return bodies
+
+    def _prepare_body_frame(self, frame: np.ndarray) -> tuple[np.ndarray, float, float]:
+        height, width = frame.shape[:2]
+        max_side = max(height, width)
+        if max_side <= self._body_max_side:
+            return frame, 1.0, 1.0
+        scale = self._body_max_side / float(max_side)
+        resized = cv2.resize(
+            frame,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+        return resized, width / float(resized.shape[1]), height / float(resized.shape[0])
+
+    def _box_iou(self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1, (bx2 - bx1) * (by2 - by1))
+        return inter / float(area_a + area_b - inter + 1e-6)
+
+    def _update_body_tracks(self, bodies: list[dict], now: float) -> list[dict]:
+        stale_track_ids = [
+            track_id
+            for track_id, state in self._body_tracks.items()
+            if now - float(state.get("last_seen", 0.0)) > 3.5
+        ]
+        for track_id in stale_track_ids:
+            self._body_tracks.pop(track_id, None)
+
+        unmatched_track_ids = set(self._body_tracks.keys())
+        for body in bodies:
+            box = tuple(int(round(v)) for v in body["box"])
+            best_track_id: int | None = None
+            best_score = 0.0
+            for track_id in list(unmatched_track_ids):
+                state = self._body_tracks.get(track_id)
+                if not state:
+                    continue
+                track_box = state.get("box")
+                if not isinstance(track_box, tuple):
+                    continue
+                score = self._box_iou(box, track_box)
+                if score > best_score:
+                    best_score = score
+                    best_track_id = track_id
+            if best_track_id is not None and best_score >= 0.18:
+                state = self._body_tracks[best_track_id]
+                state["box"] = box
+                state["keypoints"] = body.get("keypoints")
+                state["keypoint_conf"] = body.get("keypoint_conf")
+                state["last_seen"] = now
+                state["hits"] = int(state.get("hits", 0)) + 1
+                unmatched_track_ids.discard(best_track_id)
+                continue
+
+            track_id = self._next_body_track_id
+            self._next_body_track_id += 1
+            self._body_tracks[track_id] = {
+                "track_id": track_id,
+                "box": box,
+                "last_seen": now,
+                "hits": 1,
+                "keypoints": body.get("keypoints"),
+                "keypoint_conf": body.get("keypoint_conf"),
+                "person_id": None,
+                "label": None,
+                "recognized": False,
+            }
+
+        self._dedupe_body_tracks()
+        return [dict(state) for state in self._body_tracks.values()]
+
+    def _dedupe_body_tracks(self) -> None:
+        track_ids = list(self._body_tracks.keys())
+        to_remove: set[int] = set()
+        for idx, track_id in enumerate(track_ids):
+            if track_id in to_remove:
+                continue
+            state = self._body_tracks.get(track_id)
+            if not state:
+                continue
+            box = state.get("box")
+            if not isinstance(box, tuple):
+                continue
+            person_id = state.get("person_id")
+            for other_id in track_ids[idx + 1:]:
+                if other_id in to_remove:
+                    continue
+                other = self._body_tracks.get(other_id)
+                if not other:
+                    continue
+                other_box = other.get("box")
+                if not isinstance(other_box, tuple):
+                    continue
+                same_person = person_id is not None and person_id == other.get("person_id")
+                overlap = self._box_iou(box, other_box)
+                if not same_person and overlap < 0.55:
+                    continue
+                keep_first = (
+                    int(state.get("hits", 0)) >= int(other.get("hits", 0))
+                    and float(state.get("last_seen", 0.0)) >= float(other.get("last_seen", 0.0)) - 0.2
+                )
+                to_remove.add(other_id if keep_first else track_id)
+                if not keep_first:
+                    break
+        for track_id in to_remove:
+            self._body_tracks.pop(track_id, None)
+
+    def _find_body_track_for_face(
+        self,
+        face_box: tuple[int, int, int, int],
+        body_tracks: list[dict],
+    ) -> int | None:
+        x1, y1, x2, y2 = face_box
+        face_cx = (x1 + x2) / 2
+        face_cy = (y1 + y2) / 2
+        face_width = max(x2 - x1, 1)
+        face_height = max(y2 - y1, 1)
+        best_track_id: int | None = None
+        best_score = 0.0
+        for state in body_tracks:
+            body_box = state.get("box")
+            track_id = state.get("track_id")
+            if not isinstance(body_box, tuple) or track_id is None:
+                continue
+            bx1, by1, bx2, by2 = body_box
+            body_width = max(bx2 - bx1, 1)
+            body_height = max(by2 - by1, 1)
+            if not (bx1 <= face_cx <= bx2):
+                continue
+            if not (by1 <= face_cy <= by1 + body_height * 0.45):
+                continue
+            width_ratio = face_width / body_width
+            height_ratio = face_height / body_height
+            if not (0.08 <= width_ratio <= 0.55 and 0.07 <= height_ratio <= 0.42):
+                continue
+            body_cx = (bx1 + bx2) / 2
+            center_score = 1.0 - min(1.0, abs(face_cx - body_cx) / max(body_width * 0.35, 1.0))
+            scale_score = 1.0 - min(1.0, abs(width_ratio - 0.24) / 0.24)
+            score = (center_score * 0.7) + (scale_score * 0.3)
+            if score > best_score:
+                best_score = score
+                best_track_id = int(track_id)
+        return best_track_id
+
+    def _remember_track_identity(self, track_id: int, person_id: int | None, label: str, now: float) -> None:
+        if person_id is None:
+            return
+        state = self._body_tracks.get(track_id)
+        if not state:
+            return
+        state["person_id"] = person_id
+        state["label"] = label
+        state["recognized"] = True
+        state["last_identity_seen"] = now
+
+    def _recover_track_identity(self, track_id: int, sim: float | None, now: float) -> int | None:
+        state = self._body_tracks.get(track_id)
+        if not state or not state.get("recognized"):
+            return None
+        if sim is not None and sim < max(settings.face_match_threshold - 0.08, 0.5):
+            return None
+        person_id = state.get("person_id")
+        return int(person_id) if person_id is not None else None
+
+    def _build_body_overlay_items(
+        self,
+        body_tracks: list[dict],
+        now: float,
+    ) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for state in body_tracks:
+            if not state.get("recognized"):
+                continue
+            box = state.get("box")
+            label = state.get("label")
+            if not isinstance(box, tuple) or not label:
+                continue
+            items.append(
+                {
+                    "box": box,
+                    "label": str(label),
+                    "recognized": True,
+                    "keypoints": state.get("keypoints"),
+                    "keypoint_conf": state.get("keypoint_conf"),
+                }
+            )
+        return items
+
+    def _body_label_position(
+        self,
+        box: tuple[int, int, int, int],
+        keypoints: object,
+        keypoint_conf: object,
+    ) -> tuple[int, int]:
+        x1, y1, _, _ = box
+        if isinstance(keypoints, list) and len(keypoints) >= 7:
+            confs = keypoint_conf if isinstance(keypoint_conf, list) else None
+            head_points: list[tuple[float, float]] = []
+            for kp_idx in (0, 1, 2, 3, 4, 5, 6):
+                if kp_idx >= len(keypoints):
+                    continue
+                if confs is not None and kp_idx < len(confs) and float(confs[kp_idx]) < 0.28:
+                    continue
+                point = keypoints[kp_idx]
+                if isinstance(point, (list, tuple)) and len(point) >= 2:
+                    head_points.append((float(point[0]), float(point[1])))
+            if head_points:
+                min_x = min(point[0] for point in head_points)
+                min_y = min(point[1] for point in head_points)
+                return int(min_x), max(6, int(min_y) - 28)
+        return x1, max(y1 - 28, 6)
 
     def _face_key(self, box: tuple[int, int, int, int]) -> str:
         x1, y1, x2, y2 = box
@@ -347,6 +719,31 @@ class CameraWorker:
                 return True
         return False
 
+    def _face_strictly_supported_by_body(self, box: tuple[int, int, int, int], bodies: list[dict]) -> bool:
+        x1, y1, x2, y2 = box
+        face_cx = (x1 + x2) / 2
+        face_cy = (y1 + y2) / 2
+        face_width = max(x2 - x1, 1)
+        face_height = max(y2 - y1, 1)
+        for body in bodies:
+            bx1, by1, bx2, by2 = [float(v) for v in body["box"]]
+            body_width = max(bx2 - bx1, 1.0)
+            body_height = max(by2 - by1, 1.0)
+            body_cx = (bx1 + bx2) / 2
+
+            if not (bx1 <= face_cx <= bx2):
+                continue
+            if not (by1 <= face_cy <= by1 + body_height * 0.42):
+                continue
+
+            horizontal_offset_ok = abs(face_cx - body_cx) <= body_width * 0.26
+            width_ratio = face_width / body_width
+            height_ratio = face_height / body_height
+            scale_ok = 0.10 <= width_ratio <= 0.52 and 0.08 <= height_ratio <= 0.40
+            if horizontal_offset_ok and scale_ok:
+                return True
+        return False
+
     def _prune_liveness_state(self, now: float) -> None:
         stale_keys = [
             key
@@ -356,16 +753,95 @@ class CameraWorker:
         for key in stale_keys:
             self._liveness_state.pop(key, None)
 
+    def _prune_identity_state(self, now: float) -> None:
+        stale_keys = [
+            key
+            for key, state in self._identity_state.items()
+            if now - float(state.get("last_seen", 0.0)) > 4.0
+        ]
+        for key in stale_keys:
+            self._identity_state.pop(key, None)
+
+    def _remember_identity(
+        self,
+        box: tuple[int, int, int, int],
+        person_id: int | None,
+        sim: float | None,
+        now: float,
+    ) -> None:
+        if person_id is None:
+            return
+        key = self._face_key(box)
+        self._identity_state[key] = {
+            "person_id": person_id,
+            "sim": float(sim or 0.0),
+            "box": box,
+            "last_seen": now,
+        }
+
+    def _recover_recent_identity(
+        self,
+        box: tuple[int, int, int, int],
+        sim: float | None,
+        now: float,
+    ) -> int | None:
+        self._prune_identity_state(now)
+        gallery_person_ids = {int(entry["person_id"]) for entry in self._gallery if entry.get("person_id") is not None}
+        if len(gallery_person_ids) != 1:
+            return None
+        if sim is None or sim < max(settings.face_match_threshold - 0.03, 0.54):
+            return None
+        state = self._identity_state.get(self._face_key(box))
+        if state:
+            person_id = state.get("person_id")
+            return int(person_id) if person_id is not None else None
+
+        x1, y1, x2, y2 = box
+        curr_cx = (x1 + x2) / 2
+        curr_cy = (y1 + y2) / 2
+        curr_size = max(x2 - x1, y2 - y1)
+        best_person_id: int | None = None
+        best_score = 0.0
+        for state in self._identity_state.values():
+            prev_box = state.get("box")
+            person_id = state.get("person_id")
+            if not isinstance(prev_box, tuple) or person_id is None:
+                continue
+            px1, py1, px2, py2 = prev_box
+            prev_cx = (px1 + px2) / 2
+            prev_cy = (py1 + py2) / 2
+            prev_size = max(px2 - px1, py2 - py1)
+            dist = abs(curr_cx - prev_cx) + abs(curr_cy - prev_cy)
+            max_dist = max(48.0, max(curr_size, prev_size) * 0.7)
+            if dist > max_dist:
+                continue
+            overlap_x1 = max(x1, px1)
+            overlap_y1 = max(y1, py1)
+            overlap_x2 = min(x2, px2)
+            overlap_y2 = min(y2, py2)
+            overlap = max(0, overlap_x2 - overlap_x1) * max(0, overlap_y2 - overlap_y1)
+            area = max((x2 - x1) * (y2 - y1), 1)
+            iou_like = overlap / area
+            score = max(iou_like, 1.0 - min(1.0, dist / max_dist))
+            if score > best_score:
+                best_score = score
+                best_person_id = int(person_id)
+        if best_person_id is not None and best_score >= 0.35:
+            return best_person_id
+        return None
+
     def _is_live_face(
         self,
         frame: np.ndarray,
         box: tuple[int, int, int, int],
         bodies: list[dict] | None,
         now: float,
+        strict_unknown: bool = False,
     ) -> bool:
         from processor.antispoof import lbp_texture_score, micro_movement_check
 
         self._prune_liveness_state(now)
+        self._prune_identity_state(now)
         crop = self._crop_face(frame, box)
         if crop is None:
             return False
@@ -376,9 +852,11 @@ class CameraWorker:
         large_face = face_area_ratio >= settings.antispoof_small_face_ratio
         texture_score = lbp_texture_score(crop) if min(crop.shape[:2]) >= 32 else 0.0
         if bodies is None:
-            body_supported = face_area_ratio >= 0.2
+            body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 0.6, 0.03)
+            strict_body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 1.05, 0.055)
         else:
             body_supported = self._face_supported_by_body(box, bodies) or face_area_ratio >= 0.2
+            strict_body_supported = self._face_strictly_supported_by_body(box, bodies) or face_area_ratio >= 0.22
         if not body_supported:
             return False
 
@@ -390,7 +868,9 @@ class CameraWorker:
         key = self._face_key(box)
         prev = self._liveness_state.get(key)
 
-        movement_ok = False
+        face_motion_ok = False
+        context_motion_ok = False
+        shift_motion_ok = False
         stable_hits = 1
         if prev:
             prev_gray = prev.get("gray")
@@ -398,7 +878,7 @@ class CameraWorker:
             prev_box = prev.get("box")
             stable_hits = int(prev.get("stable_hits", 0)) + 1
             if isinstance(prev_gray, np.ndarray):
-                movement_ok = micro_movement_check(
+                face_motion_ok = micro_movement_check(
                     prev_gray,
                     gray,
                     threshold=settings.antispoof_face_motion_threshold,
@@ -406,7 +886,7 @@ class CameraWorker:
                     min_active_ratio=settings.antispoof_active_ratio,
                 )
             if isinstance(prev_context_gray, np.ndarray) and isinstance(context_gray, np.ndarray):
-                movement_ok = movement_ok or micro_movement_check(
+                context_motion_ok = micro_movement_check(
                     prev_context_gray,
                     context_gray,
                     threshold=settings.antispoof_context_motion_threshold,
@@ -420,7 +900,7 @@ class CameraWorker:
                 curr_cx = (x1 + x2) / 2
                 curr_cy = (y1 + y2) / 2
                 shift = abs(curr_cx - prev_cx) + abs(curr_cy - prev_cy)
-                movement_ok = movement_ok or shift >= max(8.0, max(x2 - x1, y2 - y1) * 0.07)
+                shift_motion_ok = shift >= max(8.0, max(x2 - x1, y2 - y1) * 0.07)
 
         self._liveness_state[key] = {
             "gray": gray,
@@ -430,10 +910,23 @@ class CameraWorker:
             "last_seen": now,
         }
 
+        movement_ok = face_motion_ok or context_motion_ok or shift_motion_ok
+
+        if strict_unknown:
+            if not strict_body_supported:
+                return False
+            if texture_score < settings.antispoof_min_texture_score * 1.15:
+                return False
+            if face_area_ratio < max(settings.antispoof_small_face_ratio * 1.15, 0.05):
+                return stable_hits >= 2 and (face_motion_ok or shift_motion_ok)
+            return stable_hits >= 2 and (face_motion_ok or shift_motion_ok or (context_motion_ok and face_area_ratio >= 0.075))
+
         if not large_face:
             if texture_score < settings.antispoof_min_texture_score:
                 return False
             return movement_ok and stable_hits >= 2
+        if texture_score < settings.antispoof_min_texture_score * 0.75:
+            return False
         return movement_ok
 
     def _snapshot_bytes_from_box(self, frame: np.ndarray, box: tuple[int, int, int, int]) -> bytes:
@@ -455,40 +948,122 @@ class CameraWorker:
         except Exception:
             logger.exception("Failed to store snapshot for event %s", event_id)
 
-    def _draw_overlay(self, frame: np.ndarray) -> np.ndarray:
+    def _draw_overlay(self, frame: np.ndarray, publish_mark: int | None = None) -> np.ndarray:
         now = time.time()
-        if not self._last_faces_info or now - self._last_faces_ts > self._overlay_ttl:
+        face_overlay_active = bool(self._last_faces_info) and (now - self._last_faces_ts) <= self._overlay_ttl
+        body_overlay_active = bool(self._last_body_info) and (now - self._last_body_ts) <= max(self._overlay_ttl, 4.0)
+        if not face_overlay_active and not body_overlay_active:
             return frame
         annotated = frame.copy()
         pil_image = Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_image)
         font = _load_overlay_font(max(18, frame.shape[1] // 55))
+        active_body_boxes: list[tuple[int, int, int, int]] = []
+        if body_overlay_active:
+            for item in self._last_body_info:
+                box = item.get("box")
+                label = str(item.get("label") or "")
+                recognized = bool(item.get("recognized"))
+                keypoints = item.get("keypoints")
+                keypoint_conf = item.get("keypoint_conf")
+                if not isinstance(box, tuple):
+                    continue
+                x1, y1, x2, y2 = box
+                active_body_boxes.append(box)
+                rgb_color = (0, 180, 255) if recognized else (255, 160, 64)
+                if isinstance(keypoints, list) and len(keypoints) >= 17:
+                    confs = keypoint_conf if isinstance(keypoint_conf, list) else None
+                    for a_idx, b_idx in _POSE_SKELETON_EDGES:
+                        if a_idx >= len(keypoints) or b_idx >= len(keypoints):
+                            continue
+                        if confs is not None:
+                            if a_idx >= len(confs) or b_idx >= len(confs):
+                                continue
+                            if float(confs[a_idx]) < 0.35 or float(confs[b_idx]) < 0.35:
+                                continue
+                        ax, ay = keypoints[a_idx]
+                        bx, by = keypoints[b_idx]
+                        draw.line((ax, ay, bx, by), fill=rgb_color, width=3)
+                    for kp_idx, point in enumerate(keypoints):
+                        if not isinstance(point, list) and not isinstance(point, tuple):
+                            continue
+                        if confs is not None and kp_idx < len(confs) and float(confs[kp_idx]) < 0.35:
+                            continue
+                        px, py = point
+                        draw.ellipse((px - 4, py - 4, px + 4, py + 4), fill=rgb_color)
+                else:
+                    draw.rectangle((x1, y1, x2, y2), outline=rgb_color, width=2)
+                body_label = label
+                text_pos = self._body_label_position(box, keypoints, keypoint_conf)
+                try:
+                    bbox = draw.textbbox(text_pos, body_label, font=font)
+                    draw.rectangle((bbox[0] - 4, bbox[1] - 2, bbox[2] + 4, bbox[3] + 2), fill=(0, 0, 0))
+                except Exception:
+                    pass
+                draw.text(text_pos, body_label, font=font, fill=rgb_color)
         for (x1, y1, x2, y2), label, recognized in self._last_faces_info:
             color = (0, 200, 0) if recognized else (0, 0, 200)
             rgb_color = (color[2], color[1], color[0])
             draw.rectangle((x1, y1, x2, y2), outline=rgb_color, width=2)
+            face_cx = (x1 + x2) / 2
+            face_cy = (y1 + y2) / 2
+            suppress_face_label = False
+            if recognized:
+                for bx1, by1, bx2, by2 in active_body_boxes:
+                    if bx1 <= face_cx <= bx2 and by1 <= face_cy <= by1 + (by2 - by1) * 0.5:
+                        suppress_face_label = True
+                        break
             text_pos = (x1, max(y1 - 28, 6))
             try:
-                bbox = draw.textbbox(text_pos, label, font=font)
+                if not suppress_face_label:
+                    bbox = draw.textbbox(text_pos, label, font=font)
+                    draw.rectangle(
+                        (bbox[0] - 4, bbox[1] - 2, bbox[2] + 4, bbox[3] + 2),
+                        fill=(0, 0, 0),
+                    )
+            except Exception:
+                pass
+            if not suppress_face_label:
+                draw.text(text_pos, label, font=font, fill=rgb_color)
+
+        if publish_mark in self._overlay_refresh_frames:
+            self._last_overlay_refresh_mark = int(publish_mark)
+
+        if self._last_overlay_refresh_mark:
+            age_ms = int(max(0.0, now - self._last_faces_ts) * 1000)
+            debug_text = f"OVR {self._last_overlay_refresh_mark:02d} | {age_ms} ms"
+            debug_pos = (max(8, frame.shape[1] - 210), 8)
+            try:
+                bbox = draw.textbbox(debug_pos, debug_text, font=font)
                 draw.rectangle(
                     (bbox[0] - 4, bbox[1] - 2, bbox[2] + 4, bbox[3] + 2),
                     fill=(0, 0, 0),
                 )
             except Exception:
                 pass
-            draw.text(text_pos, label, font=font, fill=rgb_color)
+            draw.text(debug_pos, debug_text, font=font, fill=(64, 220, 255))
         return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
-    def _publish_live_frames(self, frame: np.ndarray) -> None:
+    def _publish_live_frames(self, frame: np.ndarray, publish_mark: int = 0) -> None:
         encode_opts = [int(cv2.IMWRITE_JPEG_QUALITY), 82]
         raw_ok, raw_buf = cv2.imencode(".jpg", frame, encode_opts)
-        overlay_frame = self._draw_overlay(frame)
-        overlay_ok, overlay_buf = cv2.imencode(".jpg", overlay_frame, encode_opts)
-        with self._frame_lock:
-            if raw_ok:
-                self._latest_raw_jpeg = raw_buf.tobytes()
+        raw_bytes = raw_buf.tobytes() if raw_ok else None
+
+        overlay_bytes = raw_bytes
+        overlay_active = (
+            (bool(self._last_faces_info) and (time.time() - self._last_faces_ts) <= self._overlay_ttl)
+            or (bool(self._last_body_info) and (time.time() - self._last_body_ts) <= max(self._overlay_ttl, 4.0))
+        )
+        if overlay_active:
+            overlay_frame = self._draw_overlay(frame, publish_mark=publish_mark)
+            overlay_ok, overlay_buf = cv2.imencode(".jpg", overlay_frame, encode_opts)
             if overlay_ok:
-                self._latest_overlay_jpeg = overlay_buf.tobytes()
+                overlay_bytes = overlay_buf.tobytes()
+        with self._frame_lock:
+            if raw_bytes is not None:
+                self._latest_raw_jpeg = raw_bytes
+            if overlay_bytes is not None:
+                self._latest_overlay_jpeg = overlay_bytes
 
     def _should_record(self) -> bool:
         mode = self.assignment.get("recording_mode") or "continuous"

@@ -271,12 +271,14 @@ export async function listRecordings(
   token: string,
   camera_id?: number,
   date_from?: string,
-  date_to?: string
+  date_to?: string,
+  limit?: number
 ) {
   const params = new URLSearchParams();
   if (camera_id) params.append("camera_id", String(camera_id));
   if (date_from) params.append("date_from", date_from);
   if (date_to) params.append("date_to", date_to);
+  if (limit) params.append("limit", String(limit));
   const search = params.toString();
   return request<
     {

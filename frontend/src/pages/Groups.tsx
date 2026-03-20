@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  listGroups,
+  assignCameraToGroup,
   createGroup,
   deleteGroup,
-  getGroup,
-  updateGroup,
   getCameras,
-  assignCameraToGroup,
+  getGroup,
+  listGroups,
   unassignCameraFromGroup,
-  type GroupOut,
+  updateGroup,
   type GroupDetail,
+  type GroupOut,
 } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
@@ -21,7 +21,6 @@ const GroupsPage: React.FC = () => {
   const [groups, setGroups] = useState<GroupOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [selectedGroup, setSelectedGroup] = useState<GroupDetail | null>(null);
@@ -35,11 +34,11 @@ const GroupsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [g, c] = await Promise.all([listGroups(token), getCameras(token)]);
-      setGroups(g);
-      setAllCameras(c);
-    } catch (e: any) {
-      setError(e?.message || "Ошибка загрузки");
+      const [groupItems, cameraItems] = await Promise.all([listGroups(token), getCameras(token)]);
+      setGroups(groupItems);
+      setAllCameras(cameraItems);
+    } catch (event: any) {
+      setError(event?.message || "Ошибка загрузки");
     } finally {
       setLoading(false);
     }
@@ -49,21 +48,32 @@ const GroupsPage: React.FC = () => {
     load();
   }, [token]);
 
+  const openGroup = async (groupId: number) => {
+    if (!token) return;
+    try {
+      const detail = await getGroup(token, groupId);
+      setSelectedGroup(detail);
+      setEditName(detail.name);
+      setEditDesc(detail.description || "");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
+    }
+  };
+
   const handleCreate = async () => {
     if (!token || !name.trim()) return;
     try {
       await createGroup(token, name.trim(), desc.trim() || undefined);
       setName("");
       setDesc("");
-      setShowCreate(false);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
     }
   };
 
   const handleDelete = async (id: number) => {
-    if (!token || !confirm("Удалить группу? Камеры останутся, но будут без группы.")) return;
+    if (!token || !window.confirm("Удалить группу? Камеры останутся, но будут без группы.")) return;
     try {
       await deleteGroup(token, id);
       if (selectedGroup?.group_id === id) {
@@ -72,20 +82,8 @@ const GroupsPage: React.FC = () => {
         setEditDesc("");
       }
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка удаления");
-    }
-  };
-
-  const openGroup = async (groupId: number) => {
-    if (!token) return;
-    try {
-      const detail = await getGroup(token, groupId);
-      setSelectedGroup(detail);
-      setEditName(detail.name);
-      setEditDesc(detail.description || "");
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка удаления");
     }
   };
 
@@ -98,8 +96,8 @@ const GroupsPage: React.FC = () => {
       });
       await openGroup(selectedGroup.group_id);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
     }
   };
 
@@ -110,19 +108,19 @@ const GroupsPage: React.FC = () => {
       setAddCamId("");
       await openGroup(selectedGroup.group_id);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
     }
   };
 
-  const handleUnassignCamera = async (camId: number) => {
+  const handleUnassignCamera = async (cameraId: number) => {
     if (!token || !selectedGroup) return;
     try {
-      await unassignCameraFromGroup(token, selectedGroup.group_id, camId);
+      await unassignCameraFromGroup(token, selectedGroup.group_id, cameraId);
       await openGroup(selectedGroup.group_id);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Ошибка");
+    } catch (event: any) {
+      alert(event?.message || "Ошибка");
     }
   };
 
@@ -130,164 +128,217 @@ const GroupsPage: React.FC = () => {
     (camera) => !selectedGroup?.cameras.some((groupCamera) => groupCamera.camera_id === camera.camera_id)
   );
 
+  const stats = useMemo(
+    () => ({
+      groups: groups.length,
+      cameras: groups.reduce((sum, group) => sum + group.camera_count, 0),
+      selected: selectedGroup?.cameras.length || 0,
+    }),
+    [groups, selectedGroup]
+  );
+
   return (
-    <div className="stack" style={{ marginTop: 18 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
-        <div>
+    <div className="stack">
+      <section className="page-hero">
+        <div className="page-hero__content">
+          <div className="page-hero__eyebrow">Structure</div>
           <h2 className="title">Группы</h2>
-          <div className="muted">Логические группировки камер.</div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <button className="btn secondary" onClick={load}>Обновить</button>
-          {isAdmin && (
-            <button className="btn" onClick={() => setShowCreate(!showCreate)}>Создать группу</button>
-          )}
+        <div className="page-actions">
+          <button className="btn secondary" onClick={load}>
+            Обновить
+          </button>
         </div>
-      </div>
+      </section>
+
+      <section className="summary-grid">
+        <div className="summary-card">
+          <div className="summary-card__label">Всего групп</div>
+          <div className="summary-card__value">{stats.groups}</div>
+          <div className="summary-card__hint">Логические наборы камер для фильтрации live и отчётности.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Камер в группах</div>
+          <div className="summary-card__value">{stats.cameras}</div>
+          <div className="summary-card__hint">Суммарное количество назначений по всем текущим группам.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">В выбранной группе</div>
+          <div className="summary-card__value">{stats.selected || "—"}</div>
+          <div className="summary-card__hint">Для быстрого контроля состава группы без ручного просмотра списка.</div>
+        </div>
+      </section>
 
       {error && <div className="danger">{error}</div>}
 
-      {showCreate && isAdmin && (
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Новая группа</h3>
-          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <label className="field">
-              <span className="label">Название</span>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Офис" />
-            </label>
-            <label className="field">
-              <span className="label">Описание</span>
-              <input className="input" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Камеры офиса" />
-            </label>
-          </div>
-          <button className="btn" style={{ marginTop: 10 }} onClick={handleCreate} disabled={!name.trim()}>
-            Создать
-          </button>
-        </div>
-      )}
-
-      <div className="grid" style={{ gridTemplateColumns: selectedGroup ? "1fr 1fr" : "1fr", gap: 16 }}>
-        <div className="stack">
-          {loading ? (
-            <div className="muted">Загрузка...</div>
-          ) : groups.length === 0 ? (
-            <div className="card"><div className="muted">Нет групп.</div></div>
-          ) : (
-            groups.map((group) => (
-              <div
-                key={group.group_id}
-                className="card"
-                style={{
-                  cursor: "pointer",
-                  border: selectedGroup?.group_id === group.group_id ? "1px solid #60a5fa" : undefined,
-                }}
-                onClick={() => openGroup(group.group_id)}
-              >
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <div style={{ fontWeight: 600 }}>{group.name}</div>
-                  <span className="pill">{group.camera_count} камер</span>
+      <section className="admin-two-column">
+        <div className="stack-grid">
+          {isAdmin && (
+            <div className="panel-card stack">
+              <div className="panel-card__header">
+                <div>
+                  <h3 className="panel-card__title">Создать группу</h3>
+                  <div className="panel-card__lead">Минимальный набор: имя и при необходимости краткое описание.</div>
                 </div>
-                {group.description && <div className="muted" style={{ marginTop: 4 }}>{group.description}</div>}
-                {isAdmin && (
-                  <button
-                    className="btn secondary"
-                    style={{ fontSize: 12, padding: "4px 10px", marginTop: 8 }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDelete(group.group_id);
-                    }}
-                  >
-                    Удалить
-                  </button>
-                )}
               </div>
-            ))
+              <label className="field">
+                <span className="label">Название</span>
+                <input className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Офис" />
+              </label>
+              <label className="field">
+                <span className="label">Описание</span>
+                <input className="input" value={desc} onChange={(event) => setDesc(event.target.value)} placeholder="Камеры офиса" />
+              </label>
+              <button className="btn" onClick={handleCreate} disabled={!name.trim()}>
+                Создать
+              </button>
+            </div>
           )}
-        </div>
 
-        {selectedGroup && (
-          <div className="card">
-            {isAdmin ? (
-              <div className="stack" style={{ gap: 8, marginBottom: 12 }}>
-                <label className="field">
-                  <span className="label">Название</span>
-                  <input className="input" value={editName} onChange={(e) => setEditName(e.target.value)} />
-                </label>
-                <label className="field">
-                  <span className="label">Описание</span>
-                  <input className="input" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} />
-                </label>
-                <div className="row" style={{ gap: 8 }}>
-                  <button className="btn" onClick={handleUpdate} disabled={!editName.trim()}>
-                    Сохранить
-                  </button>
-                  <button
-                    className="btn secondary"
-                    onClick={() => {
-                      setEditName(selectedGroup.name);
-                      setEditDesc(selectedGroup.description || "");
-                    }}
-                  >
-                    Сбросить
-                  </button>
-                </div>
+          <div className="panel-card">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Список групп</h3>
+                <div className="panel-card__lead">Выберите группу, чтобы открыть её состав и редактирование.</div>
               </div>
-            ) : (
-              <>
-                <h3 style={{ marginTop: 0 }}>{selectedGroup.name}</h3>
-                {selectedGroup.description && <div className="muted" style={{ marginBottom: 12 }}>{selectedGroup.description}</div>}
-              </>
-            )}
+              <span className="pill">{groups.length}</span>
+            </div>
 
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Камеры ({selectedGroup.cameras.length})</div>
-            {selectedGroup.cameras.length === 0 ? (
-              <div className="muted">Нет камер в группе.</div>
+            {loading ? (
+              <div className="muted">Загрузка...</div>
+            ) : groups.length === 0 ? (
+              <div className="muted">Групп пока нет.</div>
             ) : (
-              <div className="stack" style={{ gap: 4 }}>
-                {selectedGroup.cameras.map((camera) => (
-                  <div
-                    key={camera.camera_id}
-                    className="row"
-                    style={{
-                      justifyContent: "space-between",
-                      padding: "4px 8px",
-                      background: "rgba(255,255,255,0.03)",
-                      borderRadius: 4,
-                    }}
+              <div className="list-shell">
+                {groups.map((group) => (
+                  <button
+                    key={group.group_id}
+                    className={`list-item${selectedGroup?.group_id === group.group_id ? " active" : ""}`}
+                    onClick={() => openGroup(group.group_id)}
+                    type="button"
                   >
-                    <span style={{ fontSize: 13 }}>
-                      {camera.name} {camera.location ? `(${camera.location})` : ""}
-                    </span>
-                    {isAdmin && (
-                      <button
-                        className="btn secondary"
-                        style={{ fontSize: 11, padding: "2px 6px" }}
-                        onClick={() => handleUnassignCamera(camera.camera_id)}
-                      >
-                        Убрать
-                      </button>
-                    )}
-                  </div>
+                    <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <div className="list-item__title">{group.name}</div>
+                      <span className="pill">{group.camera_count} камер</span>
+                    </div>
+                    <div className="list-item__meta">{group.description || "Описание не указано"}</div>
+                  </button>
                 ))}
               </div>
             )}
+          </div>
+        </div>
 
-            {isAdmin && unassignedCameras.length > 0 && (
-              <div className="row" style={{ gap: 8, marginTop: 12 }}>
-                <select className="input" style={{ flex: 1 }} value={addCamId} onChange={(e) => setAddCamId(e.target.value)}>
-                  <option value="">Добавить камеру...</option>
-                  {unassignedCameras.map((camera) => (
-                    <option key={camera.camera_id} value={camera.camera_id}>{camera.name}</option>
-                  ))}
-                </select>
-                <button className="btn" style={{ fontSize: 12, padding: "6px 12px" }} onClick={handleAssignCamera} disabled={!addCamId}>
-                  Добавить
-                </button>
+        <div className="panel-card stack">
+          <div className="panel-card__header">
+            <div>
+              <h3 className="panel-card__title">{selectedGroup ? selectedGroup.name : "Карточка группы"}</h3>
+              <div className="panel-card__lead">
+                {selectedGroup
+                  ? "Редактирование параметров группы и управление назначенными камерами."
+                  : "Выберите группу слева, чтобы открыть её карточку."}
               </div>
+            </div>
+            {isAdmin && selectedGroup && (
+              <button className="btn secondary" onClick={() => handleDelete(selectedGroup.group_id)}>
+                Удалить
+              </button>
             )}
           </div>
-        )}
-      </div>
+
+          {!selectedGroup ? (
+            <div className="muted">Группа пока не выбрана.</div>
+          ) : (
+            <>
+              {isAdmin ? (
+                <>
+                  <label className="field">
+                    <span className="label">Название</span>
+                    <input className="input" value={editName} onChange={(event) => setEditName(event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span className="label">Описание</span>
+                    <input className="input" value={editDesc} onChange={(event) => setEditDesc(event.target.value)} />
+                  </label>
+                  <div className="page-actions">
+                    <button className="btn" onClick={handleUpdate} disabled={!editName.trim()}>
+                      Сохранить
+                    </button>
+                    <button
+                      className="btn secondary"
+                      onClick={() => {
+                        setEditName(selectedGroup.name);
+                        setEditDesc(selectedGroup.description || "");
+                      }}
+                    >
+                      Сбросить
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="muted">{selectedGroup.description || "Описание не указано"}</div>
+              )}
+
+              <div className="panel-card" style={{ padding: 16 }}>
+                <div className="panel-card__header" style={{ marginBottom: 10 }}>
+                  <div>
+                    <h3 className="panel-card__title">Камеры в группе</h3>
+                    <div className="panel-card__lead">Состав текущей группы с быстрым снятием назначения.</div>
+                  </div>
+                  <span className="pill">{selectedGroup.cameras.length}</span>
+                </div>
+
+                {selectedGroup.cameras.length === 0 ? (
+                  <div className="muted">Камер в группе пока нет.</div>
+                ) : (
+                  <div className="list-shell">
+                    {selectedGroup.cameras.map((camera) => (
+                      <div key={camera.camera_id} className="list-item" style={{ cursor: "default" }}>
+                        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                          <div className="list-item__title">{camera.name}</div>
+                          {isAdmin && (
+                            <button className="btn secondary" onClick={() => handleUnassignCamera(camera.camera_id)}>
+                              Убрать
+                            </button>
+                          )}
+                        </div>
+                        <div className="list-item__meta">{camera.location || "Локация не указана"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {isAdmin && unassignedCameras.length > 0 && (
+                <div className="panel-card" style={{ padding: 16 }}>
+                  <div className="panel-card__header" style={{ marginBottom: 10 }}>
+                    <div>
+                      <h3 className="panel-card__title">Добавить камеру</h3>
+                      <div className="panel-card__lead">Свяжите свободную камеру с выбранной группой.</div>
+                    </div>
+                  </div>
+                  <div className="page-actions" style={{ alignItems: "flex-end" }}>
+                    <label className="field" style={{ flex: 1, minWidth: 220 }}>
+                      <span className="label">Свободная камера</span>
+                      <select className="input" value={addCamId} onChange={(event) => setAddCamId(event.target.value)}>
+                        <option value="">Выберите камеру...</option>
+                        {unassignedCameras.map((camera) => (
+                          <option key={camera.camera_id} value={camera.camera_id}>
+                            {camera.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="btn" onClick={handleAssignCamera} disabled={!addCamId}>
+                      Добавить
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
     </div>
   );
 };

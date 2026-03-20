@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import urllib.request
+import cv2
 import numpy as np
 
 from processor.config import settings
@@ -17,7 +18,8 @@ _mtcnn = None
 _resnet = None
 _device = "cpu"
 
-_FACE_PROB_MIN = 0.85
+_FACE_PROB_MIN = 0.72
+_MIN_FACE_SIDE_RATIO = 0.07
 _MTCNN_WEIGHT_URLS = {
     "pnet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/pnet.pt",
     "rnet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/rnet.pt",
@@ -30,6 +32,24 @@ def _normalize_vec(vec):
     if norm == 0:
         return vec
     return vec / norm
+
+
+def _build_detection_variants(frame_rgb: np.ndarray):
+    yield frame_rgb
+    try:
+        ycrcb = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2YCrCb)
+        ycrcb[:, :, 0] = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(ycrcb[:, :, 0])
+        enhanced = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2RGB)
+        yield enhanced
+
+        blurred = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.2)
+        sharpened = cv2.addWeighted(enhanced, 1.35, blurred, -0.35, 0)
+        yield sharpened
+
+        gamma = np.clip(((enhanced.astype(np.float32) / 255.0) ** 0.85) * 255.0, 0, 255).astype(np.uint8)
+        yield gamma
+    except Exception:
+        return
 
 
 def _processor_cache_dir() -> Path | None:
@@ -123,8 +143,8 @@ def _load_models():
         _mtcnn = MTCNN(
             image_size=160,
             margin=0,
-            min_face_size=20,
-            thresholds=[0.5, 0.6, 0.6],
+            min_face_size=16,
+            thresholds=[0.42, 0.5, 0.56],
             factor=0.709,
             post_process=True,
             keep_all=True,
@@ -134,27 +154,55 @@ def _load_models():
     return _mtcnn, _resnet
 
 
+def get_inference_device() -> str:
+    global _device
+    if _mtcnn is not None:
+        return _device
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
 def detect_faces(frame_rgb: np.ndarray) -> list[dict]:
     """Detect faces and extract normalized embeddings using aligned MTCNN extraction."""
     mtcnn, resnet = _load_models()
     import torch
 
-    boxes, probs = mtcnn.detect(frame_rgb)
-    if boxes is None or len(boxes) == 0:
-        return []
-
-    # filter by probability
     filtered_boxes = []
     filtered_probs = []
-    for box, prob in zip(boxes, probs):
-        if prob is not None and prob >= _FACE_PROB_MIN:
+    source_frame = frame_rgb
+
+    height, width = frame_rgb.shape[:2]
+    min_face_side = max(height, width) * _MIN_FACE_SIDE_RATIO
+
+    for variant in _build_detection_variants(frame_rgb):
+        boxes, probs = mtcnn.detect(variant)
+        if boxes is None or len(boxes) == 0:
+            continue
+
+        filtered_boxes = []
+        filtered_probs = []
+        for box, prob in zip(boxes, probs):
+            if prob is None or prob < _FACE_PROB_MIN:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in box]
+            if (x2 - x1) < min_face_side or (y2 - y1) < min_face_side:
+                continue
             filtered_boxes.append(box)
             filtered_probs.append(prob)
+
+        if filtered_boxes:
+            source_frame = variant
+            break
+
     if not filtered_boxes:
         return []
 
     # Use MTCNN aligned extraction (same as backend vision.py)
-    face_tensors = mtcnn.extract(frame_rgb, filtered_boxes, None)
+    face_tensors = mtcnn.extract(source_frame, filtered_boxes, None)
     if face_tensors is None:
         return []
 
@@ -219,7 +267,11 @@ def match_embedding(
         elif sim > second_best:
             second_best = sim
 
-    margin_ok = best_sim - second_best >= sim_margin
-    if best_sim >= threshold and margin_ok:
+    effective_threshold = threshold
+    if len(person_best) == 1:
+        effective_threshold = max(effective_threshold, 0.68)
+
+    margin_ok = len(person_best) == 1 or (best_sim - second_best >= sim_margin)
+    if best_sim >= effective_threshold and margin_ok:
         return best_id, best_sim
     return None, best_sim
