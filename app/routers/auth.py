@@ -11,6 +11,7 @@ from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user
 from app.schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     TokenResponse,
     TotpCodeRequest,
@@ -23,6 +24,7 @@ from app.security import (
     decrypt_secret,
     encrypt_secret,
     generate_totp_secret,
+    hash_password,
     verify_password,
     verify_totp,
 )
@@ -83,7 +85,7 @@ async def login(
 
     token = create_access_token({"sub": str(user.user_id)})
     await _log_auth_event(session, user.user_id, method=method_used, success=True)
-    return TokenResponse(access_token=token)
+    return TokenResponse(access_token=token, must_change_password=user.must_change_password)
 
 
 @router.post("/login-form", response_model=TokenResponse, summary="OAuth2 password-form login for Swagger UI")
@@ -95,6 +97,20 @@ async def login_form(
     """Same as /auth/login but accepts form-data (username/password), used by Swagger UI."""
     payload = LoginRequest(login=form_data.username, password=form_data.password, totp_code=totp_code)
     return await login(payload=payload, session=session)
+
+
+@router.post("/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: models.User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid current password")
+    current_user.password_hash = hash_password(payload.new_password)
+    current_user.must_change_password = False
+    await session.commit()
+    return {"ok": True}
 
 
 @router.get("/me", response_model=UserOut)

@@ -60,6 +60,7 @@ def upgrade() -> None:
         sa.Column('login', sa.String(80), unique=True, nullable=False),
         sa.Column('password_hash', sa.String(255), nullable=False),
         sa.Column('face_login_enabled', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('must_change_password', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('role_id', sa.Integer(), sa.ForeignKey('roles.role_id', ondelete='RESTRICT'), nullable=False),
         sa.Column('profile_id', sa.Integer(), sa.ForeignKey('profiles.profile_id', ondelete='SET NULL'), unique=True),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),

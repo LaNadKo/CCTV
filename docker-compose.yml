@@ -2,15 +2,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "0512"
-      POSTGRES_DB: cctv
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-0512}
+      POSTGRES_DB: ${POSTGRES_DB:-cctv}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -19,11 +19,9 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      DATABASE_URL: "postgresql+asyncpg://postgres:0512@db:5432/cctv"
-      JWT_SECRET: "super-secret-key-change-me"
-      ENABLE_EMBEDDED_DETECTOR: "false"
-      PROCESSOR_API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-0512}@db:5432/${POSTGRES_DB:-cctv}"
     depends_on:
       db:
         condition: service_healthy
@@ -59,6 +57,8 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    profiles:
+      - with-gpu
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -73,11 +73,30 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "5173:5173"
+      - "80:80"
     environment:
-      VITE_API_URL: "http://localhost:8000"
+      VITE_API_URL: "http://${DOMAIN:-localhost}:8000"
     depends_on:
       - backend
+    profiles:
+      - with-frontend
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    profiles:
+      - with-nginx
 
 volumes:
   pgdata:

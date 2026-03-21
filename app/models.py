@@ -48,6 +48,7 @@ class User(Base):
     login: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     face_login_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.role_id", ondelete="RESTRICT"), nullable=False)
     profile_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("profiles.profile_id", ondelete="SET NULL"), unique=True

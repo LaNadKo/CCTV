@@ -10,6 +10,12 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class UserOut(BaseModel):
@@ -17,6 +23,7 @@ class UserOut(BaseModel):
     login: str
     role_id: int
     face_login_enabled: bool
+    must_change_password: bool = False
 
     class Config:
         from_attributes = True
