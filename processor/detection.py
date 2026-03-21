@@ -19,6 +19,9 @@ from processor.config import settings
 from processor.paths import RECORDINGS_DIR, SNAPSHOTS_DIR, ensure_media_dirs
 
 logger = logging.getLogger(__name__)
+_PROCESSING_BASE_FPS = 24.0
+_MAX_FRAME_INTERVAL_SECONDS = 5.0
+_FRAME_DIVISOR_CHOICES = (1, 2, 4, 8, 16, 32, 64, 120)
 
 _POSE_SKELETON_EDGES = (
     (5, 6),
@@ -70,14 +73,25 @@ class CameraWorker:
         self._prev_gray: np.ndarray | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
+        raw_scan_divisor = getattr(settings, "face_scan_divisor", None)
+        if raw_scan_divisor in (None, 0):
+            try:
+                raw_scan_divisor = max(1, int(round(float(settings.face_scan_interval) * _PROCESSING_BASE_FPS)))
+            except Exception:
+                raw_scan_divisor = 8
+        self._face_scan_divisor = self._sanitize_frame_divisor(raw_scan_divisor, fallback=8)
+        self._overlay_frame_divisor = self._sanitize_frame_divisor(
+            getattr(settings, "overlay_frame_divisor", 1),
+            fallback=1,
+        )
+        self._target_scan_interval = self._frame_divisor_to_interval(self._face_scan_divisor)
         self._last_event: dict[int | None, float] = {}
         self._event_dedup_seconds = 10.0
-        self._overlay_ttl = max(float(settings.face_scan_interval) + 1.0, 3.0)
+        self._overlay_ttl = max(self._target_scan_interval + 1.0, 3.0)
         self._record_event_tail_seconds = 10.0
-        self._live_publish_interval = 1.0 / 12.0
+        self._live_publish_interval = self._frame_divisor_to_interval(self._overlay_frame_divisor)
         self._last_publish_ts = 0.0
         self._publish_frame_counter = 0
-        self._overlay_refresh_frames = {4, 8, 12, 15}
         self._last_overlay_refresh_mark = 0
 
         self._last_faces_info: list[tuple[tuple[int, int, int, int], str, bool]] = []
@@ -92,7 +106,7 @@ class CameraWorker:
         self._next_body_track_id = 1
         self._body_support_cache: list[dict] | None = None
         self._body_support_ts = 0.0
-        self._body_support_interval = 0.45
+        self._body_support_interval = max(0.08, min(0.6, self._target_scan_interval * 0.8))
         self._body_max_side = 800
 
         self._capture_lock = threading.Lock()
@@ -127,6 +141,21 @@ class CameraWorker:
         else:
             value = min(59.0, (sim / threshold) * 59.0)
         return round(max(0.0, min(100.0, value)), 2)
+
+    def _sanitize_frame_divisor(self, value: object, fallback: int) -> int:
+        try:
+            raw = int(value)
+        except (TypeError, ValueError):
+            raw = fallback
+        if raw <= 0:
+            raw = fallback
+        for candidate in _FRAME_DIVISOR_CHOICES:
+            if raw <= candidate:
+                return candidate
+        return _FRAME_DIVISOR_CHOICES[-1]
+
+    def _frame_divisor_to_interval(self, divisor: int) -> float:
+        return min(_MAX_FRAME_INTERVAL_SECONDS, divisor / _PROCESSING_BASE_FPS)
 
     async def set_gallery(self, gallery: list[dict]):
         self._gallery = gallery
@@ -169,19 +198,12 @@ class CameraWorker:
                     self._last_motion_ts = time.time()
                     self._last_activity_ts = time.time()
 
-                recent_face_track = (time.time() - self._last_faces_ts) <= self._overlay_ttl
-                recent_motion = motion or (time.time() - self._last_motion_ts) <= 1.2
-                scan_interval = max(
-                    0.18,
-                    float(settings.face_scan_interval) * (0.35 if (recent_face_track or recent_motion) else 1.0),
-                )
+                scan_interval = self._target_scan_interval
                 should_publish = (now - self._last_publish_ts) >= self._live_publish_interval
                 publish_mark = self._next_publish_frame_mark() if should_publish else 0
-                force_scan_mark = publish_mark in self._overlay_refresh_frames and (recent_face_track or recent_motion)
 
                 if self.assignment.get("detection_enabled", True) and (
                     (now - last_face_scan) >= scan_interval
-                    or (force_scan_mark and (now - last_face_scan) >= 0.08)
                 ):
                     if self._try_start_scan():
                         last_face_scan = now
@@ -234,7 +256,7 @@ class CameraWorker:
 
     def _next_publish_frame_mark(self) -> int:
         self._publish_frame_counter += 1
-        if self._publish_frame_counter > 15:
+        if self._publish_frame_counter > 999:
             self._publish_frame_counter = 1
         return self._publish_frame_counter
 
@@ -422,6 +444,62 @@ class CameraWorker:
             max(0, min(height, int(round(y2 * scale_y)))),
         )
 
+    def _clip_box(
+        self,
+        box: tuple[float, float, float, float],
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = box
+        return (
+            max(0, min(width - 1, int(round(x1)))),
+            max(0, min(height - 1, int(round(y1)))),
+            max(0, min(width, int(round(x2)))),
+            max(0, min(height, int(round(y2)))),
+        )
+
+    def _union_boxes(
+        self,
+        box_a: tuple[int, int, int, int],
+        box_b: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        return (
+            min(box_a[0], box_b[0]),
+            min(box_a[1], box_b[1]),
+            max(box_a[2], box_b[2]),
+            max(box_a[3], box_b[3]),
+        )
+
+    def _head_box_from_points(
+        self,
+        points: list[tuple[float, float]],
+        frame_width: int,
+        frame_height: int,
+        pad_x: float,
+        pad_top: float,
+        pad_bottom: float,
+    ) -> tuple[int, int, int, int] | None:
+        if not points:
+            return None
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        span_x = max(max_x - min_x, 18.0)
+        span_y = max(max_y - min_y, 12.0)
+        base_w = max(span_x * 1.25, span_y * 1.9, 28.0)
+        base_h = max(span_y * 1.8, span_x * 0.95, 28.0)
+        return self._clip_box(
+            (
+                min_x - base_w * pad_x,
+                min_y - base_h * pad_top,
+                max_x + base_w * pad_x,
+                max_y + base_h * pad_bottom,
+            ),
+            frame_width,
+            frame_height,
+        )
+
     def _get_body_support(self, frame: np.ndarray, now: float) -> list[dict]:
         if self._body_support_cache is not None and (now - self._body_support_ts) < self._body_support_interval:
             return self._body_support_cache
@@ -430,7 +508,7 @@ class CameraWorker:
             from processor.body_detector import detect_bodies
 
             body_frame, scale_x, scale_y = self._prepare_body_frame(frame)
-            detected = detect_bodies(body_frame, conf=0.35)
+            detected = detect_bodies(body_frame, conf=0.28)
             bodies = []
             for body in detected:
                 payload = {
@@ -453,6 +531,7 @@ class CameraWorker:
                 keypoint_conf = body.get("keypoint_conf")
                 if isinstance(keypoint_conf, list):
                     payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
+                self._apply_body_pose_metadata(payload, frame.shape[1], frame.shape[0])
                 bodies.append(payload)
         except Exception:
             logger.exception("Body support scan failed on camera %s", self.camera_id)
@@ -474,6 +553,85 @@ class CameraWorker:
             interpolation=cv2.INTER_AREA,
         )
         return resized, width / float(resized.shape[1]), height / float(resized.shape[0])
+
+    def _apply_body_pose_metadata(
+        self,
+        body: dict[str, object],
+        frame_width: int,
+        frame_height: int,
+    ) -> None:
+        body_box = body.get("box")
+        if not isinstance(body_box, tuple):
+            return
+
+        head_points = self._body_confident_points(body, (0, 1, 2, 3, 4), min_conf=0.16)
+        facial_points = self._body_confident_points(body, (1, 2, 3, 4), min_conf=0.16)
+        shoulder_points = self._body_confident_points(body, (5, 6), min_conf=0.18)
+
+        body["head_only"] = False
+        body["tracking_box"] = body_box
+        if not head_points:
+            return
+
+        head_box = self._head_box_from_points(head_points, frame_width, frame_height, pad_x=0.35, pad_top=0.4, pad_bottom=0.8)
+        tracking_head_box = self._head_box_from_points(
+            head_points,
+            frame_width,
+            frame_height,
+            pad_x=0.85 if len(shoulder_points) == 0 else 0.6,
+            pad_top=0.55,
+            pad_bottom=2.0 if len(shoulder_points) == 0 else 1.4,
+        )
+        if head_box is not None:
+            body["head_box"] = head_box
+            body["head_points"] = [[float(px), float(py)] for px, py in head_points]
+        head_only = len(shoulder_points) == 0 and len(facial_points) >= 3
+        body["head_only"] = head_only
+        if tracking_head_box is None:
+            return
+        body["tracking_box"] = tracking_head_box if head_only else self._union_boxes(body_box, tracking_head_box)
+
+    def _body_anchor(self, body: dict[str, object]) -> tuple[float, float] | None:
+        head_points = body.get("head_points")
+        if isinstance(head_points, list) and head_points:
+            xs = [float(point[0]) for point in head_points if isinstance(point, (list, tuple)) and len(point) >= 2]
+            ys = [float(point[1]) for point in head_points if isinstance(point, (list, tuple)) and len(point) >= 2]
+            if xs and ys:
+                return sum(xs) / len(xs), sum(ys) / len(ys)
+        head_box = body.get("head_box")
+        if isinstance(head_box, tuple):
+            hx1, hy1, hx2, hy2 = head_box
+            return (hx1 + hx2) / 2, (hy1 + hy2) / 2
+        box = body.get("tracking_box")
+        if not isinstance(box, tuple):
+            box = body.get("box")
+        if isinstance(box, tuple):
+            x1, y1, x2, y2 = box
+            return (x1 + x2) / 2, y1 + (y2 - y1) * 0.32
+        return None
+
+    def _body_track_match_score(self, body: dict[str, object], state: dict[str, object]) -> float:
+        body_box = body.get("tracking_box")
+        if not isinstance(body_box, tuple):
+            body_box = body.get("box")
+        state_box = state.get("tracking_box")
+        if not isinstance(state_box, tuple):
+            state_box = state.get("box")
+        if not isinstance(body_box, tuple) or not isinstance(state_box, tuple):
+            return 0.0
+
+        iou_score = self._box_iou(body_box, state_box)
+        anchor_score = 0.0
+        body_anchor = self._body_anchor(body)
+        state_anchor = self._body_anchor(state)
+        if body_anchor and state_anchor:
+            dist = abs(body_anchor[0] - state_anchor[0]) + abs(body_anchor[1] - state_anchor[1])
+            max_side = max(body_box[2] - body_box[0], body_box[3] - body_box[1], state_box[2] - state_box[0], state_box[3] - state_box[1], 1)
+            max_dist = max(32.0, max_side * 0.9)
+            anchor_score = 1.0 - min(1.0, dist / max_dist)
+        if iou_score >= 0.18:
+            return max(iou_score, (iou_score * 0.72) + (anchor_score * 0.28))
+        return max(iou_score, anchor_score * 0.88)
 
     def _box_iou(self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
         ax1, ay1, ax2, ay2 = box_a
@@ -499,24 +657,28 @@ class CameraWorker:
         unmatched_track_ids = set(self._body_tracks.keys())
         for body in bodies:
             box = tuple(int(round(v)) for v in body["box"])
+            tracking_box = body.get("tracking_box")
+            if not isinstance(tracking_box, tuple):
+                tracking_box = box
             best_track_id: int | None = None
             best_score = 0.0
             for track_id in list(unmatched_track_ids):
                 state = self._body_tracks.get(track_id)
                 if not state:
                     continue
-                track_box = state.get("box")
-                if not isinstance(track_box, tuple):
-                    continue
-                score = self._box_iou(box, track_box)
+                score = self._body_track_match_score(body, state)
                 if score > best_score:
                     best_score = score
                     best_track_id = track_id
-            if best_track_id is not None and best_score >= 0.18:
+            if best_track_id is not None and best_score >= 0.16:
                 state = self._body_tracks[best_track_id]
                 state["box"] = box
+                state["tracking_box"] = tracking_box
                 state["keypoints"] = body.get("keypoints")
                 state["keypoint_conf"] = body.get("keypoint_conf")
+                state["head_points"] = body.get("head_points")
+                state["head_box"] = body.get("head_box")
+                state["head_only"] = bool(body.get("head_only"))
                 state["last_seen"] = now
                 state["hits"] = int(state.get("hits", 0)) + 1
                 unmatched_track_ids.discard(best_track_id)
@@ -527,10 +689,14 @@ class CameraWorker:
             self._body_tracks[track_id] = {
                 "track_id": track_id,
                 "box": box,
+                "tracking_box": tracking_box,
                 "last_seen": now,
                 "hits": 1,
                 "keypoints": body.get("keypoints"),
                 "keypoint_conf": body.get("keypoint_conf"),
+                "head_points": body.get("head_points"),
+                "head_box": body.get("head_box"),
+                "head_only": bool(body.get("head_only")),
                 "person_id": None,
                 "label": None,
                 "recognized": False,
@@ -548,7 +714,9 @@ class CameraWorker:
             state = self._body_tracks.get(track_id)
             if not state:
                 continue
-            box = state.get("box")
+            box = state.get("tracking_box")
+            if not isinstance(box, tuple):
+                box = state.get("box")
             if not isinstance(box, tuple):
                 continue
             person_id = state.get("person_id")
@@ -558,7 +726,9 @@ class CameraWorker:
                 other = self._body_tracks.get(other_id)
                 if not other:
                     continue
-                other_box = other.get("box")
+                other_box = other.get("tracking_box")
+                if not isinstance(other_box, tuple):
+                    other_box = other.get("box")
                 if not isinstance(other_box, tuple):
                     continue
                 same_person = person_id is not None and person_id == other.get("person_id")
@@ -588,24 +758,36 @@ class CameraWorker:
         best_track_id: int | None = None
         best_score = 0.0
         for state in body_tracks:
-            body_box = state.get("box")
+            body_box = state.get("tracking_box")
+            if not isinstance(body_box, tuple):
+                body_box = state.get("box")
             track_id = state.get("track_id")
             if not isinstance(body_box, tuple) or track_id is None:
                 continue
+            head_only = bool(state.get("head_only"))
+            pose_score = self._face_pose_support_score(face_box, state, strict=head_only)
+            if pose_score > 0.0:
+                score = 0.62 + (pose_score * 0.38)
+                if score > best_score:
+                    best_score = score
+                    best_track_id = int(track_id)
             bx1, by1, bx2, by2 = body_box
             body_width = max(bx2 - bx1, 1)
             body_height = max(by2 - by1, 1)
             if not (bx1 <= face_cx <= bx2):
                 continue
-            if not (by1 <= face_cy <= by1 + body_height * 0.45):
+            if not (by1 <= face_cy <= by1 + body_height * (0.58 if head_only else 0.45)):
                 continue
             width_ratio = face_width / body_width
             height_ratio = face_height / body_height
-            if not (0.08 <= width_ratio <= 0.55 and 0.07 <= height_ratio <= 0.42):
+            max_width_ratio = 0.82 if head_only else 0.55
+            max_height_ratio = 0.78 if head_only else 0.42
+            if not (0.08 <= width_ratio <= max_width_ratio and 0.07 <= height_ratio <= max_height_ratio):
                 continue
             body_cx = (bx1 + bx2) / 2
-            center_score = 1.0 - min(1.0, abs(face_cx - body_cx) / max(body_width * 0.35, 1.0))
-            scale_score = 1.0 - min(1.0, abs(width_ratio - 0.24) / 0.24)
+            center_score = 1.0 - min(1.0, abs(face_cx - body_cx) / max(body_width * (0.48 if head_only else 0.35), 1.0))
+            target_ratio = 0.46 if head_only else 0.24
+            scale_score = 1.0 - min(1.0, abs(width_ratio - target_ratio) / max(target_ratio, 0.12))
             score = (center_score * 0.7) + (scale_score * 0.3)
             if score > best_score:
                 best_score = score
@@ -641,7 +823,9 @@ class CameraWorker:
         for state in body_tracks:
             if not state.get("recognized"):
                 continue
-            box = state.get("box")
+            box = state.get("tracking_box")
+            if not isinstance(box, tuple):
+                box = state.get("box")
             label = state.get("label")
             if not isinstance(box, tuple) or not label:
                 continue
@@ -716,7 +900,12 @@ class CameraWorker:
         face_width = max(x2 - x1, 1)
         face_height = max(y2 - y1, 1)
         for body in bodies:
-            bx1, by1, bx2, by2 = [float(v) for v in body["box"]]
+            raw_box = body.get("tracking_box")
+            if not isinstance(raw_box, tuple):
+                raw_box = body.get("box")
+            if not isinstance(raw_box, tuple):
+                continue
+            bx1, by1, bx2, by2 = [float(v) for v in raw_box]
             body_width = max(bx2 - bx1, 1.0)
             body_height = max(by2 - by1, 1.0)
             face_inside = bx1 <= face_cx <= bx2 and by1 <= face_cy <= by1 + body_height * 0.55
@@ -747,50 +936,74 @@ class CameraWorker:
                 points.append((float(point[0]), float(point[1])))
         return points
 
-    def _face_supported_by_pose(
+    def _face_pose_support_score(
         self,
         box: tuple[int, int, int, int],
-        bodies: list[dict],
+        body: dict,
         strict: bool = False,
-    ) -> bool:
+    ) -> float:
         x1, y1, x2, y2 = box
         face_width = max(x2 - x1, 1.0)
         face_height = max(y2 - y1, 1.0)
-        pad_x = face_width * (0.22 if strict else 0.3)
-        pad_y = face_height * (0.18 if strict else 0.28)
+        pad_x = face_width * (0.2 if strict else 0.3)
+        pad_y = face_height * (0.16 if strict else 0.28)
         expanded_x1 = x1 - pad_x
         expanded_y1 = y1 - pad_y
         expanded_x2 = x2 + pad_x
         expanded_y2 = y2 + pad_y
         face_cx = (x1 + x2) / 2
 
+        head_points = self._body_confident_points(body, (0, 1, 2, 3, 4), min_conf=0.2 if strict else 0.16)
+        facial_points = self._body_confident_points(body, (1, 2, 3, 4), min_conf=0.18 if strict else 0.16)
+        shoulder_points = self._body_confident_points(body, (5, 6), min_conf=0.2)
+        if not head_points:
+            return 0.0
+
+        face_hits = sum(
+            1
+            for px, py in head_points
+            if expanded_x1 <= px <= expanded_x2 and expanded_y1 <= py <= expanded_y2
+        )
+        facial_hits = sum(
+            1
+            for px, py in facial_points
+            if expanded_x1 <= px <= expanded_x2 and expanded_y1 <= py <= expanded_y2
+        )
+        if face_hits < (3 if strict else 2):
+            return 0.0
+
+        min_head_x = min(point[0] for point in head_points)
+        max_head_x = max(point[0] for point in head_points)
+        max_head_y = max(point[1] for point in head_points)
+        face_center_aligned = (min_head_x - face_width * 0.45) <= face_cx <= (max_head_x + face_width * 0.45)
+        head_cluster_wide = (max_head_x - min_head_x) >= face_width * (0.34 if strict else 0.24)
+
+        if shoulder_points:
+            shoulder_min_x = min(point[0] for point in shoulder_points)
+            shoulder_max_x = max(point[0] for point in shoulder_points)
+            shoulder_min_y = min(point[1] for point in shoulder_points)
+            shoulder_span_ok = shoulder_min_x - face_width * 0.45 <= face_cx <= shoulder_max_x + face_width * 0.45
+            shoulder_vertical_ok = shoulder_min_y >= y1 + face_height * 0.12
+            if shoulder_span_ok and shoulder_vertical_ok:
+                return 1.0
+            if strict:
+                return 0.0
+
+        head_only_supported = facial_hits >= (3 if strict else 2) and head_cluster_wide and face_center_aligned
+        if head_only_supported:
+            return 0.92 if strict else 0.84
+        if not strict and len(head_points) >= 4 and max_head_y >= y1 + face_height * 0.15 and face_center_aligned:
+            return 0.72
+        return 0.0
+
+    def _face_supported_by_pose(
+        self,
+        box: tuple[int, int, int, int],
+        bodies: list[dict],
+        strict: bool = False,
+    ) -> bool:
         for body in bodies:
-            head_points = self._body_confident_points(body, (0, 1, 2, 3, 4), min_conf=0.25)
-            shoulder_points = self._body_confident_points(body, (5, 6), min_conf=0.2)
-            upper_points = self._body_confident_points(body, (0, 1, 2, 3, 4, 5, 6), min_conf=0.2)
-            if not head_points:
-                continue
-
-            face_hits = sum(
-                1
-                for px, py in head_points
-                if expanded_x1 <= px <= expanded_x2 and expanded_y1 <= py <= expanded_y2
-            )
-            if face_hits < (3 if strict else 2):
-                continue
-
-            if shoulder_points:
-                shoulder_min_x = min(point[0] for point in shoulder_points)
-                shoulder_max_x = max(point[0] for point in shoulder_points)
-                shoulder_min_y = min(point[1] for point in shoulder_points)
-                shoulder_span_ok = shoulder_min_x - face_width * 0.45 <= face_cx <= shoulder_max_x + face_width * 0.45
-                shoulder_vertical_ok = shoulder_min_y >= y1 + face_height * 0.18
-                if shoulder_span_ok and shoulder_vertical_ok:
-                    return True
-                if strict:
-                    continue
-
-            if len(upper_points) >= (5 if strict else 4):
+            if self._face_pose_support_score(box, body, strict=strict) >= (0.88 if strict else 0.72):
                 return True
         return False
 
@@ -801,7 +1014,12 @@ class CameraWorker:
         face_width = max(x2 - x1, 1)
         face_height = max(y2 - y1, 1)
         for body in bodies:
-            bx1, by1, bx2, by2 = [float(v) for v in body["box"]]
+            raw_box = body.get("tracking_box")
+            if not isinstance(raw_box, tuple):
+                raw_box = body.get("box")
+            if not isinstance(raw_box, tuple):
+                continue
+            bx1, by1, bx2, by2 = [float(v) for v in raw_box]
             body_width = max(bx2 - bx1, 1.0)
             body_height = max(by2 - by1, 1.0)
             body_cx = (bx1 + bx2) / 2
@@ -822,11 +1040,15 @@ class CameraWorker:
     def _track_has_pose_support(self, state: dict[str, object] | None, strict: bool = False) -> bool:
         if not state:
             return False
-        box = state.get("box")
+        box = state.get("head_box")
+        if not isinstance(box, tuple):
+            box = state.get("tracking_box")
+        if not isinstance(box, tuple):
+            box = state.get("box")
         if not isinstance(box, tuple):
             return False
         probe = {
-            "box": box,
+            "box": state.get("tracking_box") if isinstance(state.get("tracking_box"), tuple) else box,
             "keypoints": state.get("keypoints"),
             "keypoint_conf": state.get("keypoint_conf"),
         }
@@ -1119,12 +1341,15 @@ class CameraWorker:
             if not suppress_face_label:
                 draw.text(text_pos, label, font=font, fill=rgb_color)
 
-        if publish_mark in self._overlay_refresh_frames:
+        if publish_mark:
             self._last_overlay_refresh_mark = int(publish_mark)
 
         if self._last_overlay_refresh_mark:
             age_ms = int(max(0.0, now - self._last_faces_ts) * 1000)
-            debug_text = f"OVR {self._last_overlay_refresh_mark:02d} | {age_ms} ms"
+            debug_text = (
+                f"OVR /{self._overlay_frame_divisor} | "
+                f"SCN /{self._face_scan_divisor} | {age_ms} ms"
+            )
             debug_pos = (max(8, frame.shape[1] - 210), 8)
             try:
                 bbox = draw.textbbox(debug_pos, debug_text, font=font)
