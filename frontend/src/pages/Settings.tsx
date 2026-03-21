@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { clearApiUrl, getApiUrl, setApiUrl } from "../lib/api";
-import { loadUiSettings, saveUiSettings, type LiveDensity, type ThemeMode } from "../lib/uiSettings";
+import { loadUiSettings, saveUiSettings, type LiveDensity, type ThemeMode, type UiSettings } from "../lib/uiSettings";
 import { useAuth } from "../context/AuthContext";
 
 const NAV_OPTIONS = [
@@ -15,7 +15,9 @@ const NAV_OPTIONS = [
   { key: "/users", label: "Пользователи" },
   { key: "/apikeys", label: "API-ключи" },
   { key: "/help", label: "Справка" },
-];
+] as const;
+
+const MAX_PRIMARY_NAV = 5;
 
 const DENSITY_LABELS: Record<LiveDensity, string> = {
   compact: "Компактно",
@@ -28,6 +30,25 @@ const THEME_LABELS: Record<ThemeMode, string> = {
   dark: "Тёмная",
   light: "Светлая",
 };
+
+function reorderList(items: string[], fromIndex: number, toIndex: number): string[] {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
+    return items;
+  }
+
+  const next = [...items];
+  const [moved] = next.splice(fromIndex, 1);
+  if (!moved) return items;
+  next.splice(toIndex, 0, moved);
+  return next;
+}
+
+function normalizePrimaryNav(primaryNav: string[], allowedNavKeys: string[], fallbackPrimary: string[]): string[] {
+  const allowed = primaryNav
+    .filter((key, index, items) => allowedNavKeys.includes(key) && items.indexOf(key) === index)
+    .slice(0, MAX_PRIMARY_NAV);
+  return allowed.length ? allowed : fallbackPrimary;
+}
 
 const SettingsPage: React.FC = () => {
   const { user } = useAuth();
@@ -44,63 +65,129 @@ const SettingsPage: React.FC = () => {
     [isAdmin, isUser]
   );
 
-  const allowedNavKeys = useMemo(() => allowedNavOptions.map((option) => option.key), [allowedNavOptions]);
+  const allowedNavKeys = useMemo<string[]>(() => allowedNavOptions.map((option) => option.key), [allowedNavOptions]);
   const fallbackPrimary = useMemo(
-    () =>
-      ["/live", "/recordings", "/reviews", "/reports"].filter((key) => allowedNavKeys.includes(key)).slice(0, 4),
+    () => ["/live", "/recordings", "/reviews", "/reports"].filter((key) => allowedNavKeys.includes(key)).slice(0, 4),
     [allowedNavKeys]
   );
 
   const [apiUrl, setApiUrlDraft] = useState(getApiUrl());
-  const [settings, setSettings] = useState(() => {
+  const [draggedKey, setDraggedKey] = useState<string | null>(null);
+  const [settings, setSettings] = useState<UiSettings>(() => {
     const loaded = loadUiSettings();
-    const primaryNav = loaded.primaryNav.filter((key) => allowedNavKeys.includes(key));
     return {
       ...loaded,
-      primaryNav: primaryNav.length ? primaryNav : fallbackPrimary,
+      primaryNav: normalizePrimaryNav(loaded.primaryNav, allowedNavKeys, fallbackPrimary),
     };
   });
-  const [saved, setSaved] = useState<string | null>(null);
 
-  const togglePrimary = (key: string) => {
+  const effectivePrimaryNav = useMemo(
+    () => normalizePrimaryNav(settings.primaryNav, allowedNavKeys, fallbackPrimary),
+    [allowedNavKeys, fallbackPrimary, settings.primaryNav]
+  );
+
+  useEffect(() => {
+    saveUiSettings({
+      ...settings,
+      primaryNav: effectivePrimaryNav,
+    });
+  }, [effectivePrimaryNav, settings]);
+
+  const selectedNavOptions = useMemo(
+    () =>
+      effectivePrimaryNav
+        .map((key) => allowedNavOptions.find((option) => option.key === key))
+        .filter((option): option is (typeof allowedNavOptions)[number] => Boolean(option)),
+    [allowedNavOptions, effectivePrimaryNav]
+  );
+
+  const availableNavOptions = useMemo(
+    () => allowedNavOptions.filter((option) => !effectivePrimaryNav.includes(option.key)),
+    [allowedNavOptions, effectivePrimaryNav]
+  );
+
+  const updateSettings = (updater: (prev: UiSettings) => UiSettings) => {
     setSettings((prev) => {
-      const exists = prev.primaryNav.includes(key);
-      const nextPrimary = exists ? prev.primaryNav.filter((item) => item !== key) : [...prev.primaryNav, key];
-      const normalized = nextPrimary.filter((item) => allowedNavKeys.includes(item)).slice(0, 5);
+      const next = updater(prev);
       return {
-        ...prev,
-        primaryNav: normalized.length ? normalized : fallbackPrimary,
+        ...next,
+        primaryNav: normalizePrimaryNav(next.primaryNav, allowedNavKeys, fallbackPrimary),
       };
     });
   };
 
-  const persistUi = () => {
-    saveUiSettings({
-      ...settings,
-      primaryNav: settings.primaryNav.filter((key) => allowedNavKeys.includes(key)),
+  const togglePrimary = (key: string) => {
+    updateSettings((prev) => {
+      if (prev.primaryNav.includes(key)) {
+        return {
+          ...prev,
+          primaryNav: prev.primaryNav.filter((item) => item !== key),
+        };
+      }
+
+      if (prev.primaryNav.length >= MAX_PRIMARY_NAV) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        primaryNav: [...prev.primaryNav, key],
+      };
     });
-    setSaved("Настройки интерфейса сохранены. Тема применяется сразу, а навигация обновится после перехода между разделами.");
+  };
+
+  const movePrimary = (key: string, shift: -1 | 1) => {
+    updateSettings((prev) => {
+      const index = prev.primaryNav.indexOf(key);
+      if (index === -1) return prev;
+      const targetIndex = index + shift;
+      if (targetIndex < 0 || targetIndex >= prev.primaryNav.length) return prev;
+      return {
+        ...prev,
+        primaryNav: reorderList(prev.primaryNav, index, targetIndex),
+      };
+    });
+  };
+
+  const movePrimaryByDrop = (targetKey: string) => {
+    if (!draggedKey || draggedKey === targetKey) {
+      setDraggedKey(null);
+      return;
+    }
+
+    updateSettings((prev) => {
+      const fromIndex = prev.primaryNav.indexOf(draggedKey);
+      const toIndex = prev.primaryNav.indexOf(targetKey);
+      if (fromIndex === -1 || toIndex === -1) return prev;
+      return {
+        ...prev,
+        primaryNav: reorderList(prev.primaryNav, fromIndex, toIndex),
+      };
+    });
+
+    setDraggedKey(null);
   };
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
-      <div>
-        <h2 className="title">Настройки</h2>
+      <div className="page-hero">
+        <div className="page-hero__content">
+          <h2 className="title">Настройки</h2>
+          <div className="muted">Тема, состав быстрого доступа и плотность Live применяются сразу после изменения.</div>
+        </div>
       </div>
-
-      {saved && <div className="success">{saved}</div>}
 
       <div className="card stack">
         <h3 style={{ margin: 0 }}>Подключение к backend</h3>
         <label className="field">
           <span className="label">API URL</span>
-          <input className="input" value={apiUrl} onChange={(e) => setApiUrlDraft(e.target.value)} />
+          <input className="input" value={apiUrl} onChange={(event) => setApiUrlDraft(event.target.value)} />
         </label>
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn" onClick={() => setApiUrl(apiUrl)}>
+          <button className="btn" onClick={() => setApiUrl(apiUrl)} type="button">
             Сохранить адрес
           </button>
-          <button className="btn secondary" onClick={clearApiUrl}>
+          <button className="btn secondary" onClick={clearApiUrl} type="button">
             Сбросить
           </button>
         </div>
@@ -113,32 +200,85 @@ const SettingsPage: React.FC = () => {
             <button
               key={mode}
               className={settings.themeMode === mode ? "btn" : "btn secondary"}
-              onClick={() => setSettings((prev) => ({ ...prev, themeMode: mode }))}
+              onClick={() => updateSettings((prev) => ({ ...prev, themeMode: mode }))}
+              type="button"
             >
               {THEME_LABELS[mode]}
             </button>
           ))}
         </div>
-        <div className="muted">Режим «Как в системе» автоматически переключает интерфейс вместе с Windows или macOS.</div>
+        <div className="muted">Режим «Как в системе» автоматически синхронизируется с настройками Windows и macOS.</div>
       </div>
 
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>Главные вкладки</h3>
-        <div className="muted">Выберите, какие разделы держать в шапке. Остальные будут находиться в меню.</div>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-          {allowedNavOptions.map((option) => {
-            const active = settings.primaryNav.includes(option.key);
-            return (
+        <div className="stack" style={{ gap: 6 }}>
+          <h3 style={{ margin: 0 }}>Быстрый доступ</h3>
+          <div className="muted">
+            До {MAX_PRIMARY_NAV} вкладок в шапке. Перетаскивайте карточки мышью или меняйте порядок стрелками.
+          </div>
+        </div>
+
+        <div className="settings-nav-order">
+          {selectedNavOptions.map((option, index) => (
+            <article
+              key={option.key}
+              className={`settings-nav-item${draggedKey === option.key ? " dragging" : ""}`}
+              draggable
+              onDragStart={() => setDraggedKey(option.key)}
+              onDragEnd={() => setDraggedKey(null)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => movePrimaryByDrop(option.key)}
+            >
+              <div className="settings-nav-item__meta">
+                <span className="pill">#{index + 1}</span>
+                <div>
+                  <div className="settings-nav-item__title">{option.label}</div>
+                  <div className="muted">Эта вкладка отображается в панели быстрого доступа.</div>
+                </div>
+              </div>
+              <div className="page-actions">
+                <button
+                  className="btn secondary"
+                  onClick={() => movePrimary(option.key, -1)}
+                  disabled={index === 0}
+                  type="button"
+                >
+                  ←
+                </button>
+                <button
+                  className="btn secondary"
+                  onClick={() => movePrimary(option.key, 1)}
+                  disabled={index === selectedNavOptions.length - 1}
+                  type="button"
+                >
+                  →
+                </button>
+                <button className="btn secondary" onClick={() => togglePrimary(option.key)} type="button">
+                  Убрать
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="stack" style={{ gap: 10 }}>
+          <div className="label">Остальные вкладки</div>
+          <div className="settings-nav-palette">
+            {availableNavOptions.map((option) => (
               <button
                 key={option.key}
-                className={active ? "hour-card active" : "hour-card"}
+                className="hour-card"
                 onClick={() => togglePrimary(option.key)}
+                disabled={selectedNavOptions.length >= MAX_PRIMARY_NAV}
                 type="button"
               >
-                {option.label}
+                + {option.label}
               </button>
-            );
-          })}
+            ))}
+          </div>
+          {selectedNavOptions.length >= MAX_PRIMARY_NAV && (
+            <div className="muted">Достигнут лимит быстрого доступа. Уберите одну вкладку, чтобы добавить другую.</div>
+          )}
         </div>
       </div>
 
@@ -149,19 +289,14 @@ const SettingsPage: React.FC = () => {
             <button
               key={density}
               className={settings.liveDensity === density ? "btn" : "btn secondary"}
-              onClick={() => setSettings((prev) => ({ ...prev, liveDensity: density }))}
+              onClick={() => updateSettings((prev) => ({ ...prev, liveDensity: density }))}
+              type="button"
             >
               {DENSITY_LABELS[density]}
             </button>
           ))}
         </div>
-        <div className="muted">Компактный режим ближе к мониторной сетке, крупный делает акцент на одной-двух камерах.</div>
-      </div>
-
-      <div className="row" style={{ gap: 8 }}>
-        <button className="btn" onClick={persistUi}>
-          Сохранить интерфейс
-        </button>
+        <div className="muted">Компактный режим ближе к мониторной сетке, крупный фокусируется на меньшем числе камер.</div>
       </div>
     </div>
   );
