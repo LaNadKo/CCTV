@@ -312,7 +312,13 @@ class CameraWorker:
                     recent_motion = (time.time() - self._last_motion_ts) <= settings.unknown_face_requires_motion_seconds
                     if not recent_motion and track_id is not None:
                         track_state = self._body_tracks.get(track_id)
-                        recent_motion = bool(track_state and int(track_state.get("hits", 0)) >= 2)
+                        recent_motion = bool(
+                            track_state
+                            and int(track_state.get("hits", 0)) >= 2
+                            and self._track_has_pose_support(track_state, strict=True)
+                        )
+                    if not recent_motion and bodies and self._face_supported_by_pose(box, bodies, strict=True):
+                        recent_motion = True
                     if not recent_motion:
                         logger.debug(
                             "Camera %s: suppressed unknown face without recent scene motion box=%s",
@@ -719,6 +725,75 @@ class CameraWorker:
                 return True
         return False
 
+    def _body_confident_points(
+        self,
+        body: dict,
+        indices: tuple[int, ...],
+        min_conf: float = 0.28,
+    ) -> list[tuple[float, float]]:
+        keypoints = body.get("keypoints")
+        keypoint_conf = body.get("keypoint_conf")
+        if not isinstance(keypoints, list):
+            return []
+        confs = keypoint_conf if isinstance(keypoint_conf, list) else None
+        points: list[tuple[float, float]] = []
+        for idx in indices:
+            if idx >= len(keypoints):
+                continue
+            if confs is not None and idx < len(confs) and float(confs[idx]) < min_conf:
+                continue
+            point = keypoints[idx]
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                points.append((float(point[0]), float(point[1])))
+        return points
+
+    def _face_supported_by_pose(
+        self,
+        box: tuple[int, int, int, int],
+        bodies: list[dict],
+        strict: bool = False,
+    ) -> bool:
+        x1, y1, x2, y2 = box
+        face_width = max(x2 - x1, 1.0)
+        face_height = max(y2 - y1, 1.0)
+        pad_x = face_width * (0.22 if strict else 0.3)
+        pad_y = face_height * (0.18 if strict else 0.28)
+        expanded_x1 = x1 - pad_x
+        expanded_y1 = y1 - pad_y
+        expanded_x2 = x2 + pad_x
+        expanded_y2 = y2 + pad_y
+        face_cx = (x1 + x2) / 2
+
+        for body in bodies:
+            head_points = self._body_confident_points(body, (0, 1, 2, 3, 4), min_conf=0.25)
+            shoulder_points = self._body_confident_points(body, (5, 6), min_conf=0.2)
+            upper_points = self._body_confident_points(body, (0, 1, 2, 3, 4, 5, 6), min_conf=0.2)
+            if not head_points:
+                continue
+
+            face_hits = sum(
+                1
+                for px, py in head_points
+                if expanded_x1 <= px <= expanded_x2 and expanded_y1 <= py <= expanded_y2
+            )
+            if face_hits < (3 if strict else 2):
+                continue
+
+            if shoulder_points:
+                shoulder_min_x = min(point[0] for point in shoulder_points)
+                shoulder_max_x = max(point[0] for point in shoulder_points)
+                shoulder_min_y = min(point[1] for point in shoulder_points)
+                shoulder_span_ok = shoulder_min_x - face_width * 0.45 <= face_cx <= shoulder_max_x + face_width * 0.45
+                shoulder_vertical_ok = shoulder_min_y >= y1 + face_height * 0.18
+                if shoulder_span_ok and shoulder_vertical_ok:
+                    return True
+                if strict:
+                    continue
+
+            if len(upper_points) >= (5 if strict else 4):
+                return True
+        return False
+
     def _face_strictly_supported_by_body(self, box: tuple[int, int, int, int], bodies: list[dict]) -> bool:
         x1, y1, x2, y2 = box
         face_cx = (x1 + x2) / 2
@@ -743,6 +818,19 @@ class CameraWorker:
             if horizontal_offset_ok and scale_ok:
                 return True
         return False
+
+    def _track_has_pose_support(self, state: dict[str, object] | None, strict: bool = False) -> bool:
+        if not state:
+            return False
+        box = state.get("box")
+        if not isinstance(box, tuple):
+            return False
+        probe = {
+            "box": box,
+            "keypoints": state.get("keypoints"),
+            "keypoint_conf": state.get("keypoint_conf"),
+        }
+        return self._face_supported_by_pose(box, [probe], strict=strict)
 
     def _prune_liveness_state(self, now: float) -> None:
         stale_keys = [
@@ -855,8 +943,10 @@ class CameraWorker:
             body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 0.6, 0.03)
             strict_body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 1.05, 0.055)
         else:
-            body_supported = self._face_supported_by_body(box, bodies) or face_area_ratio >= 0.2
-            strict_body_supported = self._face_strictly_supported_by_body(box, bodies) or face_area_ratio >= 0.22
+            pose_supported = self._face_supported_by_pose(box, bodies, strict=False)
+            strict_pose_supported = self._face_supported_by_pose(box, bodies, strict=True)
+            body_supported = pose_supported or self._face_supported_by_body(box, bodies) or face_area_ratio >= 0.2
+            strict_body_supported = strict_pose_supported or self._face_strictly_supported_by_body(box, bodies) or face_area_ratio >= 0.22
         if not body_supported:
             return False
 
@@ -917,6 +1007,9 @@ class CameraWorker:
                 return False
             if texture_score < settings.antispoof_min_texture_score * 1.15:
                 return False
+            if bodies is not None and self._face_supported_by_pose(box, bodies, strict=True):
+                if face_area_ratio >= 0.045 and stable_hits >= 2:
+                    return True
             if face_area_ratio < max(settings.antispoof_small_face_ratio * 1.15, 0.05):
                 return stable_hits >= 2 and (face_motion_ok or shift_motion_ok)
             return stable_hits >= 2 and (face_motion_ok or shift_motion_ok or (context_motion_ok and face_area_ratio >= 0.075))
