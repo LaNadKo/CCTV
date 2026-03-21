@@ -371,16 +371,235 @@ iscc installer.iss
 ## Структура репозитория
 
 ```text
-app/            backend и API
-desktop/        Electron-оболочка Console
-frontend/       React-интерфейс Console
-mobile/         мобильный клиент
-processor/      обработчик видеопотока и GUI
-migrations/     миграции базы данных
-scripts/        серверные bash-скрипты
-docker-compose.yml
-install.sh
-README.md
+.
+├── .dockerignore                    # исключения для Docker build
+├── .env.example                     # шаблон переменных окружения
+├── .gitignore                       # исключения git
+├── alembic.ini                      # конфигурация Alembic
+├── create_database.sql              # SQL-заготовка для ручного развёртывания БД
+├── docker-compose.yml               # основной compose-стек проекта
+├── Dockerfile                       # Dockerfile backend-контейнера
+├── docker-entrypoint.sh             # entrypoint контейнера backend
+├── init-ssl.sh                      # вспомогательная инициализация SSL для nginx
+├── install.sh                       # автоматическая установка серверной части
+├── README.md                        # основная документация проекта
+├── requirements.txt                 # Python-зависимости backend
+├── schema_case_studio.sql           # альтернативная SQL-схема / черновой экспорт
+├── start-all-docker.bat             # запуск docker-стека под Windows
+├── start-all.bat                    # локальный запуск основных компонентов
+├── start-backend.bat                # запуск backend под Windows
+├── start-db.bat                     # запуск БД под Windows
+├── start-frontend.bat               # запуск frontend под Windows
+├── start-local.bat                  # локальный запуск без общего сценария
+├── stop-all.bat                     # остановка Windows-сценария
+├── stop-local.bat                   # остановка локального запуска
+├── nginx/
+│   └── default.conf.template        # шаблон reverse proxy для nginx
+├── migrations/
+│   ├── README                       # служебное описание Alembic
+│   ├── env.py                       # окружение миграций
+│   ├── script.py.mako               # шаблон генерации миграций
+│   └── versions/
+│       ├── 0001_full_schema.py      # базовая схема БД
+│       ├── 0002_groups_processors.py# расширение по группам и processor
+│       └── 0003_soft_delete.py      # soft delete и связанные правки
+├── scripts/
+│   ├── logs.sh                      # просмотр логов compose-стека
+│   ├── reset-db.sh                  # полный сброс БД и повторный запуск
+│   ├── seed_data.py                 # начальные данные и тестовые сущности
+│   ├── smoke_api.py                 # smoke-тест основных API-сценариев
+│   ├── start-server.sh              # запуск db + backend + mediamtx
+│   └── stop-server.sh               # остановка серверного стека
+├── app/
+│   ├── __init__.py                  # пакет backend
+│   ├── camera_utils.py              # выбор и нормализация источника камеры
+│   ├── config.py                    # настройки backend из env
+│   ├── db.py                        # async session / engine
+│   ├── dependencies.py              # зависимости FastAPI и auth helper-ы
+│   ├── detector.py                  # серверная координация событий/детекций
+│   ├── main.py                      # точка входа FastAPI, startup и routers
+│   ├── models.py                    # SQLAlchemy-модели БД
+│   ├── permissions.py               # проверка ролей и прав доступа
+│   ├── processor_media.py           # проксирование media-ресурсов processor
+│   ├── security.py                  # JWT, хеширование паролей, токены
+│   ├── vision.py                    # backend-часть face vision helper-ов
+│   ├── routers/
+│   │   ├── __init__.py              # пакет routers
+│   │   ├── admin.py                 # админ-операции, камеры, стримы, пользователи
+│   │   ├── api_keys.py              # API-ключи
+│   │   ├── auth.py                  # логин, токены, смена пароля
+│   │   ├── cameras.py               # список камер и live stream proxy
+│   │   ├── detections.py            # события, pending review, snapshots
+│   │   ├── face.py                  # биометрия, face-login, enroll
+│   │   ├── groups.py                # группы камер
+│   │   ├── homes.py                 # заготовка маршрутов домов/объектов
+│   │   ├── persons.py               # база персон и эмбеддинги
+│   │   ├── processors.py            # регистрация и управление processor
+│   │   ├── recordings.py            # архив, файлы записей, proxy playback
+│   │   ├── reports.py               # отчёты и экспорт
+│   │   └── users.py                 # профиль пользователя и связанное API
+│   ├── schemas/
+│   │   ├── __init__.py              # пакет Pydantic-схем
+│   │   ├── api_keys.py              # схемы API-ключей
+│   │   ├── auth.py                  # схемы авторизации
+│   │   ├── camera_admin.py          # admin-схемы камер и stream-конфигов
+│   │   ├── cameras.py               # схемы камер
+│   │   ├── detections.py            # схемы событий/ревью
+│   │   ├── face.py                  # схемы face API
+│   │   ├── groups.py                # схемы групп
+│   │   ├── homes.py                 # схемы homes-модуля
+│   │   ├── persons.py               # схемы персон и эмбеддингов
+│   │   ├── processors.py            # схемы processor API
+│   │   ├── recordings.py            # схемы записей
+│   │   ├── reports.py               # схемы отчётов
+│   │   └── users.py                 # схемы пользователей
+│   └── storage/
+│       ├── __init__.py              # пакет storage backends
+│       ├── base.py                  # базовый интерфейс хранилища
+│       ├── factory.py               # фабрика storage backend
+│       ├── ftp.py                   # FTP-хранилище
+│       ├── local.py                 # локальное файловое хранилище
+│       └── s3.py                    # S3-совместимое хранилище
+├── frontend/
+│   ├── eslint.config.js             # ESLint-конфигурация
+│   ├── index.html                   # HTML-точка входа Vite
+│   ├── package-lock.json            # lockfile npm
+│   ├── package.json                 # зависимости и скрипты frontend
+│   ├── tsconfig.app.json            # TS-конфиг приложения
+│   ├── tsconfig.json                # базовый TS-конфиг
+│   ├── tsconfig.node.json           # TS-конфиг node-инструментов
+│   ├── vite.config.ts               # конфиг Vite / PWA-сборки
+│   ├── public/
+│   │   ├── apple-touch-icon.png     # PWA-иконка Apple
+│   │   ├── favicon.png              # favicon
+│   │   ├── icon.svg                 # базовая иконка приложения
+│   │   ├── vite.svg                 # иконка шаблона Vite
+│   │   └── icons/
+│   │       ├── icon-72x72.png       # PWA icon 72
+│   │       ├── icon-96x96.png       # PWA icon 96
+│   │       ├── icon-128x128.png     # PWA icon 128
+│   │       ├── icon-144x144.png     # PWA icon 144
+│   │       ├── icon-152x152.png     # PWA icon 152
+│   │       ├── icon-192x192.png     # PWA icon 192
+│   │       ├── icon-384x384.png     # PWA icon 384
+│   │       └── icon-512x512.png     # PWA icon 512
+│   └── src/
+│       ├── App.tsx                  # роутинг, shell и навигация Console
+│       ├── app.css                  # основная стилизация интерфейса
+│       ├── index.css                # глобальные стили и CSS-переменные
+│       ├── main.tsx                 # точка входа React
+│       ├── assets/
+│       │   └── react.svg            # служебный svg-asset
+│       ├── context/
+│       │   └── AuthContext.tsx      # контекст авторизации
+│       ├── hooks/
+│       │   └── usePWA.ts            # PWA helper-логика
+│       ├── lib/
+│       │   ├── api.ts               # HTTP API-клиент
+│       │   ├── fuzzy.ts             # неточный поиск
+│       │   ├── personNames.ts       # нормализация ФИО
+│       │   └── uiSettings.ts        # настройки интерфейса и темы
+│       └── pages/
+│           ├── ApiKeys.tsx          # экран API-ключей
+│           ├── Cameras.tsx          # экран камер
+│           ├── Groups.tsx           # экран групп
+│           ├── Help.tsx             # встроенная справка
+│           ├── Live.tsx             # live-мониторинг
+│           ├── Login.tsx            # авторизация
+│           ├── Persons.tsx          # база персон и сбор эмбеддингов
+│           ├── Processors.tsx       # управление processor
+│           ├── Recordings.tsx       # архив записей
+│           ├── Reports.tsx          # отчёты
+│           ├── Reviews.tsx          # ревью событий
+│           ├── Settings.tsx         # настройки Console
+│           └── Users.tsx            # пользователи и роли
+├── desktop/
+│   ├── build_installer.bat          # вспомогательная сборка installer
+│   ├── installer.iss                # Inno Setup-скрипт Console
+│   ├── main.js                      # main process Electron
+│   ├── package-lock.json            # lockfile npm
+│   ├── package.json                 # зависимости и скрипты desktop
+│   └── preload.js                   # preload bridge Electron
+├── mobile/
+│   ├── .gitignore                   # исключения mobile-модуля
+│   ├── App.tsx                      # legacy Expo entry
+│   ├── app.json                     # конфиг Expo
+│   ├── index.ts                     # точка входа Expo
+│   ├── package-lock.json            # lockfile npm
+│   ├── package.json                 # зависимости mobile
+│   ├── tsconfig.json                # TS-конфиг mobile
+│   ├── assets/
+│   │   ├── android-icon-background.png   # фон adaptive icon
+│   │   ├── android-icon-foreground.png   # foreground adaptive icon
+│   │   ├── android-icon-monochrome.png   # monochrome adaptive icon
+│   │   ├── favicon.png                   # favicon mobile
+│   │   ├── icon.png                      # основная иконка
+│   │   └── splash-icon.png               # splash-иконка
+│   ├── app/
+│   │   ├── _layout.tsx              # корневой layout Expo Router
+│   │   ├── index.tsx                # стартовый экран / redirect
+│   │   ├── (auth)/
+│   │   │   ├── _layout.tsx          # layout auth-группы
+│   │   │   └── login.tsx            # экран логина
+│   │   └── (tabs)/
+│   │       ├── _layout.tsx          # layout tab-навигации
+│   │       ├── apikeys.tsx          # экран API-ключей
+│   │       ├── cameras.tsx          # экран камер
+│   │       ├── groups.tsx           # экран групп
+│   │       ├── live.tsx             # live
+│   │       ├── persons.tsx          # персоны
+│   │       ├── processors.tsx       # processor
+│   │       ├── recordings.tsx       # записи
+│   │       ├── reports.tsx          # отчёты
+│   │       ├── reviews.tsx          # ревью
+│   │       ├── settings.tsx         # настройки
+│   │       └── users.tsx            # пользователи
+│   └── src/
+│       ├── context/
+│       │   └── AuthContext.tsx      # auth context mobile-клиента
+│       ├── lib/
+│       │   ├── api.ts               # API-клиент mobile
+│       │   └── storage.ts           # локальное хранение токенов/настроек
+│       └── theme/
+│           ├── colors.ts            # палитра
+│           └── styles.ts            # общие стили
+└── processor/
+    ├── .dockerignore                # исключения для Docker build processor
+    ├── .env.example                 # шаблон env processor
+    ├── Dockerfile                   # Dockerfile processor
+    ├── __init__.py                  # пакет processor
+    ├── antispoof.py                 # anti-spoofing helper
+    ├── body_detector.py             # детекция тела / опорных точек
+    ├── build_exe.py                 # сборка PyInstaller
+    ├── build_installer.bat          # полная сборка installer под Windows
+    ├── build_installer_fast.bat     # ускоренная сборка installer
+    ├── camera_utils.py              # выбор RTSP/ONVIF/local источников
+    ├── cli.py                       # CLI-инструменты processor
+    ├── client.py                    # HTTP-клиент backend
+    ├── config.py                    # конфигурация processor
+    ├── detection.py                 # основной worker детекции и overlay
+    ├── docker-compose.yml           # compose-файл processor-модуля
+    ├── install.bat                  # установка processor под Windows
+    ├── install.sh                   # установка processor под Linux
+    ├── installer.iss                # Inno Setup-скрипт Processor
+    ├── launcher.py                  # запуск process/runtime
+    ├── main.py                      # сервис orchestration
+    ├── media_server.py              # локальный media HTTP-сервер processor
+    ├── monitor.py                   # сбор системных метрик
+    ├── networking.py                # сетевые helper-ы и адреса
+    ├── paths.py                     # вычисление рабочих путей
+    ├── requirements.txt             # Python-зависимости processor
+    ├── run_gui.py                   # вход в GUI и headless-режим
+    ├── runtime.py                   # runtime, heartbeat, config-apply
+    ├── tracker.py                   # логика трекера
+    ├── tracking.py                  # дополнительные tracking helper-ы
+    ├── vision.py                    # face embeddings / recognition
+    ├── assets/
+    │   ├── icon.ico                 # иконка Windows
+    │   └── icon.png                 # PNG-иконка
+    └── gui/
+        ├── __init__.py              # пакет GUI
+        └── app.py                   # интерфейс Processor на CustomTkinter
 ```
 
 ## Технологии
