@@ -234,8 +234,8 @@ start_services() {
 
     cd "$INSTALL_DIR"
 
-    # Останавливаем старое если есть
-    docker compose down 2>/dev/null || true
+    # Останавливаем старое и удаляем volumes для чистого старта
+    docker compose down -v 2>/dev/null || true
 
     # Собираем и запускаем
     docker compose up -d --build db backend mediamtx
