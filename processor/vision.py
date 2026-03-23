@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 from pathlib import Path
 import shutil
 import sys
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 _mtcnn = None
 _resnet = None
 _device = "cpu"
+_model_lock = threading.RLock()
+_force_cpu_runtime = False
 
 _FACE_PROB_MIN = 0.72
 _MIN_FACE_SIDE_RATIO = 0.07
@@ -129,13 +132,52 @@ def _ensure_mtcnn_weights() -> Path:
     return expected_dir
 
 
+def _want_device() -> str:
+    import torch
+
+    if _force_cpu_runtime:
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _reset_models(target_device: str | None = None) -> None:
+    global _mtcnn, _resnet, _device
+    _mtcnn = None
+    _resnet = None
+    if target_device:
+        _device = target_device
+
+
+def _is_cuda_runtime_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "cuda error" in text or "device-side assert" in text or "misaligned address" in text
+
+
+def _switch_runtime_to_cpu(reason: BaseException | str) -> None:
+    global _force_cpu_runtime
+    if _force_cpu_runtime:
+        return
+    _force_cpu_runtime = True
+    logger.warning("Face inference switched to CPU fallback after CUDA failure: %s", reason)
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    _reset_models(target_device="cpu")
+
+
 def _load_models():
     global _mtcnn, _resnet, _device
-    if _mtcnn is None:
+    target_device = _want_device()
+    if _mtcnn is None or _resnet is None or _device != target_device:
         import torch
         from facenet_pytorch import MTCNN, InceptionResnetV1
+
         weights_dir = _ensure_mtcnn_weights()
-        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        _device = target_device
         logger.info("Loading models on device=%s (mtcnn_weights=%s)", _device, weights_dir)
         if _device == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = False
@@ -168,68 +210,79 @@ def get_inference_device() -> str:
 
 def detect_faces(frame_rgb: np.ndarray) -> list[dict]:
     """Detect faces and extract normalized embeddings using aligned MTCNN extraction."""
-    mtcnn, resnet = _load_models()
-    import torch
+    try:
+        return _detect_faces_impl(frame_rgb)
+    except RuntimeError as exc:
+        if _device == "cuda" and _is_cuda_runtime_error(exc):
+            _switch_runtime_to_cpu(exc)
+            return _detect_faces_impl(frame_rgb)
+        raise
 
-    filtered_boxes = []
-    filtered_probs = []
-    source_frame = frame_rgb
 
-    height, width = frame_rgb.shape[:2]
-    min_face_side = max(height, width) * _MIN_FACE_SIDE_RATIO
-
-    for variant in _build_detection_variants(frame_rgb):
-        boxes, probs = mtcnn.detect(variant)
-        if boxes is None or len(boxes) == 0:
-            continue
+def _detect_faces_impl(frame_rgb: np.ndarray) -> list[dict]:
+    with _model_lock:
+        mtcnn, resnet = _load_models()
+        import torch
 
         filtered_boxes = []
         filtered_probs = []
-        for box, prob in zip(boxes, probs):
-            if prob is None or prob < _FACE_PROB_MIN:
+        source_frame = frame_rgb
+
+        height, width = frame_rgb.shape[:2]
+        min_face_side = max(height, width) * _MIN_FACE_SIDE_RATIO
+
+        for variant in _build_detection_variants(frame_rgb):
+            boxes, probs = mtcnn.detect(variant)
+            if boxes is None or len(boxes) == 0:
                 continue
-            x1, y1, x2, y2 = [float(v) for v in box]
-            if (x2 - x1) < min_face_side or (y2 - y1) < min_face_side:
-                continue
-            filtered_boxes.append(box)
-            filtered_probs.append(prob)
 
-        if filtered_boxes:
-            source_frame = variant
-            break
+            filtered_boxes = []
+            filtered_probs = []
+            for box, prob in zip(boxes, probs):
+                if prob is None or prob < _FACE_PROB_MIN:
+                    continue
+                x1, y1, x2, y2 = [float(v) for v in box]
+                if (x2 - x1) < min_face_side or (y2 - y1) < min_face_side:
+                    continue
+                filtered_boxes.append(box)
+                filtered_probs.append(prob)
 
-    if not filtered_boxes:
-        return []
+            if filtered_boxes:
+                source_frame = variant
+                break
 
-    # Use MTCNN aligned extraction (same as backend vision.py)
-    face_tensors = mtcnn.extract(source_frame, filtered_boxes, None)
-    if face_tensors is None:
-        return []
+        if not filtered_boxes:
+            return []
 
-    if isinstance(face_tensors, torch.Tensor):
-        faces = face_tensors
-    else:
-        faces = torch.stack([t for t in face_tensors if t is not None]) if len(face_tensors) else None
-    if faces is None or faces.nelement() == 0:
-        return []
-    if faces.dim() == 3:
-        faces = faces.unsqueeze(0)
-    faces = faces.to(_device)
+        # Use MTCNN aligned extraction (same as backend vision.py)
+        face_tensors = mtcnn.extract(source_frame, filtered_boxes, None)
+        if face_tensors is None:
+            return []
 
-    with torch.no_grad():
-        embs = resnet(faces).cpu().numpy()
+        if isinstance(face_tensors, torch.Tensor):
+            faces = face_tensors
+        else:
+            faces = torch.stack([t for t in face_tensors if t is not None]) if len(face_tensors) else None
+        if faces is None or faces.nelement() == 0:
+            return []
+        if faces.dim() == 3:
+            faces = faces.unsqueeze(0)
+        faces = faces.to(_device)
 
-    results = []
-    for i, box in enumerate(filtered_boxes):
-        if i >= len(embs):
-            break
-        emb = _normalize_vec(embs[i].astype(np.float32))
-        results.append({
-            "box": box.tolist() if hasattr(box, 'tolist') else list(box),
-            "confidence": float(filtered_probs[i]) if filtered_probs[i] is not None else 0.0,
-            "embedding": emb,
-        })
-    return results
+        with torch.no_grad():
+            embs = resnet(faces).cpu().numpy()
+
+        results = []
+        for i, box in enumerate(filtered_boxes):
+            if i >= len(embs):
+                break
+            emb = _normalize_vec(embs[i].astype(np.float32))
+            results.append({
+                "box": box.tolist() if hasattr(box, 'tolist') else list(box),
+                "confidence": float(filtered_probs[i]) if filtered_probs[i] is not None else 0.0,
+                "embedding": emb,
+            })
+        return results
 
 
 def match_embedding(

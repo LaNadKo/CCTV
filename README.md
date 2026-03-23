@@ -376,7 +376,7 @@ iscc installer.iss
 ├── .env.example                     # шаблон переменных окружения
 ├── .gitignore                       # исключения git
 ├── alembic.ini                      # конфигурация Alembic
-├── create_database.sql              # SQL-заготовка для ручного развёртывания БД
+├── CCTV-Processor.spec              # PyInstaller-спецификация для Processor
 ├── docker-compose.yml               # основной compose-стек проекта
 ├── Dockerfile                       # Dockerfile backend-контейнера
 ├── docker-entrypoint.sh             # entrypoint контейнера backend
@@ -384,7 +384,6 @@ iscc installer.iss
 ├── install.sh                       # автоматическая установка серверной части
 ├── README.md                        # основная документация проекта
 ├── requirements.txt                 # Python-зависимости backend
-├── schema_case_studio.sql           # альтернативная SQL-схема / черновой экспорт
 ├── start-all-docker.bat             # запуск docker-стека под Windows
 ├── start-all.bat                    # локальный запуск основных компонентов
 ├── start-backend.bat                # запуск backend под Windows
@@ -410,6 +409,8 @@ iscc installer.iss
 │   ├── smoke_api.py                 # smoke-тест основных API-сценариев
 │   ├── start-server.sh              # запуск db + backend + mediamtx
 │   └── stop-server.sh               # остановка серверного стека
+├── yolov8n-pose.pt                  # модель pose detection для Processor
+├── yolov8n.pt                       # дополнительная YOLO-модель
 ├── app/
 │   ├── __init__.py                  # пакет backend
 │   ├── camera_utils.py              # выбор и нормализация источника камеры

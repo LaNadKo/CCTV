@@ -69,6 +69,6 @@ if errorlevel 1 (
 echo.
 echo ============================================
 echo   BUILD COMPLETE!
-echo   Installer: installer_output\CCTV-Processor-Setup-1.0.0.exe
+echo   Installer set: installer_output\CCTV-Processor-Setup-1.0.0.exe + *.bin
 echo ============================================
 pause

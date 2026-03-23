@@ -28,10 +28,13 @@ recordings/
 recordings_cache/
 snapshots/*.jpg
 *.db
+docs/
+schem/
 
 # Processor (runtime)
 processor/venv/
 processor/processor_config.json
+processor/processor.log
 processor/run.sh
 processor/run.bat
 processor/run-gui.bat
