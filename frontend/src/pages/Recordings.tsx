@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listRecordings, recordingSnapshotUrl, getTimeline, getCameras, API_URL } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import { useHome } from "../context/HomeContext";
 
 type DbRec = {
   recording_file_id: number;
@@ -26,7 +25,6 @@ type TimelineEvent = {
 
 const RecordingsPage: React.FC = () => {
   const { token } = useAuth();
-  const { currentHome } = useHome();
   const [records, setRecords] = useState<DbRec[]>([]);
   const [cameras, setCameras] = useState<{ camera_id: number; name: string }[]>([]);
   const [cameraId, setCameraId] = useState<number | null>(null);
@@ -46,7 +44,7 @@ const RecordingsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const cams = await getCameras(token, currentHome?.home_id);
+      const cams = await getCameras(token);
       setCameras(cams.map((c) => ({ camera_id: c.camera_id, name: c.name })));
       const cam = cameraId ?? cams[0]?.camera_id ?? null;
       if (cam !== null) setCameraId(cam);
@@ -68,7 +66,7 @@ const RecordingsPage: React.FC = () => {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, cameraId, selectedDate, currentHome]);
+  }, [token, cameraId, selectedDate]);
 
   const recordsForDay = useMemo(() => {
     if (!selectedDate) return [];
@@ -233,7 +231,7 @@ const RecordingsPage: React.FC = () => {
                         {!fallback ? (
                           <video
                             controls
-                            preload="metadata"
+                            preload="none"
                             style={{ width: "100%", borderRadius: 10, background: "#0d1b2a" }}
                             poster={snapshot}
                             onError={() => setFallbackMap((p) => ({ ...p, [r.recording_file_id]: true }))}

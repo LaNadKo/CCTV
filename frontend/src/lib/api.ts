@@ -1,7 +1,5 @@
 const envApi = import.meta.env.VITE_API_URL as string | undefined;
-// dev: keep explicit backend (8000) unless env override; prod (served вместе с API): same-origin
 const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
-// Capacitor native app or PWA: check localStorage for user-configured server
 const savedUrl = typeof window !== "undefined" ? localStorage.getItem("cctv_api_url") : null;
 export const API_URL =
   savedUrl ||
@@ -24,6 +22,40 @@ export function clearApiUrl() {
 
 type HTTPMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
+async function parseResponse<T>(res: Response): Promise<T> {
+  if (res.status === 204 || res.status === 205) {
+    return undefined as T;
+  }
+
+  const text = await res.text();
+  if (!text.trim()) {
+    return undefined as T;
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return JSON.parse(text) as T;
+  }
+
+  return text as T;
+}
+
+async function readErrorMessage(res: Response): Promise<string> {
+  const text = await res.text();
+  if (!text.trim()) {
+    return res.statusText || "Request failed";
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.detail === "string" && parsed.detail.trim()) {
+      return parsed.detail;
+    }
+  } catch {
+    // ignore invalid JSON and return raw text below
+  }
+  return text;
+}
+
 async function request<T>(
   path: string,
   method: HTTPMethod = "GET",
@@ -41,16 +73,16 @@ async function request<T>(
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const msg = await res.text();
+    const msg = await readErrorMessage(res);
     const err: any = new Error(msg || res.statusText);
     err.status = res.status;
     throw err;
   }
-  return res.json();
+  return parseResponse<T>(res);
 }
 
 export async function loginApi(login: string, password: string, totp_code?: string) {
-  return request<{ access_token: string; token_type: string }>(
+  return request<{ access_token: string; token_type: string; must_change_password: boolean }>(
     "/auth/login",
     "POST",
     undefined,
@@ -59,24 +91,19 @@ export async function loginApi(login: string, password: string, totp_code?: stri
 }
 
 export async function me(token: string) {
-  return request<{ user_id: number; login: string; role_id: number; face_login_enabled: boolean }>(
+  return request<{ user_id: number; login: string; role_id: number; face_login_enabled: boolean; must_change_password: boolean }>(
     "/auth/me",
     "GET",
     token
   );
 }
 
-export async function registerUser(login: string, password: string) {
-  return request<{ user_id: number; login: string; role_id: number; face_login_enabled: boolean }>(
-    "/users/register",
-    "POST",
-    undefined,
-    { login, password }
-  );
+export async function changePassword(token: string, current_password: string, new_password: string) {
+  return request<{ ok: boolean }>("/auth/change-password", "POST", token, { current_password, new_password });
 }
 
-export async function getCameras(token: string, homeId?: number | null) {
-  const qs = homeId ? `?home_id=${homeId}` : "";
+export async function getCameras(token: string, groupId?: number | null) {
+  const qs = groupId ? `?group_id=${groupId}` : "";
   return request<
     {
       camera_id: number;
@@ -87,6 +114,7 @@ export async function getCameras(token: string, homeId?: number | null) {
       stream_url?: string;
       detection_enabled: boolean;
       recording_mode: string;
+      group_id?: number | null;
     }[]
   >(`/cameras${qs}`, "GET", token);
 }
@@ -123,32 +151,52 @@ export async function listApiKeys(token: string) {
   );
 }
 
+// ── Groups (simplified) ──
+
+export type GroupOut = {
+  group_id: number;
+  name: string;
+  description?: string | null;
+  created_at: string;
+  camera_count: number;
+};
+
+export type GroupCameraOut = {
+  camera_id: number;
+  name: string;
+  location?: string | null;
+};
+
+export type GroupDetail = GroupOut & {
+  cameras: GroupCameraOut[];
+};
+
 export async function listGroups(token: string) {
-  return request<{ group_id: number; name: string; description?: string; membership_role?: string }[]>(
-    "/groups",
-    "GET",
-    token
-  );
+  return request<GroupOut[]>("/groups", "GET", token);
 }
 
 export async function createGroup(token: string, name: string, description?: string) {
-  return request("/groups", "POST", token, { name, description, camera_permissions: [], user_ids: [] });
-}
-
-export async function inviteToGroup(token: string, groupId: number, login: string, password?: string) {
-  return request(`/groups/${groupId}/invite`, "POST", token, { login, password });
-}
-
-export async function transferOwner(token: string, groupId: number, login: string) {
-  return request(`/groups/${groupId}/transfer_owner`, "POST", token, { login });
+  return request<GroupOut>("/groups", "POST", token, { name, description });
 }
 
 export async function getGroup(token: string, groupId: number) {
-  return request<{ group_id: number; name: string; description?: string; cameras: any[]; membership_role?: string }>(
-    `/groups/${groupId}`,
-    "GET",
-    token
-  );
+  return request<GroupDetail>(`/groups/${groupId}`, "GET", token);
+}
+
+export async function updateGroup(token: string, groupId: number, payload: { name?: string; description?: string }) {
+  return request<GroupOut>(`/groups/${groupId}`, "PATCH", token, payload);
+}
+
+export async function deleteGroup(token: string, groupId: number) {
+  return request(`/groups/${groupId}`, "DELETE", token);
+}
+
+export async function assignCameraToGroup(token: string, groupId: number, cameraId: number) {
+  return request(`/groups/${groupId}/cameras/${cameraId}`, "POST", token);
+}
+
+export async function unassignCameraFromGroup(token: string, groupId: number, cameraId: number) {
+  return request(`/groups/${groupId}/cameras/${cameraId}`, "DELETE", token);
 }
 
 export async function createDetectionWithApiKey(
@@ -237,16 +285,24 @@ export async function updatePerson(token: string, personId: number, data: { firs
   return request<PersonOut>(`/persons/${personId}`, "PATCH", token, data);
 }
 
-export async function addPersonEmbeddingFromPhoto(token: string, personId: number, file: File) {
+export async function addPersonEmbeddingFromPhoto(
+  token: string,
+  personId: number,
+  file: File,
+  cameraId?: number | null
+) {
   const form = new FormData();
   form.append("file", file);
+  if (cameraId) {
+    form.append("camera_id", String(cameraId));
+  }
   const res = await fetch(`${API_URL}/persons/${personId}/embeddings/photo`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
   if (!res.ok) {
-    const msg = await res.text();
+    const msg = await readErrorMessage(res);
     throw new Error(msg || res.statusText);
   }
   return res.json() as Promise<{ person_id: number; embedding_len: number; status: string; max_similarity: number | null }>;
@@ -346,12 +402,34 @@ export type AssignedCameraInfo = {
   name: string;
 };
 
+export type SystemMetrics = {
+  cpu_percent?: number;
+  ram_total_gb?: number;
+  ram_used_gb?: number;
+  ram_percent?: number;
+  gpu_name?: string;
+  gpu_util_percent?: number;
+  gpu_mem_used_mb?: number;
+  gpu_mem_total_mb?: number;
+  gpu_temp_c?: number;
+  net_sent_mbps?: number;
+  net_recv_mbps?: number;
+  disk_used_gb?: number;
+  disk_total_gb?: number;
+  active_cameras?: number;
+  uptime_seconds?: number;
+};
+
 export type ProcessorOut = {
   processor_id: number;
   name: string;
   status: string;
   last_heartbeat?: string | null;
   capabilities?: Record<string, unknown> | null;
+  ip_address?: string | null;
+  os_info?: string | null;
+  version?: string | null;
+  metrics?: SystemMetrics | null;
   created_at: string;
   camera_count: number;
   assigned_cameras: AssignedCameraInfo[];
@@ -359,6 +437,10 @@ export type ProcessorOut = {
 
 export async function listProcessors(token: string) {
   return request<ProcessorOut[]>("/processors", "GET", token);
+}
+
+export async function generateProcessorCode(token: string) {
+  return request<{ code: string; expires_at: string }>("/processors/generate-code", "POST", token);
 }
 
 export async function assignCamerasToProcessor(token: string, processorId: number, camera_ids: number[]) {
@@ -373,131 +455,72 @@ export async function deleteProcessor(token: string, processorId: number) {
   return request(`/processors/${processorId}`, "DELETE", token);
 }
 
-// ── Homes ──
+// ── Reports ──
 
-export type HomeOut = {
-  home_id: number;
-  name: string;
-  description?: string | null;
-  created_at: string;
-  member_count: number;
-  room_count: number;
-  my_role?: string | null;
-};
-
-export type RoomCameraOut = {
-  room_id: number;
+export type AppearanceItem = {
+  event_id: number;
+  event_ts: string;
   camera_id: number;
-  camera_name: string;
-  added_at: string;
+  camera_name?: string | null;
+  person_id?: number | null;
+  person_label?: string | null;
+  confidence?: number | null;
 };
 
-export type RoomOut = {
-  room_id: number;
-  home_id: number;
-  name: string;
-  order_index: number;
-  created_at: string;
-  cameras: RoomCameraOut[];
+export type AppearanceReport = {
+  date_from?: string | null;
+  date_to?: string | null;
+  person_id?: number | null;
+  total: number;
+  items: AppearanceItem[];
 };
 
-export type MemberOut = {
+export async function getAppearanceReport(
+  token: string,
+  params?: { date_from?: string; date_to?: string; person_id?: number }
+) {
+  const qs = new URLSearchParams();
+  if (params?.date_from) qs.append("date_from", params.date_from);
+  if (params?.date_to) qs.append("date_to", params.date_to);
+  if (params?.person_id !== undefined) qs.append("person_id", String(params.person_id));
+  return request<AppearanceReport>(`/reports/appearances?${qs}`, "GET", token);
+}
+
+export function appearanceExportUrl(
+  _token: string,
+  format: "pdf" | "xlsx" | "docx",
+  params?: { date_from?: string; date_to?: string; person_id?: number }
+) {
+  const qs = new URLSearchParams();
+  qs.append("format", format);
+  if (params?.date_from) qs.append("date_from", params.date_from);
+  if (params?.date_to) qs.append("date_to", params.date_to);
+  if (params?.person_id !== undefined) qs.append("person_id", String(params.person_id));
+  return `${API_URL}/reports/appearances/export?${qs}`;
+}
+
+// ── Admin: Users ──
+
+export type UserOut = {
   user_id: number;
   login: string;
-  role: string;
-  joined_at: string;
+  role_id: number;
+  face_login_enabled: boolean;
+  must_change_password: boolean;
 };
 
-export type HomeDetailOut = {
-  home_id: number;
-  name: string;
-  description?: string | null;
-  created_at: string;
-  my_role?: string | null;
-  rooms: RoomOut[];
-  members: MemberOut[];
-};
-
-export type InviteOut = {
-  invitation_id: number;
-  invite_code: string;
-  invite_type: string;
-  role: string;
-  expires_at?: string | null;
-};
-
-export type ActivityOut = {
-  activity_id: number;
-  user_id?: number | null;
-  user_login?: string | null;
-  action: string;
-  details?: Record<string, unknown> | null;
-  created_at: string;
-};
-
-export async function listHomes(token: string) {
-  return request<HomeOut[]>("/homes", "GET", token);
+export async function adminListUsers(token: string) {
+  return request<UserOut[]>("/admin/users", "GET", token);
 }
 
-export async function createHome(token: string, name: string, description?: string) {
-  return request<HomeOut>("/homes", "POST", token, { name, description });
+export async function adminCreateUser(token: string, login: string, password: string, role_id: number) {
+  return request<UserOut>("/admin/users", "POST", token, { login, password, role_id });
 }
 
-export async function getHome(token: string, homeId: number) {
-  return request<HomeDetailOut>(`/homes/${homeId}`, "GET", token);
+export async function adminDeleteUser(token: string, userId: number) {
+  return request(`/admin/users/${userId}`, "DELETE", token);
 }
 
-export async function updateHome(token: string, homeId: number, payload: { name?: string; description?: string }) {
-  return request<HomeOut>(`/homes/${homeId}`, "PATCH", token, payload);
-}
-
-export async function deleteHome(token: string, homeId: number) {
-  return request(`/homes/${homeId}`, "DELETE", token);
-}
-
-export async function createRoom(token: string, homeId: number, name: string, order_index?: number) {
-  return request<RoomOut>(`/homes/${homeId}/rooms`, "POST", token, { name, order_index: order_index ?? 0 });
-}
-
-export async function updateRoom(token: string, homeId: number, roomId: number, payload: { name?: string; order_index?: number }) {
-  return request<RoomOut>(`/homes/${homeId}/rooms/${roomId}`, "PATCH", token, payload);
-}
-
-export async function deleteRoom(token: string, homeId: number, roomId: number) {
-  return request(`/homes/${homeId}/rooms/${roomId}`, "DELETE", token);
-}
-
-export async function addCameraToRoom(token: string, homeId: number, roomId: number, cameraId: number) {
-  return request(`/homes/${homeId}/rooms/${roomId}/cameras/${cameraId}`, "POST", token);
-}
-
-export async function removeCameraFromRoom(token: string, homeId: number, roomId: number, cameraId: number) {
-  return request(`/homes/${homeId}/rooms/${roomId}/cameras/${cameraId}`, "DELETE", token);
-}
-
-export async function createHomeInvite(token: string, homeId: number, role?: string, expires_hours?: number) {
-  return request<InviteOut>(`/homes/${homeId}/invite`, "POST", token, { role: role ?? "member", expires_hours: expires_hours ?? 72 });
-}
-
-export async function joinHomeByCode(token: string, invite_code: string) {
-  return request(`/homes/join/${invite_code}`, "POST", token);
-}
-
-export async function updateHomeMemberRole(token: string, homeId: number, userId: number, role: string) {
-  return request(`/homes/${homeId}/members/${userId}/role`, "PATCH", token, { role });
-}
-
-export async function removeHomeMember(token: string, homeId: number, userId: number) {
-  return request(`/homes/${homeId}/members/${userId}`, "DELETE", token);
-}
-
-export async function transferHomeOwnership(token: string, homeId: number, newOwnerUserId: number) {
-  return request(`/homes/${homeId}/transfer`, "POST", token, { new_owner_user_id: newOwnerUserId });
-}
-
-export async function getHomeActivity(token: string, homeId: number, limit?: number, offset?: number) {
-  const params = new URLSearchParams();
-  if (limit) params.append("limit", String(limit));
-  if (offset) params.append("offset", String(offset));
-  return request<ActivityOut[]>(`/homes/${homeId}/activity?${params}`, "GET", token);
+export async function adminSetUserRole(token: string, userId: number, role_id: number) {
+  return request(`/admin/users/${userId}/role?role_id=${role_id}`, "POST", token);
 }

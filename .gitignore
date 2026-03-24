@@ -63,6 +63,12 @@ desktop/frontend/
 processor/dist/
 processor/build/
 processor/installer_output/
+processor/*.spec
+
+# PyInstaller root artifacts
+build/
+dist/
+*.spec
 
 # Claude
 .claude/

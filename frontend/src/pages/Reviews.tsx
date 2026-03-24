@@ -19,6 +19,7 @@ const ReviewsPage: React.FC = () => {
   const [items, setItems] = useState<Pending[]>([]);
   const [personMap, setPersonMap] = useState<Record<number, string>>({});
   const [fioMap, setFioMap] = useState<Record<number, string>>({});
+  const [videoOpenMap, setVideoOpenMap] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,8 +140,9 @@ const ReviewsPage: React.FC = () => {
                     <div className="stack">
                       <span className="label" style={{ color: "#9aa4b5" }}>Снимок</span>
                       <img
-                        src={`${API_URL}${ev.snapshot_url}?t=${Date.now()}`}
+                        src={`${API_URL}${ev.snapshot_url}`}
                         alt="snapshot"
+                        loading="lazy"
                         style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}
                       />
                     </div>
@@ -148,12 +150,21 @@ const ReviewsPage: React.FC = () => {
                   {ev.recording_file_id && (
                     <div className="stack">
                       <span className="label" style={{ color: "#9aa4b5" }}>Открыть видео</span>
-                      <video controls style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}>
-                        <source
-                          src={`${API_URL}/recordings/file/${ev.recording_file_id}?token=${encodeURIComponent(token)}`}
-                          type="video/mp4"
-                        />
-                      </video>
+                      {videoOpenMap[ev.event_id] ? (
+                        <video controls preload="none" style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}>
+                          <source
+                            src={`${API_URL}/recordings/file/${ev.recording_file_id}?token=${encodeURIComponent(token)}`}
+                            type="video/mp4"
+                          />
+                        </video>
+                      ) : (
+                        <button
+                          className="btn secondary"
+                          onClick={() => setVideoOpenMap((prev) => ({ ...prev, [ev.event_id]: true }))}
+                        >
+                          Показать видео
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

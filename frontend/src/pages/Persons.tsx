@@ -157,7 +157,7 @@ const PersonsPage: React.FC = () => {
         return;
       }
       const file = new File([blob], `live_${Date.now()}.jpg`, { type: "image/jpeg" });
-      const res = await addPersonEmbeddingFromPhoto(token, selectedPersonId, file);
+      const res = await addPersonEmbeddingFromPhoto(token, selectedPersonId, file, liveCameraId);
       if (res.status === "added") {
         setAutoAdded((v) => v + 1);
         setSuccess("Эмбеддинг добавлен из Live.");

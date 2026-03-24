@@ -15,6 +15,7 @@ class CameraOut(BaseModel):
     tracking_enabled: bool = False
     tracking_mode: str = "off"
     tracking_target_person_id: Optional[int] = None
+    group_id: Optional[int] = None
 
     class Config:
         from_attributes = True

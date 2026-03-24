@@ -1,5 +1,4 @@
 from typing import List, Optional
-import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -9,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
-from app.permissions import check_permission, is_home_admin, user_camera_permission
+from app.permissions import is_admin
 from app.schemas.camera_admin import (
     CameraCreate,
     CameraUpdate,
@@ -20,6 +19,7 @@ from app.schemas.camera_admin import (
     VideoStreamCreate,
     VideoStreamUpdate,
 )
+from app.schemas.users import UserRegister, UserOut
 from app.security import hash_password
 
 
@@ -58,23 +58,82 @@ class RoiZoneOut(BaseModel):
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-async def _ensure_admin(user: models.User, session: AsyncSession) -> None:
-    if user.role_id == 1:
-        return
-    if await is_home_admin(session, user.user_id):
-        return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+def _ensure_admin(user: models.User) -> None:
+    if not is_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 
 
-async def _ensure_camera_admin(
-    session: AsyncSession, user: models.User, camera_id: int
-) -> None:
-    if user.role_id == 1:
-        return
-    perm = await user_camera_permission(session, user.user_id, camera_id)
-    if not check_permission(perm, "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not camera admin")
+# ── User management (admin creates users) ──
 
+@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    payload: UserRegister,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+) -> UserOut:
+    _ensure_admin(current_user)
+    existing = await session.execute(select(models.User).where(models.User.login == payload.login))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Login already exists")
+    if payload.role_id not in (1, 2, 3):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_id must be 1 (admin), 2 (user) or 3 (viewer)")
+    user = models.User(
+        login=payload.login,
+        password_hash=hash_password(payload.password),
+        role_id=payload.role_id,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return UserOut.model_validate(user)
+
+
+@router.get("/users", response_model=List[UserOut])
+async def list_users(
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+) -> List[UserOut]:
+    _ensure_admin(current_user)
+    result = await session.execute(select(models.User).order_by(models.User.user_id))
+    return [UserOut.model_validate(u) for u in result.scalars().all()]
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_admin(current_user)
+    if user_id == current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete yourself")
+    user = await session.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await session.delete(user)
+    await session.commit()
+    return {}
+
+
+@router.post("/users/{user_id}/role")
+async def set_user_role(
+    user_id: int,
+    role_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_admin(current_user)
+    if role_id not in (1, 2, 3):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_id must be 1, 2 or 3")
+    user = await session.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user.role_id = role_id
+    await session.commit()
+    return {"user_id": user.user_id, "role_id": user.role_id}
+
+
+# ── Cameras CRUD ──
 
 @router.post("/cameras", status_code=status.HTTP_201_CREATED)
 async def create_camera(
@@ -82,6 +141,7 @@ async def create_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = models.Camera(
         name=payload.name,
         ip_address=payload.ip_address,
@@ -92,15 +152,6 @@ async def create_camera(
         recording_mode=payload.recording_mode,
     )
     session.add(cam)
-    await session.flush()
-    # give creator admin permission on this camera
-    session.add(
-        models.UserCameraPermission(
-            user_id=current_user.user_id,
-            camera_id=cam.camera_id,
-            permission="admin",
-        )
-    )
     await session.commit()
     await session.refresh(cam)
     return {"camera_id": cam.camera_id}
@@ -113,10 +164,10 @@ async def update_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
     if cam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    await _ensure_camera_admin(session, current_user, camera_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(cam, field, value)
     await session.commit()
@@ -129,10 +180,10 @@ async def delete_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
     if cam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    await _ensure_camera_admin(session, current_user, camera_id)
     await session.delete(cam)
     await session.commit()
     return {}
@@ -145,10 +196,10 @@ async def add_stream(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
     if cam is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    await _ensure_camera_admin(session, current_user, camera_id)
     vs = models.VideoStream(
         camera_id=camera_id,
         resolution=payload.resolution,
@@ -169,22 +220,24 @@ async def update_stream(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     vs = await session.get(models.VideoStream, stream_id)
     if vs is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found")
-    await _ensure_camera_admin(session, current_user, vs.camera_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(vs, field, value)
     await session.commit()
     return {"video_stream_id": vs.video_stream_id}
 
 
+# ── Persons CRUD ──
+
 @router.get("/persons")
 async def list_persons(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     result = await session.execute(select(models.Person).order_by(models.Person.person_id))
     persons = result.scalars().all()
     return [
@@ -207,7 +260,7 @@ async def create_person(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     person = models.Person(
         first_name=payload.first_name,
         last_name=payload.last_name,
@@ -228,7 +281,7 @@ async def update_person(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     person = await session.get(models.Person, person_id)
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
@@ -244,7 +297,7 @@ async def delete_person(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     person = await session.get(models.Person, person_id)
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
@@ -253,13 +306,15 @@ async def delete_person(
     return {}
 
 
+# ── Events ──
+
 @router.post("/events", status_code=status.HTTP_201_CREATED)
 async def create_event(
     payload: EventCreate,
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     evt = models.Event(
         camera_id=payload.camera_id,
         event_type_id=payload.event_type_id,
@@ -279,7 +334,7 @@ async def list_events(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     res = await session.execute(select(models.Event))
     events = res.scalars().all()
     return [
@@ -296,13 +351,15 @@ async def list_events(
     ]
 
 
+# ── Recordings ──
+
 @router.post("/recordings", status_code=status.HTTP_201_CREATED)
 async def create_recording(
     payload: RecordingFileCreate,
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     rf = models.RecordingFile(
         video_stream_id=payload.video_stream_id,
         storage_target_id=payload.storage_target_id,
@@ -318,22 +375,6 @@ async def create_recording(
     return {"recording_file_id": rf.recording_file_id}
 
 
-@router.post("/users/{user_id}/role")
-async def set_user_role(
-    user_id: int,
-    role_id: int,
-    session: AsyncSession = Depends(get_session),
-    current_user: models.User = Depends(get_current_user),
-):
-    await _ensure_admin(current_user, session)
-    user = await session.get(models.User, user_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    user.role_id = role_id
-    await session.commit()
-    return {"user_id": user.user_id, "role_id": user.role_id}
-
-
 # ── Presets (Phase 2) ──
 
 @router.get("/cameras/{camera_id}/presets", response_model=List[PresetOut])
@@ -342,7 +383,7 @@ async def list_presets(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_camera_admin(session, current_user, camera_id)
+    _ensure_admin(current_user)
     result = await session.execute(
         select(models.CameraPreset)
         .where(models.CameraPreset.camera_id == camera_id)
@@ -358,10 +399,10 @@ async def create_preset(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
-    await _ensure_camera_admin(session, current_user, camera_id)
     preset = models.CameraPreset(
         camera_id=camera_id,
         name=payload.name,
@@ -382,7 +423,7 @@ async def delete_preset(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_camera_admin(session, current_user, camera_id)
+    _ensure_admin(current_user)
     preset = await session.get(models.CameraPreset, preset_id)
     if not preset or preset.camera_id != camera_id:
         raise HTTPException(status_code=404, detail="Preset not found")
@@ -399,7 +440,7 @@ async def list_roi_zones(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_camera_admin(session, current_user, camera_id)
+    _ensure_admin(current_user)
     result = await session.execute(
         select(models.CameraRoiZone).where(models.CameraRoiZone.camera_id == camera_id)
     )
@@ -413,10 +454,10 @@ async def create_roi_zone(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
+    _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
-    await _ensure_camera_admin(session, current_user, camera_id)
     zone = models.CameraRoiZone(
         camera_id=camera_id,
         name=payload.name,
@@ -436,7 +477,7 @@ async def delete_roi_zone(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_camera_admin(session, current_user, camera_id)
+    _ensure_admin(current_user)
     zone = await session.get(models.CameraRoiZone, zone_id)
     if not zone or zone.camera_id != camera_id:
         raise HTTPException(status_code=404, detail="ROI zone not found")
@@ -445,8 +486,7 @@ async def delete_roi_zone(
     return {}
 
 
-# ── Storage Targets CRUD (Phase 4) ──
-
+# ── Storage Targets CRUD ──
 
 class StorageTargetCreate(BaseModel):
     name: str
@@ -497,7 +537,7 @@ async def list_storage_targets(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     result = await session.execute(select(models.StorageTarget))
     return result.scalars().all()
 
@@ -508,7 +548,7 @@ async def create_storage_target(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     st = models.StorageTarget(
         name=payload.name,
         root_path=payload.root_path,
@@ -534,7 +574,7 @@ async def update_storage_target(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     target = await session.get(models.StorageTarget, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="Storage target not found")
@@ -551,7 +591,7 @@ async def delete_storage_target(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     target = await session.get(models.StorageTarget, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="Storage target not found")
@@ -566,7 +606,7 @@ async def test_storage_target(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
-    await _ensure_admin(current_user, session)
+    _ensure_admin(current_user)
     target = await session.get(models.StorageTarget, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="Storage target not found")

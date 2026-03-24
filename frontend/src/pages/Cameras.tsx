@@ -1,7 +1,6 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { createCamera, getCameras, updateCamera, addCameraToRoom, getHome, createRoom, API_URL } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { createCamera, getCameras, updateCamera, API_URL } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import { useHome } from "../context/HomeContext";
 
 type Camera = {
   camera_id: number;
@@ -15,6 +14,7 @@ type Camera = {
   tracking_enabled?: boolean;
   tracking_mode?: string;
   tracking_target_person_id?: number | null;
+  group_id?: number | null;
 };
 
 type Preset = {
@@ -48,7 +48,6 @@ async function fetchRoiZones(token: string, camId: number): Promise<RoiZone[]> {
 
 const CamerasPage: React.FC = () => {
   const { token } = useAuth();
-  const { currentHome } = useHome();
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +71,7 @@ const CamerasPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await getCameras(token, currentHome?.home_id);
+      const res = await getCameras(token);
       setCameras(res);
       if (res.length && selectedId === null) setSelectedId(res[0].camera_id);
     } catch (e: any) {
@@ -84,7 +83,7 @@ const CamerasPage: React.FC = () => {
 
   useEffect(() => {
     load();
-  }, [token, currentHome]);
+  }, [token]);
 
   useEffect(() => {
     if (!token || selectedId === null) return;
@@ -148,7 +147,7 @@ const CamerasPage: React.FC = () => {
   const submitCreate = async () => {
     if (!token) return;
     try {
-      const result = await createCamera(token, {
+      await createCamera(token, {
         name: createForm.name,
         location: createForm.location || undefined,
         ip_address: createForm.ip_address || undefined,
@@ -157,25 +156,6 @@ const CamerasPage: React.FC = () => {
         detection_enabled: createForm.detection_enabled,
         recording_mode: createForm.recording_mode as "continuous" | "event",
       });
-
-      // Auto-assign camera to first room of current home (create room if none exist)
-      if (currentHome && result.camera_id) {
-        try {
-          const homeDetail = await getHome(token, currentHome.home_id);
-          let roomId: number;
-          if (homeDetail.rooms?.length > 0) {
-            roomId = homeDetail.rooms[0].room_id;
-          } else {
-            // No rooms yet — create a default one
-            const newRoom = await createRoom(token, currentHome.home_id, "Основная");
-            roomId = newRoom.room_id;
-          }
-          await addCameraToRoom(token, currentHome.home_id, roomId, result.camera_id);
-        } catch (e) {
-          console.error("Auto-assign camera to home failed:", e);
-        }
-      }
-
       setCreateForm({
         name: "",
         location: "",
@@ -213,7 +193,7 @@ const CamerasPage: React.FC = () => {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <div>
           <h2 className="title">Камеры</h2>
-          <div className="muted">Настройка параметров. Live вынесен в отдельную вкладку.</div>
+          <div className="muted">Настройка параметров камер.</div>
         </div>
         <button className="btn secondary" onClick={load}>
           Обновить
@@ -343,7 +323,6 @@ const CamerasPage: React.FC = () => {
             )}
           </div>
 
-          {/* Tracking controls (Phase 2) */}
           {selected && (
             <div className="card">
               <h3 style={{ marginTop: 0 }}>ONVIF Трекинг</h3>
@@ -387,7 +366,6 @@ const CamerasPage: React.FC = () => {
             </div>
           )}
 
-          {/* Presets (Phase 2) */}
           {selected && (
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Пресеты PTZ</h3>
@@ -420,7 +398,6 @@ const CamerasPage: React.FC = () => {
             </div>
           )}
 
-          {/* ROI Zones (Phase 3) */}
           {selected && (
             <div className="card">
               <h3 style={{ marginTop: 0 }}>ROI Зоны</h3>

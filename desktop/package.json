@@ -20,7 +20,8 @@
     },
     "files": [
       "main.js",
-      "preload.js"
+      "preload.js",
+      "build/icon.png"
     ],
     "extraResources": [
       {

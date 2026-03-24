@@ -2,6 +2,11 @@
 from __future__ import annotations
 import base64
 import logging
+import os
+from pathlib import Path
+import shutil
+import sys
+import urllib.request
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -12,6 +17,11 @@ _device = "cpu"
 
 _SIM_MARGIN = 0.05
 _FACE_PROB_MIN = 0.85
+_MTCNN_WEIGHT_URLS = {
+    "pnet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/pnet.pt",
+    "rnet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/rnet.pt",
+    "onet.pt": "https://raw.githubusercontent.com/timesler/facenet-pytorch/master/data/onet.pt",
+}
 
 
 def _normalize_vec(vec):
@@ -21,13 +31,91 @@ def _normalize_vec(vec):
     return vec / norm
 
 
+def _processor_cache_dir() -> Path | None:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        return None
+    return Path(local_appdata) / "CCTV Processor" / "models" / "facenet_pytorch"
+
+
+def _download_weight(name: str, target: Path) -> None:
+    url = _MTCNN_WEIGHT_URLS[name]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Downloading MTCNN weight %s from %s", name, url)
+    urllib.request.urlretrieve(url, target)
+
+
+def _candidate_weight_dirs(expected_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    add(expected_dir)
+    add(_processor_cache_dir())
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        add(exe_dir / "facenet_pytorch" / "data")
+        add(exe_dir / "_internal" / "facenet_pytorch" / "data")
+        add(exe_dir / "models" / "facenet_pytorch")
+
+    return candidates
+
+
+def _ensure_mtcnn_weights() -> Path:
+    from facenet_pytorch.models import mtcnn as mtcnn_module
+
+    expected_dir = (Path(mtcnn_module.__file__).resolve().parent / "../data").resolve()
+    expected_dir.mkdir(parents=True, exist_ok=True)
+
+    missing = [name for name in _MTCNN_WEIGHT_URLS if not (expected_dir / name).exists()]
+    if not missing:
+        return expected_dir
+
+    cache_dir = _processor_cache_dir()
+    for name in missing:
+        target = expected_dir / name
+        copied = False
+        for candidate_dir in _candidate_weight_dirs(expected_dir):
+            source = candidate_dir / name
+            if source.exists() and source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+                logger.info("Copied MTCNN weight %s from %s", name, source)
+                copied = True
+                break
+        if copied:
+            continue
+
+        if cache_dir is not None:
+            cache_target = cache_dir / name
+            if not cache_target.exists():
+                _download_weight(name, cache_target)
+            shutil.copy2(cache_target, target)
+            logger.info("Prepared MTCNN weight %s in %s", name, target)
+            continue
+
+        _download_weight(name, target)
+        logger.info("Prepared MTCNN weight %s in %s", name, target)
+
+    return expected_dir
+
+
 def _load_models():
     global _mtcnn, _resnet, _device
     if _mtcnn is None:
         import torch
         from facenet_pytorch import MTCNN, InceptionResnetV1
+        weights_dir = _ensure_mtcnn_weights()
         _device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info("Loading models on device=%s", _device)
+        logger.info("Loading models on device=%s (mtcnn_weights=%s)", _device, weights_dir)
         if _device == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False

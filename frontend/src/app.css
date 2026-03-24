@@ -156,10 +156,15 @@
 
 .live-card {
   position: relative;
+  max-width: 420px;
 }
 
 .live-card img {
   cursor: pointer;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
 }
 
 .grid {
@@ -248,6 +253,7 @@
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border);
   font-size: 12px;
+  color: var(--text);
 }
 
 .title {
@@ -283,10 +289,50 @@
 
 /* ── Hour card (used in lists) ────────────────────── */
 .hour-card {
+  appearance: none;
+  -webkit-appearance: none;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.1s ease;
+}
+
+.hour-card * {
+  color: inherit;
+}
+
+.hour-card .muted {
+  color: var(--muted);
+}
+
+.hour-card:hover {
+  border-color: rgba(94, 240, 255, 0.24);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.hour-card.active {
+  border-color: rgba(94, 240, 255, 0.4);
+  background: linear-gradient(180deg, rgba(94, 240, 255, 0.08), rgba(111, 123, 255, 0.08));
+}
+
+.live-preview {
+  width: min(100%, 560px);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #0d1b2a;
+}
+
+.live-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
 }
 
 /* ══════════════════════════════════════════════════════

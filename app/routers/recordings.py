@@ -6,7 +6,9 @@ import mimetypes
 import asyncio
 import shutil
 import subprocess
+from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 import cv2
@@ -17,12 +19,81 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
 from app.permissions import user_camera_permission, check_permission
+from app.processor_media import (
+    get_processor_by_id,
+    get_processor_media_base_url,
+    get_processor_media_headers,
+    parse_processor_file_path,
+)
 from app.schemas.recordings import RecordingOut, LocalRecordingOut
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or r"C:\ffmpeg-essentials\ffmpeg.exe"
 CACHE_DIR = Path("recordings_cache")
 CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _proxy_headers(upstream: httpx.Response) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key in ("content-type", "content-length", "accept-ranges", "content-range", "content-disposition"):
+        value = upstream.headers.get(key)
+        if value:
+            headers[key] = value
+    return headers
+
+
+async def _proxy_processor_stream(url: str, headers: dict[str, str], request: Request | None = None) -> StreamingResponse:
+    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=120, pool=120))
+    upstream_headers = dict(headers)
+    if request is not None:
+        range_header = request.headers.get("range") or request.headers.get("Range")
+        if range_header:
+            upstream_headers["Range"] = range_header
+
+    stream_cm = client.stream("GET", url, headers=upstream_headers)
+    upstream = await stream_cm.__aenter__()
+
+    async def gen():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                if chunk:
+                    yield chunk
+        finally:
+            await stream_cm.__aexit__(None, None, None)
+            await client.aclose()
+
+    return StreamingResponse(
+        gen(),
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type"),
+        headers=_proxy_headers(upstream),
+    )
+
+
+async def _proxy_processor_bytes(url: str, headers: dict[str, str]) -> Response:
+    async with httpx.AsyncClient(timeout=30) as client:
+        upstream = await client.get(url, headers=headers)
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type"),
+        headers=_proxy_headers(upstream),
+    )
+
+
+async def _resolve_processor_media(session: AsyncSession, file_path: str) -> tuple[models.Processor, str] | None:
+    parsed = parse_processor_file_path(file_path)
+    if not parsed:
+        return None
+    processor_id, relative_path = parsed
+    proc = await get_processor_by_id(session, processor_id)
+    if proc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
+    return proc, relative_path
+
+
+def _processor_media_url(proc: models.Processor, prefix: str, relative_path: str) -> str:
+    return f"{get_processor_media_base_url(proc)}{prefix}/{quote(relative_path.lstrip('/'), safe='/')}"
 
 
 @router.get("", response_model=List[RecordingOut])
@@ -137,6 +208,14 @@ async def download_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    processor_media = await _resolve_processor_media(session, recording.file_path)
+    if processor_media is not None:
+        proc, relative_path = processor_media
+        return await _proxy_processor_stream(
+            _processor_media_url(proc, "/media/recordings", relative_path),
+            get_processor_media_headers(proc),
+            request=request,
+        )
     path = Path(recording.file_path)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
@@ -269,6 +348,13 @@ async def stream_recording_mjpeg(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    processor_media = await _resolve_processor_media(session, recording.file_path)
+    if processor_media is not None:
+        proc, relative_path = processor_media
+        return await _proxy_processor_stream(
+            _processor_media_url(proc, "/media/recordings-mjpeg", relative_path),
+            get_processor_media_headers(proc),
+        )
     path = Path(recording.file_path)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
@@ -320,6 +406,13 @@ async def snapshot_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    processor_media = await _resolve_processor_media(session, recording.file_path)
+    if processor_media is not None:
+        proc, relative_path = processor_media
+        url = _processor_media_url(proc, "/media/recordings-snapshot", relative_path)
+        if ts is not None:
+            url = f"{url}?ts={ts}"
+        return await _proxy_processor_bytes(url, get_processor_media_headers(proc))
     path = Path(recording.file_path)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
