@@ -81,8 +81,12 @@ def _pick_font(size: int = 16):
         _FONT_CACHE = None
     return _FONT_CACHE
 import numpy as np
-import torch
-from facenet_pytorch import MTCNN, InceptionResnetV1
+try:
+    import torch
+    from facenet_pytorch import MTCNN, InceptionResnetV1
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,8 +96,8 @@ import logging
 
 log = logging.getLogger("app.face")
 
-_mtcnn: Optional[MTCNN] = None
-_embedder: Optional[InceptionResnetV1] = None
+_mtcnn = None
+_embedder = None
 _device: str = "cpu"
 _model_lock = threading.Lock()
 
@@ -104,6 +108,8 @@ _MIN_FACE_RATIO = 0.12
 
 def _ensure_models():
     global _mtcnn, _embedder, _device
+    if not _TORCH_AVAILABLE:
+        raise RuntimeError("torch/facenet not installed — face detection unavailable")
     if _mtcnn is not None and _embedder is not None:
         return _mtcnn, _embedder, _device
     _device = "cuda" if torch.cuda.is_available() else "cpu"
