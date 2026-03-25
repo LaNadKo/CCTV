@@ -53,12 +53,19 @@ class CameraWorker:
         self._event_dedup_seconds = 10.0
         self._overlay_ttl = max(float(settings.face_scan_interval) + 1.0, 3.0)
         self._record_event_tail_seconds = 10.0
-        self._live_publish_interval = 1.0 / 12.0
+        self._live_publish_interval = 1.0 / 15.0
         self._last_publish_ts = 0.0
 
         self._last_faces_info: list[tuple[tuple[int, int, int, int], str, bool]] = []
         self._last_faces_ts = 0.0
         self._last_activity_ts = 0.0
+        self._liveness_state: dict[str, dict[str, object]] = {}
+
+        self._capture_lock = threading.Lock()
+        self._capture_ready = threading.Event()
+        self._capture_frame: np.ndarray | None = None
+        self._capture_seq = 0
+        self._capture_thread: threading.Thread | None = None
 
         self._frame_lock = threading.Lock()
         self._latest_raw_jpeg: bytes | None = None
@@ -97,11 +104,15 @@ class CameraWorker:
             logger.error("Cannot open camera %s source=%s", self.camera_id, self.source)
             return
         last_face_scan = 0.0
+        last_processed_seq = 0
+        self._capture_ready.clear()
+        self._capture_thread = threading.Thread(target=self._capture_loop, args=(cap,), daemon=True)
+        self._capture_thread.start()
         try:
             while self._running:
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    time.sleep(1)
+                last_processed_seq, frame = self._get_latest_frame(last_processed_seq)
+                if frame is None:
+                    time.sleep(0.01)
                     continue
 
                 motion = self._detect_motion(frame)
@@ -119,8 +130,39 @@ class CameraWorker:
                     self._last_publish_ts = now
                 self._rotate_recording_if_needed(frame.shape[1], frame.shape[0])
         finally:
+            self._running = False
+            if self._capture_thread and self._capture_thread.is_alive():
+                self._capture_thread.join(timeout=2)
+            self._capture_thread = None
+            self._capture_ready.clear()
+            with self._capture_lock:
+                self._capture_frame = None
+                self._capture_seq = 0
             self._finalize_recording()
             cap.release()
+
+    def _capture_loop(self, cap: cv2.VideoCapture) -> None:
+        while self._running:
+            ok = cap.grab()
+            if not ok:
+                time.sleep(0.05)
+                continue
+            ok, frame = cap.retrieve()
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
+            with self._capture_lock:
+                self._capture_frame = frame
+                self._capture_seq += 1
+            self._capture_ready.set()
+
+    def _get_latest_frame(self, last_processed_seq: int) -> tuple[int, np.ndarray | None]:
+        if not self._capture_ready.wait(timeout=2):
+            return last_processed_seq, None
+        with self._capture_lock:
+            if self._capture_frame is None or self._capture_seq == last_processed_seq:
+                return last_processed_seq, None
+            return self._capture_seq, self._capture_frame.copy()
 
     def _open_capture(self) -> cv2.VideoCapture:
         source = self.source
@@ -169,9 +211,27 @@ class CameraWorker:
             faces = detect_faces(rgb)
             now = time.time()
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
+            bodies: list[dict] | None = []
+            frame_area = max(frame.shape[0] * frame.shape[1], 1)
+
+            if faces and any(
+                ((face["box"][2] - face["box"][0]) * (face["box"][3] - face["box"][1])) / frame_area
+                < settings.antispoof_small_face_ratio
+                for face in faces
+            ):
+                try:
+                    from processor.body_detector import detect_bodies
+
+                    bodies = detect_bodies(frame, conf=0.45)
+                except Exception:
+                    logger.exception("Body support detection failed on camera %s", self.camera_id)
+                    bodies = None
 
             for face in faces:
                 box = tuple(int(v) for v in face["box"])
+                if not self._is_live_face(frame, box, bodies, now):
+                    logger.debug("Camera %s: suppressed non-live/spoof-like face %s", self.camera_id, box)
+                    continue
                 person_id, sim = match_embedding(face["embedding"], self._gallery)
                 recognized = person_id is not None
                 event_type = "face_recognized" if recognized else "face_unknown"
@@ -202,6 +262,7 @@ class CameraWorker:
                     "person_id": person_id,
                     "confidence": round(sim, 4) if sim else None,
                     "snapshot_b64": snapshot_b64,
+                    "event_ts": datetime.now().isoformat(),
                 }
                 self._dispatch_event(payload, local_snapshot=snapshot if snapshot_b64 else None)
 
@@ -218,6 +279,138 @@ class CameraWorker:
             if entry.get("person_id") == person_id:
                 return str(entry.get("label") or f"ID {person_id}")
         return f"ID {person_id}"
+
+    def _face_key(self, box: tuple[int, int, int, int]) -> str:
+        x1, y1, x2, y2 = box
+        width = max(x2 - x1, 1)
+        height = max(y2 - y1, 1)
+        cx = x1 + width / 2
+        cy = y1 + height / 2
+        return f"{round(cx / 40)}:{round(cy / 40)}:{round(width / 40)}:{round(height / 40)}"
+
+    def _crop_face(self, frame: np.ndarray, box: tuple[int, int, int, int], pad_ratio: float = 0.15) -> np.ndarray | None:
+        x1, y1, x2, y2 = box
+        width = max(x2 - x1, 1)
+        height = max(y2 - y1, 1)
+        pad_x = int(width * pad_ratio)
+        pad_y = int(height * pad_ratio)
+        h, w = frame.shape[:2]
+        xs1 = max(0, x1 - pad_x)
+        ys1 = max(0, y1 - pad_y)
+        xs2 = min(w, x2 + pad_x)
+        ys2 = min(h, y2 + pad_y)
+        if xs2 <= xs1 or ys2 <= ys1:
+            return None
+        crop = frame[ys1:ys2, xs1:xs2]
+        if crop.size == 0:
+            return None
+        return crop
+
+    def _crop_context(self, frame: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray | None:
+        return self._crop_face(frame, box, pad_ratio=0.7)
+
+    def _face_supported_by_body(self, box: tuple[int, int, int, int], bodies: list[dict]) -> bool:
+        x1, y1, x2, y2 = box
+        face_cx = (x1 + x2) / 2
+        face_cy = (y1 + y2) / 2
+        face_width = max(x2 - x1, 1)
+        face_height = max(y2 - y1, 1)
+        for body in bodies:
+            bx1, by1, bx2, by2 = [float(v) for v in body["box"]]
+            body_width = max(bx2 - bx1, 1.0)
+            body_height = max(by2 - by1, 1.0)
+            face_inside = bx1 <= face_cx <= bx2 and by1 <= face_cy <= by1 + body_height * 0.55
+            scale_ok = face_width <= body_width * 0.85 and face_height <= body_height * 0.55
+            if face_inside and scale_ok:
+                return True
+        return False
+
+    def _prune_liveness_state(self, now: float) -> None:
+        stale_keys = [
+            key
+            for key, state in self._liveness_state.items()
+            if now - float(state.get("last_seen", 0.0)) > 12.0
+        ]
+        for key in stale_keys:
+            self._liveness_state.pop(key, None)
+
+    def _is_live_face(
+        self,
+        frame: np.ndarray,
+        box: tuple[int, int, int, int],
+        bodies: list[dict] | None,
+        now: float,
+    ) -> bool:
+        from processor.antispoof import micro_movement_check
+
+        self._prune_liveness_state(now)
+        crop = self._crop_face(frame, box)
+        if crop is None:
+            return False
+
+        x1, y1, x2, y2 = box
+        frame_area = max(frame.shape[0] * frame.shape[1], 1)
+        face_area_ratio = ((x2 - x1) * (y2 - y1)) / frame_area
+        large_face = face_area_ratio >= settings.antispoof_small_face_ratio
+        body_supported = True if bodies is None else (large_face or self._face_supported_by_body(box, bodies))
+        if not body_supported:
+            return False
+
+        gray = cv2.cvtColor(cv2.resize(crop, (96, 96)), cv2.COLOR_BGR2GRAY)
+        context = self._crop_context(frame, box)
+        context_gray = None
+        if context is not None:
+            context_gray = cv2.cvtColor(cv2.resize(context, (128, 128)), cv2.COLOR_BGR2GRAY)
+        key = self._face_key(box)
+        prev = self._liveness_state.get(key)
+
+        movement_ok = False
+        stable_hits = 1
+        if prev:
+            prev_gray = prev.get("gray")
+            prev_context_gray = prev.get("context_gray")
+            prev_box = prev.get("box")
+            stable_hits = int(prev.get("stable_hits", 0)) + 1
+            if isinstance(prev_gray, np.ndarray):
+                movement_ok = micro_movement_check(
+                    prev_gray,
+                    gray,
+                    threshold=settings.antispoof_face_motion_threshold,
+                    pixel_threshold=20.0,
+                    min_active_ratio=settings.antispoof_active_ratio,
+                )
+            if isinstance(prev_context_gray, np.ndarray) and isinstance(context_gray, np.ndarray):
+                movement_ok = movement_ok or micro_movement_check(
+                    prev_context_gray,
+                    context_gray,
+                    threshold=settings.antispoof_context_motion_threshold,
+                    pixel_threshold=14.0,
+                    min_active_ratio=settings.antispoof_active_ratio,
+                )
+            if isinstance(prev_box, tuple):
+                px1, py1, px2, py2 = prev_box
+                prev_cx = (px1 + px2) / 2
+                prev_cy = (py1 + py2) / 2
+                curr_cx = (x1 + x2) / 2
+                curr_cy = (y1 + y2) / 2
+                shift = abs(curr_cx - prev_cx) + abs(curr_cy - prev_cy)
+                movement_ok = movement_ok or shift >= max(8.0, max(x2 - x1, y2 - y1) * 0.07)
+
+        self._liveness_state[key] = {
+            "gray": gray,
+            "context_gray": context_gray,
+            "box": box,
+            "stable_hits": stable_hits,
+            "last_seen": now,
+        }
+
+        if not large_face:
+            return movement_ok and stable_hits >= 2
+        if movement_ok:
+            return True
+        if large_face and stable_hits >= 3:
+            return True
+        return False
 
     def _snapshot_bytes_from_box(self, frame: np.ndarray, box: tuple[int, int, int, int]) -> bytes:
         x1, y1, x2, y2 = box
@@ -314,7 +507,7 @@ class CameraWorker:
             self._writer_relative_path = rel_path
             self._writer_frame_size = frame_size
             self._writer_started_monotonic = time.monotonic()
-            self._writer_started_dt = datetime.utcnow()
+            self._writer_started_dt = datetime.now()
 
     def _new_recording_path(self) -> tuple[str, Path]:
         now = datetime.now()
@@ -347,7 +540,7 @@ class CameraWorker:
         writer = self._writer
         path = self._writer_path
         relative_path = self._writer_relative_path
-        started_dt = self._writer_started_dt or datetime.utcnow()
+        started_dt = self._writer_started_dt or datetime.now()
 
         self._writer = None
         self._writer_path = None
@@ -364,8 +557,8 @@ class CameraWorker:
         if size <= 0:
             return
 
-        duration = max((datetime.utcnow() - started_dt).total_seconds(), 0.0)
-        ended_dt = datetime.utcnow()
+        ended_dt = datetime.now()
+        duration = max((ended_dt - started_dt).total_seconds(), 0.0)
         self._push_recording(
             {
                 "camera_id": self.camera_id,

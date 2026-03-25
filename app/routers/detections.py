@@ -110,28 +110,28 @@ async def list_pending(
         return []
 
     res = await session.execute(
-        select(models.Event, models.EventReview)
+        select(models.Event, models.EventReview, models.EventType, models.Camera)
         .join(models.EventReview, models.Event.event_id == models.EventReview.event_id)
+        .join(models.EventType, models.Event.event_type_id == models.EventType.event_type_id)
+        .join(models.Camera, models.Event.camera_id == models.Camera.camera_id)
         .where(models.EventReview.status == "pending")
+        .where(models.EventType.name != "face_recognized")
+        .order_by(models.Event.event_ts.desc())
     )
     items: List[PendingEvent] = []
     rows = res.all()
-    for event, review in rows:
+    for event, review, event_type, camera in rows:
         snapshot_path = Path("snapshots").resolve() / f"event_{event.event_id}.jpg"
-        person_label = None
-        if event.person_id:
-            person = await session.get(models.Person, event.person_id)
-            if person:
-                parts = [person.last_name, person.first_name, person.middle_name]
-                person_label = " ".join([p for p in parts if p]) or f"ID {person.person_id}"
         items.append(
             PendingEvent(
                 event_id=event.event_id,
                 camera_id=event.camera_id,
+                camera_name=camera.name,
+                camera_location=camera.location,
                 event_type_id=event.event_type_id,
-                event_ts=str(event.event_ts),
+                event_ts=event.event_ts.isoformat(),
                 person_id=event.person_id,
-                person_label=person_label,
+                person_label=None,
                 recording_file_id=event.recording_file_id,
                 confidence=float(event.confidence) if event.confidence is not None else None,
                 snapshot_url=(
@@ -200,7 +200,7 @@ async def review_event(
     review_obj.reviewer_user_id = current_user.user_id
     review_obj.person_id = payload.person_id
     review_obj.note = payload.note
-    review_obj.updated_at = datetime.utcnow()
+    review_obj.updated_at = datetime.now()
 
     if payload.person_id and evt.person_id is None:
         evt.person_id = payload.person_id
@@ -254,8 +254,8 @@ async def stats_presence(
                 "person_label": label,
                 "camera_id": cid,
                 "count": rec["count"],
-                "first_ts": str(rec["first_ts"]),
-                "last_ts": str(rec["last_ts"]),
+                "first_ts": rec["first_ts"].isoformat(),
+                "last_ts": rec["last_ts"].isoformat(),
             }
         )
     return output
@@ -296,7 +296,7 @@ async def timeline(
             {
                 "event_id": ev.event_id,
                 "camera_id": ev.camera_id,
-                "event_ts": str(ev.event_ts),
+                "event_ts": ev.event_ts.isoformat(),
                 "person_id": ev.person_id,
                 "event_type": et.name,
             }

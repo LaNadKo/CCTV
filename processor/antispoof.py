@@ -27,9 +27,16 @@ def lbp_texture_score(face_bgr: np.ndarray) -> float:
     return float(variance)
 
 
-def micro_movement_check(prev_gray: np.ndarray | None, curr_gray: np.ndarray, threshold: float = 2.0) -> bool:
+def micro_movement_check(
+    prev_gray: np.ndarray | None,
+    curr_gray: np.ndarray,
+    threshold: float = 2.0,
+    pixel_threshold: float = 18.0,
+    min_active_ratio: float = 0.02,
+) -> bool:
     if prev_gray is None:
-        return True
+        return False
     diff = cv2.absdiff(prev_gray, curr_gray)
     mean_diff = float(np.mean(diff))
-    return mean_diff > threshold
+    active_ratio = float(np.mean(diff >= pixel_threshold))
+    return mean_diff >= threshold and active_ratio >= min_active_ratio

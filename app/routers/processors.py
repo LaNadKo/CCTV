@@ -297,6 +297,7 @@ async def push_event(
     if cam is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     event_type_id = et.event_type_id
+    review_required = payload.event_type == "face_unknown"
     evt = models.Event(
         camera_id=payload.camera_id,
         event_type_id=event_type_id,
@@ -304,6 +305,7 @@ async def push_event(
         confidence=payload.confidence,
         processor_id=processor_id,
         track_id=payload.track_id,
+        event_ts=payload.event_ts or datetime.now(),
     )
     session.add(evt)
     await session.flush()
@@ -315,8 +317,9 @@ async def push_event(
         except Exception:
             log.exception("Failed to store snapshot for event %s", evt.event_id)
 
-    review = models.EventReview(event_id=evt.event_id, status="pending")
-    session.add(review)
+    if review_required:
+        review = models.EventReview(event_id=evt.event_id, status="pending")
+        session.add(review)
     await session.commit()
     return ProcessorEventOut(event_id=evt.event_id)
 

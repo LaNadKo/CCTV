@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { listRecordings, recordingSnapshotUrl, getTimeline, getCameras, API_URL } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { API_URL, getCameras, getTimeline, listRecordings, recordingSnapshotUrl } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 type DbRec = {
@@ -23,21 +23,32 @@ type TimelineEvent = {
   event_type: string;
 };
 
+const formatDuration = (value?: number) => {
+  if (!value) return "0 c";
+  if (value < 60) return `${Math.round(value)} c`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  return `${minutes} мин ${seconds.toString().padStart(2, "0")} c`;
+};
+
+const formatBytes = (value?: number) => {
+  if (!value) return "-";
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} КБ`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} МБ`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} ГБ`;
+};
+
 const RecordingsPage: React.FC = () => {
   const { token } = useAuth();
   const [records, setRecords] = useState<DbRec[]>([]);
-  const [cameras, setCameras] = useState<{ camera_id: number; name: string }[]>([]);
+  const [cameras, setCameras] = useState<{ camera_id: number; name: string; location?: string }[]>([]);
   const [cameraId, setCameraId] = useState<number | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  });
+  const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [videoOpenMap, setVideoOpenMap] = useState<Record<number, boolean>>({});
+  const [fallbackMap, setFallbackMap] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
-  const [fallbackMap, setFallbackMap] = useState<Record<number, boolean>>({});
-  const allVideoRef = useRef<HTMLDivElement | null>(null);
-  const [selectedHour, setSelectedHour] = useState<number | null>(null);
 
   const load = async () => {
     if (!token) return;
@@ -45,17 +56,32 @@ const RecordingsPage: React.FC = () => {
     setError(null);
     try {
       const cams = await getCameras(token);
-      setCameras(cams.map((c) => ({ camera_id: c.camera_id, name: c.name })));
-      const cam = cameraId ?? cams[0]?.camera_id ?? null;
-      if (cam !== null) setCameraId(cam);
+      const mappedCameras = cams.map((camera) => ({
+        camera_id: camera.camera_id,
+        name: camera.name,
+        location: camera.location,
+      }));
+      setCameras(mappedCameras);
 
-      const recs = await listRecordings(token, cam ?? undefined);
-      setRecords(recs);
+      const activeCameraId = cameraId ?? mappedCameras[0]?.camera_id ?? null;
+      if (activeCameraId !== null) {
+        setCameraId(activeCameraId);
+      }
 
-      const dayFrom = selectedDate ? `${selectedDate}T00:00:00` : undefined;
-      const dayTo = selectedDate ? `${selectedDate}T23:59:59` : undefined;
-      const tl = await getTimeline(token, cam ?? undefined, dayFrom, dayTo);
-      setTimeline(tl);
+      const dayFrom = `${selectedDate}T00:00:00`;
+      const dayTo = `${selectedDate}T23:59:59`;
+
+      const [recordingItems, timelineItems] = await Promise.all([
+        listRecordings(token, activeCameraId ?? undefined, dayFrom, dayTo),
+        getTimeline(token, activeCameraId ?? undefined, dayFrom, dayTo),
+      ]);
+
+      setRecords(
+        [...recordingItems].sort(
+          (left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime()
+        )
+      );
+      setTimeline(timelineItems);
     } catch (e: any) {
       setError(e?.message || "Не удалось загрузить записи.");
     } finally {
@@ -65,61 +91,49 @@ const RecordingsPage: React.FC = () => {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, cameraId, selectedDate]);
 
-  const recordsForDay = useMemo(() => {
-    if (!selectedDate) return [];
-    return records.filter((r) => r.started_at.slice(0, 10) === selectedDate);
-  }, [records, selectedDate]);
+  const activeCamera = useMemo(
+    () => cameras.find((camera) => camera.camera_id === cameraId) || null,
+    [cameraId, cameras]
+  );
 
-  const eventsByDay = useMemo(() => {
-    if (!selectedDate) return [];
-    return timeline.filter((e) => e.event_ts.slice(0, 10) === selectedDate);
-  }, [timeline, selectedDate]);
-
-  const groupedByHour = useMemo(() => {
-    const map: Record<number, DbRec[]> = {};
-    recordsForDay.forEach((r) => {
-      const h = new Date(r.started_at).getHours();
-      if (!map[h]) map[h] = [];
-      map[h].push(r);
-    });
-    Object.values(map).forEach((arr) => arr.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()));
-    return map;
-  }, [recordsForDay]);
+  const summary = useMemo(() => {
+    const totalDuration = records.reduce((sum, record) => sum + (record.duration_seconds || 0), 0);
+    const faceEvents = timeline.filter((event) => event.event_type.includes("face")).length;
+    return {
+      clipCount: records.length,
+      totalDuration,
+      faceEvents,
+    };
+  }, [records, timeline]);
 
   const timelineMarks = useMemo(() => {
-    return eventsByDay.map((e) => {
-      const d = new Date(e.event_ts);
-      const sec = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
-      const type = e.event_type;
-      const color = type === "face_recognized" ? "#22c55e" : type === "face_unknown" ? "#f97316" : "#3b82f6";
-      return { left: (sec / 86400) * 100, color };
+    return timeline.map((event) => {
+      const dt = new Date(event.event_ts);
+      const seconds = dt.getHours() * 3600 + dt.getMinutes() * 60 + dt.getSeconds();
+      const color = event.event_type === "face_recognized" ? "#22c55e" : event.event_type === "face_unknown" ? "#f97316" : "#3b82f6";
+      return { left: (seconds / 86400) * 100, color };
     });
-  }, [eventsByDay]);
-
-  const scrollToAllVideo = () => {
-    allVideoRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  }, [timeline]);
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Записи</h2>
-          <div className="muted">Выберите камеру и день</div>
+          <div className="muted">Клипы хранятся на Processor и подтягиваются за выбранную дату.</div>
         </div>
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
           <select
             className="input"
             value={cameraId ?? ""}
             onChange={(e) => setCameraId(e.target.value ? Number(e.target.value) : null)}
-            style={{ minWidth: 200 }}
+            style={{ minWidth: 220 }}
           >
-            {cameras.map((c) => (
-              <option key={c.camera_id} value={c.camera_id}>
-                {c.name} (#{c.camera_id})
+            {cameras.map((camera) => (
+              <option key={camera.camera_id} value={camera.camera_id}>
+                {camera.name} (#{camera.camera_id})
               </option>
             ))}
           </select>
@@ -133,130 +147,167 @@ const RecordingsPage: React.FC = () => {
       {error && <div className="danger">{error}</div>}
       {loading && <div className="card">Загрузка...</div>}
 
-      {!loading && recordsForDay.length === 0 && <div className="card">Записей за выбранный день нет.</div>}
-
-      {!loading && recordsForDay.length > 0 && (
+      {!loading && (
         <>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
+            <div className="card stack" style={{ gap: 4 }}>
+              <div className="muted">Камера</div>
+              <div style={{ fontWeight: 700 }}>{activeCamera?.name || "Не выбрана"}</div>
+              <div className="muted">{activeCamera?.location || "Локация не указана"}</div>
+            </div>
+            <div className="card stack" style={{ gap: 4 }}>
+              <div className="muted">Клипов за день</div>
+              <div style={{ fontWeight: 700, fontSize: 24 }}>{summary.clipCount}</div>
+            </div>
+            <div className="card stack" style={{ gap: 4 }}>
+              <div className="muted">Суммарная длительность</div>
+              <div style={{ fontWeight: 700, fontSize: 24 }}>{formatDuration(summary.totalDuration)}</div>
+            </div>
+            <div className="card stack" style={{ gap: 4 }}>
+              <div className="muted">Событий на таймлайне</div>
+              <div style={{ fontWeight: 700, fontSize: 24 }}>{summary.faceEvents}</div>
+            </div>
+          </div>
+
           <div className="card">
             <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
               <div className="stack" style={{ gap: 4 }}>
-                <h3 style={{ margin: 0 }}>Таймлайн</h3>
-                <div className="muted">Метки распознанных/неизвестных лиц</div>
+                <h3 style={{ margin: 0 }}>Таймлайн событий</h3>
+                <div className="muted">Зелёный — распознано, оранжевый — неизвестное лицо.</div>
               </div>
-              <button className="btn secondary" onClick={scrollToAllVideo}>
-                Воспроизведение всех видео
-              </button>
+              <span className="pill">{timeline.length} событий</span>
             </div>
             <div style={{ position: "relative", height: 28, marginTop: 12, background: "#0d1b2a", borderRadius: 8 }}>
-              {timelineMarks.map((m, idx) => (
+              {timelineMarks.map((mark, index) => (
                 <div
-                  key={idx}
-                  title={m.color === "#22c55e" ? "Распознано" : "Неизвестное лицо"}
+                  key={`${mark.left}-${index}`}
                   style={{
                     position: "absolute",
-                    left: `${m.left}%`,
+                    left: `${mark.left}%`,
                     top: 2,
-                    width: 3,
+                    width: 4,
                     height: 24,
-                    background: m.color,
-                    borderRadius: 2,
+                    background: mark.color,
+                    borderRadius: 999,
                   }}
                 />
               ))}
             </div>
           </div>
 
-          <div ref={allVideoRef} className="card" style={{ marginTop: 12 }}>
-            <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ margin: 0 }}>Все видео</h3>
-              <span className="pill">{recordsForDay.length} клипов</span>
-            </div>
-            <div className="hour-grid">
-              {Array.from({ length: 24 }).map((_, h) => {
-                const recs = groupedByHour[h] || [];
-                const hasFace = eventsByDay.some((e) => new Date(e.event_ts).getHours() === h && e.event_type.includes("face"));
-                const active = selectedHour === h;
+          {records.length === 0 ? (
+            <div className="card">За выбранный день клипов пока нет.</div>
+          ) : (
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
+              {records.map((record) => {
+                const startedAt = new Date(record.started_at);
+                const endedAt = record.ended_at
+                  ? new Date(record.ended_at)
+                  : new Date(startedAt.getTime() + (record.duration_seconds || 0) * 1000);
+                const eventsInside = timeline.filter((event) => {
+                  const ts = new Date(event.event_ts).getTime();
+                  return ts >= startedAt.getTime() && ts <= endedAt.getTime();
+                });
+                const fileUrl = `${API_URL}/recordings/file/${record.recording_file_id}?token=${encodeURIComponent(token || "")}`;
+                const mjpegUrl = `${API_URL}/recordings/file/${record.recording_file_id}/mjpeg?token=${encodeURIComponent(token || "")}`;
+                const snapshotUrl = recordingSnapshotUrl(
+                  record.recording_file_id,
+                  token || "",
+                  record.duration_seconds ? Math.max(Math.floor(record.duration_seconds / 2), 1) : undefined
+                );
+                const fallback = fallbackMap[record.recording_file_id];
                 return (
-                  <button
-                    key={h}
-                    className={`hour-card${active ? " active" : ""}`}
-                    onClick={() => recs.length > 0 && setSelectedHour(active ? null : h)}
-                    disabled={recs.length === 0}
-                  >
-                    <div className="row" style={{ justifyContent: "space-between" }}>
-                      <div className="muted">{h.toString().padStart(2, "0")}:00</div>
-                      <span className="pill" style={{ background: hasFace ? "#22c55e22" : undefined, color: hasFace ? "#22c55e" : undefined }}>
-                        {recs.length ? `${recs.length} шт` : "нет"}
-                      </span>
+                  <div key={record.recording_file_id} className="card stack" style={{ gap: 10 }}>
+                    <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div className="stack" style={{ gap: 2 }}>
+                        <h3 style={{ margin: 0 }}>{startedAt.toLocaleTimeString()}</h3>
+                        <div className="muted">
+                          {startedAt.toLocaleDateString()} · {formatDuration(record.duration_seconds)}
+                        </div>
+                      </div>
+                      <span className="pill">{eventsInside.length} событий</span>
                     </div>
-                    <div className="muted" style={{ marginTop: 6 }}>{recs.length ? "Открыть" : "Клипов нет"}</div>
-                  </button>
+
+                    {!videoOpenMap[record.recording_file_id] ? (
+                      <img
+                        src={snapshotUrl}
+                        alt={`clip-${record.recording_file_id}`}
+                        loading="lazy"
+                        style={{
+                          width: "100%",
+                          aspectRatio: "16 / 9",
+                          objectFit: "cover",
+                          borderRadius: 10,
+                          background: "#0d1b2a",
+                        }}
+                      />
+                    ) : fallback ? (
+                      <img
+                        src={mjpegUrl}
+                        alt={`clip-mjpeg-${record.recording_file_id}`}
+                        style={{
+                          width: "100%",
+                          aspectRatio: "16 / 9",
+                          objectFit: "cover",
+                          borderRadius: 10,
+                          background: "#0d1b2a",
+                        }}
+                      />
+                    ) : (
+                      <video
+                        controls
+                        preload="none"
+                        poster={snapshotUrl}
+                        style={{
+                          width: "100%",
+                          aspectRatio: "16 / 9",
+                          borderRadius: 10,
+                          background: "#0d1b2a",
+                        }}
+                        onError={() =>
+                          setFallbackMap((prev) => ({
+                            ...prev,
+                            [record.recording_file_id]: true,
+                          }))
+                        }
+                      >
+                        <source src={fileUrl} type="video/mp4" />
+                      </video>
+                    )}
+
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <div className="muted">Размер: {formatBytes(record.file_size_bytes)}</div>
+                      {!videoOpenMap[record.recording_file_id] ? (
+                        <button
+                          className="btn secondary"
+                          onClick={() =>
+                            setVideoOpenMap((prev) => ({
+                              ...prev,
+                              [record.recording_file_id]: true,
+                            }))
+                          }
+                        >
+                          Открыть видео
+                        </button>
+                      ) : fallback ? (
+                        <button
+                          className="btn secondary"
+                          onClick={() =>
+                            setFallbackMap((prev) => ({
+                              ...prev,
+                              [record.recording_file_id]: false,
+                            }))
+                          }
+                        >
+                          Попробовать MP4
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 );
               })}
             </div>
-
-            {selectedHour !== null && (groupedByHour[selectedHour]?.length ?? 0) > 0 && (
-              <div className="stack" style={{ marginTop: 16, gap: 8 }}>
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                  <h4 style={{ margin: 0 }}>Клипы за {selectedHour.toString().padStart(2, "0")}:00</h4>
-                  <button className="btn secondary" onClick={() => setSelectedHour(null)}>Свернуть</button>
-                </div>
-                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
-                  {(groupedByHour[selectedHour] || []).map((r) => {
-                    const start = new Date(r.started_at);
-                    const endMs = r.duration_seconds ? start.getTime() + r.duration_seconds * 1000 : start.getTime();
-                    const recEvents = eventsByDay.filter(
-                      (e) => new Date(e.event_ts).getTime() >= start.getTime() && new Date(e.event_ts).getTime() <= endMs
-                    );
-                    const hasFaceInClip = recEvents.some((e) => e.event_type.includes("face"));
-                    const snapshot = recordingSnapshotUrl(
-                      r.recording_file_id,
-                      token || "",
-                      r.duration_seconds ? Math.floor(r.duration_seconds / 2) : undefined
-                    );
-                    const fileUrl = `${API_URL}/recordings/file/${r.recording_file_id}?token=${encodeURIComponent(token || "")}`;
-                    const mjpegUrl = `${API_URL}/recordings/file/${r.recording_file_id}/mjpeg?token=${encodeURIComponent(token || "")}`;
-                    const fallback = fallbackMap[r.recording_file_id];
-                    return (
-                      <div
-                        key={r.recording_file_id}
-                        className="stack clip-card"
-                        style={{
-                          border: hasFaceInClip ? "1px solid #22c55e55" : undefined,
-                        }}
-                      >
-                        <div className="muted" style={{ fontSize: 12 }}>
-                          {start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                        </div>
-                        {!fallback ? (
-                          <video
-                            controls
-                            preload="none"
-                            style={{ width: "100%", borderRadius: 10, background: "#0d1b2a" }}
-                            poster={snapshot}
-                            onError={() => setFallbackMap((p) => ({ ...p, [r.recording_file_id]: true }))}
-                          >
-                            <source src={fileUrl} type="video/mp4" />
-                          </video>
-                        ) : (
-                          <div className="stack" style={{ gap: 4 }}>
-                            <img
-                              alt="mjpeg-stream"
-                              style={{ width: "100%", borderRadius: 8, background: "#0d1b2a" }}
-                              src={mjpegUrl}
-                            />
-                            <button className="btn secondary" onClick={() => setFallbackMap((p) => ({ ...p, [r.recording_file_id]: false }))}>
-                              Попробовать MP4
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          )}
         </>
       )}
     </div>

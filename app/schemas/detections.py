@@ -25,6 +25,8 @@ class EventReviewUpdate(BaseModel):
 class PendingEvent(BaseModel):
     event_id: int
     camera_id: int
+    camera_name: Optional[str] = None
+    camera_location: Optional[str] = None
     event_type_id: int
     event_ts: str
     person_id: Optional[int] = None

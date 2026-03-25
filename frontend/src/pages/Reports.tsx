@@ -1,9 +1,5 @@
 import { useState } from "react";
-import {
-  getAppearanceReport,
-  appearanceExportUrl,
-  type AppearanceReport,
-} from "../lib/api";
+import { appearanceExportUrl, getAppearanceReport, type AppearanceReport } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 const ReportsPage: React.FC = () => {
@@ -26,8 +22,8 @@ const ReportsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await getAppearanceReport(token, params);
-      setReport(r);
+      const result = await getAppearanceReport(token, params);
+      setReport(result);
     } catch (e: any) {
       setError(e?.message || "Ошибка загрузки");
     } finally {
@@ -35,29 +31,32 @@ const ReportsPage: React.FC = () => {
     }
   };
 
-  const exportReport = (format: "pdf" | "xlsx" | "docx") => {
+  const exportReport = async (format: "pdf" | "xlsx" | "docx") => {
     if (!token) return;
     const url = appearanceExportUrl(token, format, params);
-    // Download via hidden link with auth header
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-      .then((res) => {
-        if (!res.ok) throw new Error("Export failed");
-        return res.blob();
-      })
-      .then((blob) => {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `report.${format}`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-      })
-      .catch((e) => alert(e?.message || "Ошибка экспорта"));
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error("Не удалось сформировать экспорт");
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `report.${format}`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e: any) {
+      alert(e?.message || "Ошибка экспорта");
+    }
   };
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <h2 className="title">Отчёты</h2>
-      <div className="muted">Отчёт по появлению людей. Фильтрация по дате и персоне.</div>
+      <div className="muted">Отчёт строится только по подтвержденным появлениям и показывает, где стояла камера и в какой группе она состоит.</div>
 
       <div className="card">
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
@@ -78,9 +77,15 @@ const ReportsPage: React.FC = () => {
           <button className="btn" onClick={loadReport} disabled={loading}>
             {loading ? "Загрузка..." : "Сформировать"}
           </button>
-          <button className="btn secondary" onClick={() => exportReport("pdf")}>PDF</button>
-          <button className="btn secondary" onClick={() => exportReport("xlsx")}>XLSX</button>
-          <button className="btn secondary" onClick={() => exportReport("docx")}>DOCX</button>
+          <button className="btn secondary" onClick={() => exportReport("pdf")}>
+            PDF
+          </button>
+          <button className="btn secondary" onClick={() => exportReport("xlsx")}>
+            XLSX
+          </button>
+          <button className="btn secondary" onClick={() => exportReport("docx")}>
+            DOCX
+          </button>
         </div>
       </div>
 
@@ -94,7 +99,7 @@ const ReportsPage: React.FC = () => {
           </div>
 
           {report.items.length === 0 ? (
-            <div className="muted">Нет данных за указанный период.</div>
+            <div className="muted">За указанный период данных нет.</div>
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -103,19 +108,23 @@ const ReportsPage: React.FC = () => {
                     <th style={{ padding: "6px 8px", textAlign: "left" }}>#</th>
                     <th style={{ padding: "6px 8px", textAlign: "left" }}>Время</th>
                     <th style={{ padding: "6px 8px", textAlign: "left" }}>Камера</th>
+                    <th style={{ padding: "6px 8px", textAlign: "left" }}>Локация</th>
+                    <th style={{ padding: "6px 8px", textAlign: "left" }}>Группа</th>
                     <th style={{ padding: "6px 8px", textAlign: "left" }}>Персона</th>
                     <th style={{ padding: "6px 8px", textAlign: "right" }}>Уверенность</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {report.items.map((it, idx) => (
-                    <tr key={it.event_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "6px 8px" }}>{idx + 1}</td>
-                      <td style={{ padding: "6px 8px" }}>{new Date(it.event_ts).toLocaleString()}</td>
-                      <td style={{ padding: "6px 8px" }}>{it.camera_name || `#${it.camera_id}`}</td>
-                      <td style={{ padding: "6px 8px" }}>{it.person_label || (it.person_id ? `ID ${it.person_id}` : "-")}</td>
+                  {report.items.map((item, index) => (
+                    <tr key={item.event_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={{ padding: "6px 8px" }}>{index + 1}</td>
+                      <td style={{ padding: "6px 8px" }}>{new Date(item.event_ts).toLocaleString()}</td>
+                      <td style={{ padding: "6px 8px" }}>{item.camera_name || `#${item.camera_id}`}</td>
+                      <td style={{ padding: "6px 8px" }}>{item.camera_location || "-"}</td>
+                      <td style={{ padding: "6px 8px" }}>{item.group_name || "-"}</td>
+                      <td style={{ padding: "6px 8px" }}>{item.person_label || (item.person_id ? `ID ${item.person_id}` : "-")}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                        {it.confidence != null ? it.confidence.toFixed(2) : "-"}
+                        {item.confidence != null ? item.confidence.toFixed(2) : "-"}
                       </td>
                     </tr>
                   ))}

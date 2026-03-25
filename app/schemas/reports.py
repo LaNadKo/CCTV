@@ -7,6 +7,8 @@ class AppearanceItem(BaseModel):
     event_ts: str
     camera_id: int
     camera_name: Optional[str] = None
+    camera_location: Optional[str] = None
+    group_name: Optional[str] = None
     person_id: Optional[int] = None
     person_label: Optional[str] = None
     confidence: Optional[float] = None
