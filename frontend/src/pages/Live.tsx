@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { API_URL, getCameras, listGroups, type GroupOut } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import { loadUiSettings } from "../lib/uiSettings";
 
 type CameraItem = {
   camera_id: number;
@@ -18,6 +19,14 @@ const LivePage: React.FC = () => {
   const [streamErrorMap, setStreamErrorMap] = useState<Record<number, boolean>>({});
   const [streamRetryMap, setStreamRetryMap] = useState<Record<number, number>>({});
   const containerRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const uiSettings = loadUiSettings();
+
+  const densityStyle =
+    uiSettings.liveDensity === "focus"
+      ? { min: 420, max: 520 }
+      : uiSettings.liveDensity === "comfortable"
+        ? { min: 320, max: 420 }
+        : { min: 260, max: 320 };
 
   useEffect(() => {
     if (!token) return;
@@ -57,8 +66,9 @@ const LivePage: React.FC = () => {
       <div
         className="grid"
         style={{
-          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 360px))",
+          gridTemplateColumns: `repeat(auto-fit, minmax(${densityStyle.min}px, ${densityStyle.max}px))`,
           justifyContent: "start",
+          alignItems: "start",
         }}
       >
         {filteredCameras.map((camera) => (

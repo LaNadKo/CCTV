@@ -12,7 +12,9 @@ import ProcessorsPage from "./pages/Processors";
 import RecordingsPage from "./pages/Recordings";
 import ReportsPage from "./pages/Reports";
 import ReviewsPage from "./pages/Reviews";
+import SettingsPage from "./pages/Settings";
 import UsersPage from "./pages/Users";
+import { loadUiSettings } from "./lib/uiSettings";
 import "./app.css";
 
 function RequireAuth() {
@@ -63,29 +65,33 @@ function Layout() {
   const isAdmin = user?.role_id === 1;
   const isUser = user?.role_id === 1 || user?.role_id === 2;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [uiSettings] = useState(() => loadUiSettings());
 
-  const primaryTabs = useMemo(
-    () =>
-      [
-        { to: "/live", label: "Live", show: true },
-        { to: "/reviews", label: "Ревью", show: isUser },
-        { to: "/reports", label: "Отчёты", show: isUser },
-        { to: "/persons", label: "Персоны", show: isAdmin },
-      ].filter((tab) => tab.show),
+  const allTabs = useMemo(
+    () => [
+      { to: "/live", label: "Live", show: true },
+      { to: "/reviews", label: "Ревью", show: isUser },
+      { to: "/reports", label: "Отчёты", show: isUser },
+      { to: "/persons", label: "Персоны", show: isAdmin },
+      { to: "/recordings", label: "Записи", show: true },
+      { to: "/groups", label: "Группы", show: true },
+      { to: "/cameras", label: "Камеры", show: isAdmin },
+      { to: "/processors", label: "Процессоры", show: isAdmin },
+      { to: "/users", label: "Пользователи", show: isAdmin },
+      { to: "/apikeys", label: "API-ключи", show: isAdmin },
+      { to: "/settings", label: "Настройки", show: true },
+    ],
     [isAdmin, isUser]
   );
 
+  const primaryTabs = useMemo(
+    () => allTabs.filter((tab) => tab.show && uiSettings.primaryNav.includes(tab.to)),
+    [allTabs, uiSettings.primaryNav]
+  );
+
   const secondaryTabs = useMemo(
-    () =>
-      [
-        { to: "/recordings", label: "Записи", show: true },
-        { to: "/groups", label: "Группы", show: true },
-        { to: "/cameras", label: "Камеры", show: isAdmin },
-        { to: "/processors", label: "Процессоры", show: isAdmin },
-        { to: "/users", label: "Пользователи", show: isAdmin },
-        { to: "/apikeys", label: "API-ключи", show: isAdmin },
-      ].filter((tab) => tab.show),
-    [isAdmin]
+    () => allTabs.filter((tab) => tab.show && !primaryTabs.some((primary) => primary.to === tab.to)),
+    [allTabs, primaryTabs]
   );
 
   useEffect(() => {
@@ -164,6 +170,7 @@ function App() {
             <Route path="/processors" element={<ProcessorsPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/apikeys" element={<ApiKeysPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/live" replace />} />

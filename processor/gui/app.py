@@ -54,7 +54,7 @@ def load_config() -> dict:
         "processor_name": socket.gethostname(),
         "max_workers": 4,
         "motion_threshold": 25.0,
-        "face_scan_interval": 2,
+        "face_scan_interval": 0.7,
         "recording_segment_seconds": 300,
         "recordings_dir": str(_base_dir() / "media" / "recordings"),
         "snapshots_dir": str(_base_dir() / "media" / "snapshots"),
@@ -88,6 +88,7 @@ class ProcessorApp(ctk.CTk):
         self._apply_window_icon()
 
         self.config_data = load_config()
+        self.system_info = get_system_info()
         self.monitor = SystemMonitor()
         self._svc = None
         self._svc_loop = None
@@ -362,7 +363,14 @@ class ProcessorApp(ctk.CTk):
         info_frame.pack(fill="x", padx=20, pady=10)
         ctk.CTkLabel(info_frame, text="Информация о подключении", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(10, 5))
         self.info_labels: dict[str, ctk.CTkLabel] = {}
-        for key, label in [("server", "Сервер"), ("proc_id", "Processor ID"), ("name", "Имя"), ("os", "ОС")]:
+        for key, label in [
+            ("server", "Сервер"),
+            ("proc_id", "Processor ID"),
+            ("name", "Имя"),
+            ("os", "ОС"),
+            ("arch", "Архитектура"),
+            ("gpu", "GPU / инференс"),
+        ]:
             row = ctk.CTkFrame(info_frame, fg_color="transparent")
             row.pack(fill="x", padx=15, pady=1)
             ctk.CTkLabel(row, text=f"{label}:", text_color="gray60", width=120, anchor="w").pack(side="left")
@@ -376,7 +384,11 @@ class ProcessorApp(ctk.CTk):
         self.info_labels["server"].configure(text=self.config_data.get("backend_url", "—"))
         self.info_labels["proc_id"].configure(text=str(self.config_data.get("processor_id", "—")))
         self.info_labels["name"].configure(text=self.config_data.get("processor_name", "—"))
-        self.info_labels["os"].configure(text=f"{platform.system()} {platform.release()}")
+        self.info_labels["os"].configure(text=self.system_info.get("os", f"{platform.system()} {platform.release()}"))
+        self.info_labels["arch"].configure(text=self.system_info.get("arch", "—"))
+        gpu_name = self.system_info.get("gpu") or "GPU не обнаружена"
+        device = self.system_info.get("inference_device", "cpu")
+        self.info_labels["gpu"].configure(text=f"{gpu_name} / {device}")
 
     # ── Settings Page ──
 
@@ -392,7 +404,7 @@ class ProcessorApp(ctk.CTk):
         fields = [
             ("max_workers", "Макс. камер (workers)", "4"),
             ("motion_threshold", "Порог движения", "25.0"),
-            ("face_scan_interval", "Интервал сканирования лиц (сек)", "2"),
+            ("face_scan_interval", "Интервал сканирования лиц (сек)", "0.7"),
             ("recording_segment_seconds", "Длина сегмента записи (сек)", "300"),
         ]
         for key, label, default in fields:
@@ -437,8 +449,10 @@ class ProcessorApp(ctk.CTk):
     def _save_settings(self):
         for key, entry in self._settings_entries.items():
             val = entry.get().strip()
-            if key in ("max_workers", "face_scan_interval", "recording_segment_seconds"):
+            if key in ("max_workers", "recording_segment_seconds"):
                 self.config_data[key] = int(val)
+            elif key == "face_scan_interval":
+                self.config_data[key] = float(val)
             elif key == "motion_threshold":
                 self.config_data[key] = float(val)
             else:
@@ -503,7 +517,7 @@ class ProcessorApp(ctk.CTk):
         os.environ["PROCESSOR_NAME"] = self.config_data.get("processor_name", "processor-1")
         os.environ["MAX_WORKERS"] = str(self.config_data.get("max_workers", 4))
         os.environ["MOTION_THRESHOLD"] = str(self.config_data.get("motion_threshold", 25.0))
-        os.environ["FACE_SCAN_INTERVAL"] = str(self.config_data.get("face_scan_interval", 5))
+        os.environ["FACE_SCAN_INTERVAL"] = str(self.config_data.get("face_scan_interval", 0.7))
         os.environ["RECORDING_SEGMENT_SECONDS"] = str(self.config_data.get("recording_segment_seconds", 300))
         os.environ["RECORDINGS_DIR"] = str(self.config_data.get("recordings_dir", _base_dir() / "media" / "recordings"))
         os.environ["SNAPSHOTS_DIR"] = str(self.config_data.get("snapshots_dir", _base_dir() / "media" / "snapshots"))
@@ -581,7 +595,7 @@ class ProcessorApp(ctk.CTk):
             if bar:
                 bar.set(util / 100)
         else:
-            lbl.configure(text="CPU mode")
+            lbl.configure(text="GPU не обнаружена / CPU")
             if bar:
                 bar.set(0)
 

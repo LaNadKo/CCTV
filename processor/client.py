@@ -25,12 +25,24 @@ class BackendClient:
         status: str = "online",
         stats: dict | None = None,
         metrics: dict | None = None,
+        hostname: str | None = None,
+        os_info: str | None = None,
+        version: str | None = None,
+        capabilities: dict | None = None,
         media_port: int | None = None,
         media_token: str | None = None,
     ) -> dict:
         payload = {"status": status, "stats": stats or {}}
         if metrics:
             payload["metrics"] = metrics
+        if hostname:
+            payload["hostname"] = hostname
+        if os_info:
+            payload["os_info"] = os_info
+        if version:
+            payload["version"] = version
+        if capabilities:
+            payload["capabilities"] = capabilities
         if media_port is not None:
             payload["media_port"] = media_port
         if media_token:

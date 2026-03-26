@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 import time
 from dataclasses import dataclass, asdict
+from typing import Any
 
 
 @dataclass
@@ -121,11 +122,24 @@ class SystemMonitor:
 
 def get_system_info() -> dict:
     """One-time system info for registration."""
+    system = platform.system()
+    release = platform.release()
+    version = platform.version()
+    pretty_os = f"{system} {release}"
+    if system == "Windows":
+        try:
+            build = int(version.split(".")[-1])
+        except Exception:
+            build = 0
+        if release == "10" and build >= 22000:
+            pretty_os = "Windows 11"
+
     info = {
-        "os": f"{platform.system()} {platform.release()}",
+        "os": pretty_os,
         "arch": platform.machine(),
         "python": platform.python_version(),
         "hostname": platform.node(),
+        "platform_version": version,
     }
     try:
         import psutil
@@ -134,11 +148,28 @@ def get_system_info() -> dict:
     except ImportError:
         pass
     try:
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        gpu_name = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode()
+        info["gpu"] = gpu_name
+        info["inference_device"] = "cuda"
+        pynvml.nvmlShutdown()
+    except Exception:
+        pass
+    try:
         import torch
         info["torch"] = torch.__version__
         if torch.cuda.is_available():
             info["gpu"] = torch.cuda.get_device_name(0)
             info["cuda"] = torch.version.cuda
+            info["inference_device"] = "cuda"
+        elif "inference_device" not in info:
+            info["inference_device"] = "cpu"
     except ImportError:
         pass
+    if "inference_device" not in info:
+        info["inference_device"] = "cpu"
     return info

@@ -14,6 +14,8 @@ class ApiKeyOut(BaseModel):
     description: Optional[str] = None
     scopes: List[str]
     is_active: bool
+    expires_at: Optional[str] = None
+    created_at: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -22,3 +24,10 @@ class ApiKeyOut(BaseModel):
 class ApiKeyPlain(BaseModel):
     api_key: str
     api_key_id: int
+
+
+class ApiKeyUpdate(BaseModel):
+    description: Optional[str] = None
+    scopes: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+    expires_at: Optional[str] = None

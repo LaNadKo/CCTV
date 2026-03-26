@@ -212,6 +212,30 @@ async def review_event(
     return {"event_id": event_id, "status": review_obj.status, "person_id": review_obj.person_id}
 
 
+@router.post("/review/reject-all", response_model=dict)
+async def reject_all_pending(
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+) -> dict:
+    perm = user_camera_permission_sync(current_user)
+    if not check_permission(perm, "control"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review events")
+
+    result = await session.execute(
+        select(models.EventReview).where(models.EventReview.status == "pending")
+    )
+    reviews = result.scalars().all()
+    updated = 0
+    for review_obj in reviews:
+        review_obj.status = "rejected"
+        review_obj.reviewer_user_id = current_user.user_id
+        review_obj.updated_at = datetime.now()
+        updated += 1
+
+    await session.commit()
+    return {"updated": updated}
+
+
 @router.get("/stats/presence")
 async def stats_presence(
     camera_id: int | None = Query(default=None),

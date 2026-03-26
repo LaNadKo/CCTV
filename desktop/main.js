@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, Tray, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -8,13 +8,19 @@ const isDev = process.argv.includes("--dev");
 let mainWindow = null;
 let localServer = null;
 let isQuitting = false;
+let tray = null;
+
+app.setAppUserModelId("com.cctv.console");
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (!mainWindow) return;
+  app.on("second-instance", async () => {
+    if (!mainWindow) {
+      await createWindow();
+      return;
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
     if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
@@ -110,8 +116,12 @@ async function createWindow() {
   }
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
-  mainWindow.on("close", () => {
+  mainWindow.on("close", (event) => {
     saveWindowState();
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 
@@ -139,7 +149,56 @@ async function createWindow() {
   return mainWindow;
 }
 
+function ensureTray() {
+  if (tray) return tray;
+  const iconPath = path.join(__dirname, "build", "icon.png");
+  tray = new Tray(iconPath);
+  tray.setToolTip("CCTV Console");
+  tray.on("double-click", async () => {
+    await createWindow();
+  });
+  const refreshMenu = () => {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: "Открыть",
+          click: async () => {
+            await createWindow();
+          },
+        },
+        {
+          label: mainWindow && mainWindow.isVisible() ? "Скрыть в трей" : "Показать окно",
+          click: async () => {
+            if (!mainWindow) {
+              await createWindow();
+              return;
+            }
+            if (mainWindow.isVisible()) {
+              mainWindow.hide();
+            } else {
+              if (mainWindow.isMinimized()) mainWindow.restore();
+              mainWindow.show();
+              mainWindow.focus();
+            }
+          },
+        },
+        { type: "separator" },
+        {
+          label: "Выход",
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ])
+    );
+  };
+  refreshMenu();
+  return tray;
+}
+
 app.whenReady().then(async () => {
+  ensureTray();
   await createWindow();
 
   app.on("activate", async () => {
@@ -168,6 +227,10 @@ app.on("before-quit", () => {
 
 app.on("will-quit", () => {
   isQuitting = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   if (localServer) {
     localServer.close();
     localServer = null;

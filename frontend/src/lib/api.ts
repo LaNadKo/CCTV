@@ -1,9 +1,12 @@
 const envApi = import.meta.env.VITE_API_URL as string | undefined;
 const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
 const savedUrl = typeof window !== "undefined" ? localStorage.getItem("cctv_api_url") : null;
+const electronDefaultApi =
+  typeof window !== "undefined" ? (window as any)?.electronAPI?.defaultApiUrl as string | undefined : undefined;
 export const API_URL =
   savedUrl ||
   envApi ||
+  electronDefaultApi ||
   (import.meta.env.DEV ? "http://127.0.0.1:8000" : runtimeOrigin || "http://127.0.0.1:8000");
 
 export function setApiUrl(url: string) {
@@ -67,11 +70,17 @@ async function request<T>(
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error: any) {
+    const message = error?.message || "Network request failed";
+    throw new Error(`Не удалось связаться с backend (${API_URL}): ${message}`);
+  }
   if (!res.ok) {
     const msg = await readErrorMessage(res);
     const err: any = new Error(msg || res.statusText);
@@ -146,11 +155,23 @@ export async function createApiKey(token: string, description: string, scopes: s
 }
 
 export async function listApiKeys(token: string) {
-  return request<{ api_key_id: number; description?: string; scopes: string[]; is_active: boolean }[]>(
+  return request<{ api_key_id: number; description?: string; scopes: string[]; is_active: boolean; expires_at?: string | null; created_at?: string | null }[]>(
     "/api-keys",
     "GET",
     token
   );
+}
+
+export async function updateApiKey(
+  token: string,
+  api_key_id: number,
+  payload: { description?: string; scopes?: string[]; is_active?: boolean; expires_at?: string | null }
+) {
+  return request(`/api-keys/${api_key_id}`, "PATCH", token, payload);
+}
+
+export async function deleteApiKey(token: string, api_key_id: number) {
+  return request(`/api-keys/${api_key_id}`, "DELETE", token);
 }
 
 // ── Groups (simplified) ──
@@ -294,6 +315,10 @@ export async function createPerson(token: string, data: { first_name?: string; l
 
 export async function updatePerson(token: string, personId: number, data: { first_name?: string; last_name?: string; middle_name?: string }) {
   return request<PersonOut>(`/persons/${personId}`, "PATCH", token, data);
+}
+
+export async function deletePerson(token: string, personId: number) {
+  return request(`/persons/${personId}`, "DELETE", token);
 }
 
 export async function addPersonEmbeddingFromPhoto(
@@ -536,4 +561,12 @@ export async function adminDeleteUser(token: string, userId: number) {
 
 export async function adminSetUserRole(token: string, userId: number, role_id: number) {
   return request(`/admin/users/${userId}/role?role_id=${role_id}`, "POST", token);
+}
+
+export async function deleteCamera(token: string, cameraId: number) {
+  return request(`/admin/cameras/${cameraId}`, "DELETE", token);
+}
+
+export async function rejectAllPendingReviews(token: string) {
+  return request<{ updated: number }>("/detections/review/reject-all", "POST", token);
 }

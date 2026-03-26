@@ -23,12 +23,14 @@ type TimelineEvent = {
   event_type: string;
 };
 
+const HOURS = Array.from({ length: 24 }, (_, index) => index);
+
 const formatDuration = (value?: number) => {
-  if (!value) return "0 c";
-  if (value < 60) return `${Math.round(value)} c`;
+  if (!value) return "0 с";
+  if (value < 60) return `${Math.round(value)} с`;
   const minutes = Math.floor(value / 60);
   const seconds = Math.round(value % 60);
-  return `${minutes} мин ${seconds.toString().padStart(2, "0")} c`;
+  return `${minutes} мин ${seconds.toString().padStart(2, "0")} с`;
 };
 
 const formatBytes = (value?: number) => {
@@ -44,9 +46,10 @@ const RecordingsPage: React.FC = () => {
   const [cameras, setCameras] = useState<{ camera_id: number; name: string; location?: string }[]>([]);
   const [cameraId, setCameraId] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [selectedHour, setSelectedHour] = useState<number | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [videoOpenMap, setVideoOpenMap] = useState<Record<number, boolean>>({});
-  const [fallbackMap, setFallbackMap] = useState<Record<number, boolean>>({});
+  const [snapshotMissingMap, setSnapshotMissingMap] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -56,32 +59,36 @@ const RecordingsPage: React.FC = () => {
     setError(null);
     try {
       const cams = await getCameras(token);
-      const mappedCameras = cams.map((camera) => ({
+      const mapped = cams.map((camera) => ({
         camera_id: camera.camera_id,
         name: camera.name,
         location: camera.location,
       }));
-      setCameras(mappedCameras);
-
-      const activeCameraId = cameraId ?? mappedCameras[0]?.camera_id ?? null;
+      setCameras(mapped);
+      const activeCameraId = cameraId ?? mapped[0]?.camera_id ?? null;
       if (activeCameraId !== null) {
         setCameraId(activeCameraId);
       }
 
       const dayFrom = `${selectedDate}T00:00:00`;
       const dayTo = `${selectedDate}T23:59:59`;
-
       const [recordingItems, timelineItems] = await Promise.all([
         listRecordings(token, activeCameraId ?? undefined, dayFrom, dayTo),
         getTimeline(token, activeCameraId ?? undefined, dayFrom, dayTo),
       ]);
 
-      setRecords(
-        [...recordingItems].sort(
-          (left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime()
-        )
+      const sorted = [...recordingItems].sort(
+        (left, right) => new Date(left.started_at).getTime() - new Date(right.started_at).getTime()
       );
+
+      setRecords(sorted);
       setTimeline(timelineItems);
+
+      if (selectedHour === null && sorted.length > 0) {
+        setSelectedHour(new Date(sorted[0].started_at).getHours());
+      } else if (selectedHour !== null && !sorted.some((record) => new Date(record.started_at).getHours() === selectedHour)) {
+        setSelectedHour(sorted.length ? new Date(sorted[0].started_at).getHours() : null);
+      }
     } catch (e: any) {
       setError(e?.message || "Не удалось загрузить записи.");
     } finally {
@@ -98,21 +105,31 @@ const RecordingsPage: React.FC = () => {
     [cameraId, cameras]
   );
 
-  const summary = useMemo(() => {
-    const totalDuration = records.reduce((sum, record) => sum + (record.duration_seconds || 0), 0);
-    const faceEvents = timeline.filter((event) => event.event_type.includes("face")).length;
-    return {
-      clipCount: records.length,
-      totalDuration,
-      faceEvents,
-    };
-  }, [records, timeline]);
+  const byHour = useMemo(() => {
+    const map: Record<number, DbRec[]> = {};
+    for (const hour of HOURS) map[hour] = [];
+    for (const record of records) {
+      const hour = new Date(record.started_at).getHours();
+      map[hour].push(record);
+    }
+    return map;
+  }, [records]);
+
+  const selectedHourRecords = useMemo(() => {
+    if (selectedHour === null) return records;
+    return byHour[selectedHour] || [];
+  }, [byHour, selectedHour, records]);
 
   const timelineMarks = useMemo(() => {
     return timeline.map((event) => {
       const dt = new Date(event.event_ts);
       const seconds = dt.getHours() * 3600 + dt.getMinutes() * 60 + dt.getSeconds();
-      const color = event.event_type === "face_recognized" ? "#22c55e" : event.event_type === "face_unknown" ? "#f97316" : "#3b82f6";
+      const color =
+        event.event_type === "face_recognized"
+          ? "#22c55e"
+          : event.event_type === "face_unknown"
+            ? "#f97316"
+            : "#38bdf8";
       return { left: (seconds / 86400) * 100, color };
     });
   }, [timeline]);
@@ -122,7 +139,7 @@ const RecordingsPage: React.FC = () => {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Записи</h2>
-          <div className="muted">Клипы хранятся на Processor и подтягиваются за выбранную дату.</div>
+          <div className="muted">Клипы хранятся на Processor и подтягиваются по выбранной дате через backend-прокси.</div>
         </div>
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
           <select
@@ -149,165 +166,145 @@ const RecordingsPage: React.FC = () => {
 
       {!loading && (
         <>
-          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
-            <div className="card stack" style={{ gap: 4 }}>
-              <div className="muted">Камера</div>
-              <div style={{ fontWeight: 700 }}>{activeCamera?.name || "Не выбрана"}</div>
-              <div className="muted">{activeCamera?.location || "Локация не указана"}</div>
-            </div>
-            <div className="card stack" style={{ gap: 4 }}>
-              <div className="muted">Клипов за день</div>
-              <div style={{ fontWeight: 700, fontSize: 24 }}>{summary.clipCount}</div>
-            </div>
-            <div className="card stack" style={{ gap: 4 }}>
-              <div className="muted">Суммарная длительность</div>
-              <div style={{ fontWeight: 700, fontSize: 24 }}>{formatDuration(summary.totalDuration)}</div>
-            </div>
-            <div className="card stack" style={{ gap: 4 }}>
-              <div className="muted">Событий на таймлайне</div>
-              <div style={{ fontWeight: 700, fontSize: 24 }}>{summary.faceEvents}</div>
-            </div>
-          </div>
-
-          <div className="card">
+          <div className="card stack">
             <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
               <div className="stack" style={{ gap: 4 }}>
-                <h3 style={{ margin: 0 }}>Таймлайн событий</h3>
-                <div className="muted">Зелёный — распознано, оранжевый — неизвестное лицо.</div>
+                <h3 style={{ margin: 0 }}>Таймлайн</h3>
+                <div className="muted">Зелёный — подтверждённое лицо, оранжевый — неизвестное лицо.</div>
               </div>
               <span className="pill">{timeline.length} событий</span>
             </div>
-            <div style={{ position: "relative", height: 28, marginTop: 12, background: "#0d1b2a", borderRadius: 8 }}>
+            <div className="timeline-bar" style={{ height: 22 }}>
               {timelineMarks.map((mark, index) => (
                 <div
                   key={`${mark.left}-${index}`}
-                  style={{
-                    position: "absolute",
-                    left: `${mark.left}%`,
-                    top: 2,
-                    width: 4,
-                    height: 24,
-                    background: mark.color,
-                    borderRadius: 999,
-                  }}
+                  className="timeline-mark"
+                  style={{ left: `${mark.left}%`, background: mark.color, height: 18, top: 2 }}
                 />
               ))}
             </div>
           </div>
 
-          {records.length === 0 ? (
-            <div className="card">За выбранный день клипов пока нет.</div>
-          ) : (
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
-              {records.map((record) => {
-                const startedAt = new Date(record.started_at);
-                const endedAt = record.ended_at
-                  ? new Date(record.ended_at)
-                  : new Date(startedAt.getTime() + (record.duration_seconds || 0) * 1000);
-                const eventsInside = timeline.filter((event) => {
-                  const ts = new Date(event.event_ts).getTime();
-                  return ts >= startedAt.getTime() && ts <= endedAt.getTime();
-                });
-                const fileUrl = `${API_URL}/recordings/file/${record.recording_file_id}?token=${encodeURIComponent(token || "")}`;
-                const mjpegUrl = `${API_URL}/recordings/file/${record.recording_file_id}/mjpeg?token=${encodeURIComponent(token || "")}`;
-                const snapshotUrl = recordingSnapshotUrl(
-                  record.recording_file_id,
-                  token || "",
-                  record.duration_seconds ? Math.max(Math.floor(record.duration_seconds / 2), 1) : undefined
-                );
-                const fallback = fallbackMap[record.recording_file_id];
+          <div className="card stack">
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="stack" style={{ gap: 4 }}>
+                <h3 style={{ margin: 0 }}>Вся лента</h3>
+                <div className="muted">{activeCamera?.name || "Камера не выбрана"} · {activeCamera?.location || "Локация не указана"}</div>
+              </div>
+              <span className="pill">{records.length} клипов</span>
+            </div>
+
+            <div className="recording-hours-grid">
+              {HOURS.map((hour) => {
+                const items = byHour[hour] || [];
+                const active = selectedHour === hour;
                 return (
-                  <div key={record.recording_file_id} className="card stack" style={{ gap: 10 }}>
-                    <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div className="stack" style={{ gap: 2 }}>
-                        <h3 style={{ margin: 0 }}>{startedAt.toLocaleTimeString()}</h3>
-                        <div className="muted">
-                          {startedAt.toLocaleDateString()} · {formatDuration(record.duration_seconds)}
-                        </div>
-                      </div>
-                      <span className="pill">{eventsInside.length} событий</span>
+                  <button
+                    key={hour}
+                    className={`hour-card${active ? " active" : ""}`}
+                    onClick={() => setSelectedHour(hour)}
+                  >
+                    <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontWeight: 700 }}>{String(hour).padStart(2, "0")}:00</div>
+                      <span className="pill" style={{ color: items.length ? "#22c55e" : "var(--muted)" }}>
+                        {items.length ? `${items.length} шт` : "нет"}
+                      </span>
                     </div>
-
-                    {!videoOpenMap[record.recording_file_id] ? (
-                      <img
-                        src={snapshotUrl}
-                        alt={`clip-${record.recording_file_id}`}
-                        loading="lazy"
-                        style={{
-                          width: "100%",
-                          aspectRatio: "16 / 9",
-                          objectFit: "cover",
-                          borderRadius: 10,
-                          background: "#0d1b2a",
-                        }}
-                      />
-                    ) : fallback ? (
-                      <img
-                        src={mjpegUrl}
-                        alt={`clip-mjpeg-${record.recording_file_id}`}
-                        style={{
-                          width: "100%",
-                          aspectRatio: "16 / 9",
-                          objectFit: "cover",
-                          borderRadius: 10,
-                          background: "#0d1b2a",
-                        }}
-                      />
-                    ) : (
-                      <video
-                        controls
-                        preload="none"
-                        poster={snapshotUrl}
-                        style={{
-                          width: "100%",
-                          aspectRatio: "16 / 9",
-                          borderRadius: 10,
-                          background: "#0d1b2a",
-                        }}
-                        onError={() =>
-                          setFallbackMap((prev) => ({
-                            ...prev,
-                            [record.recording_file_id]: true,
-                          }))
-                        }
-                      >
-                        <source src={fileUrl} type="video/mp4" />
-                      </video>
-                    )}
-
-                    <div className="row" style={{ justifyContent: "space-between" }}>
-                      <div className="muted">Размер: {formatBytes(record.file_size_bytes)}</div>
-                      {!videoOpenMap[record.recording_file_id] ? (
-                        <button
-                          className="btn secondary"
-                          onClick={() =>
-                            setVideoOpenMap((prev) => ({
-                              ...prev,
-                              [record.recording_file_id]: true,
-                            }))
-                          }
-                        >
-                          Открыть видео
-                        </button>
-                      ) : fallback ? (
-                        <button
-                          className="btn secondary"
-                          onClick={() =>
-                            setFallbackMap((prev) => ({
-                              ...prev,
-                              [record.recording_file_id]: false,
-                            }))
-                          }
-                        >
-                          Попробовать MP4
-                        </button>
-                      ) : null}
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {items.length ? "Открыть" : "Клипов нет"}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
-          )}
+          </div>
+
+          <div className="card stack">
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>
+                {selectedHour !== null ? `Клипы за ${String(selectedHour).padStart(2, "0")}:00` : "Клипы"}
+              </h3>
+              {selectedHour !== null && <button className="btn secondary" onClick={() => setSelectedHour(null)}>Показать все</button>}
+            </div>
+
+            {selectedHourRecords.length === 0 ? (
+              <div className="muted">Клипов за выбранный час нет.</div>
+            ) : (
+              <div className="recordings-clips-grid">
+                {selectedHourRecords.map((record) => {
+                  const startedAt = new Date(record.started_at);
+                  const fileUrl = `${API_URL}/recordings/file/${record.recording_file_id}?token=${encodeURIComponent(token || "")}`;
+                  const snapshotUrl = recordingSnapshotUrl(
+                    record.recording_file_id,
+                    token || "",
+                    record.duration_seconds ? Math.max(Math.floor(record.duration_seconds / 2), 1) : undefined
+                  );
+                  const snapshotMissing = snapshotMissingMap[record.recording_file_id];
+
+                  return (
+                    <div key={record.recording_file_id} className="record-card stack" style={{ gap: 10 }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div className="stack" style={{ gap: 2 }}>
+                          <div style={{ fontWeight: 700 }}>{startedAt.toLocaleTimeString()}</div>
+                          <div className="muted">
+                            {formatDuration(record.duration_seconds)} · {formatBytes(record.file_size_bytes)}
+                          </div>
+                        </div>
+                        <span className="pill">#{record.recording_file_id}</span>
+                      </div>
+
+                      {!videoOpenMap[record.recording_file_id] ? (
+                        snapshotMissing ? (
+                          <div className="recordings-thumb recordings-thumb-empty">Превью недоступно</div>
+                        ) : (
+                          <img
+                            src={snapshotUrl}
+                            alt={`record-${record.recording_file_id}`}
+                            loading="lazy"
+                            className="recordings-thumb"
+                            onError={() =>
+                              setSnapshotMissingMap((prev) => ({
+                                ...prev,
+                                [record.recording_file_id]: true,
+                              }))
+                            }
+                          />
+                        )
+                      ) : (
+                        <video
+                          className="recordings-thumb"
+                          src={fileUrl}
+                          controls
+                          preload="metadata"
+                          playsInline
+                        />
+                      )}
+
+                      <div className="row" style={{ justifyContent: "space-between" }}>
+                        {!videoOpenMap[record.recording_file_id] ? (
+                          <button
+                            className="btn secondary"
+                            onClick={() =>
+                              setVideoOpenMap((prev) => ({
+                                ...prev,
+                                [record.recording_file_id]: true,
+                              }))
+                            }
+                          >
+                            Открыть
+                          </button>
+                        ) : (
+                          <a className="btn secondary" href={fileUrl} target="_blank" rel="noreferrer">
+                            Оригинальный файл
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

@@ -8,7 +8,7 @@ from processor.client import BackendClient
 from processor.camera_utils import resolve_source
 from processor.detection import CameraWorker
 from processor.media_server import ProcessorMediaServer
-from processor.monitor import SystemMonitor
+from processor.monitor import SystemMonitor, get_system_info
 from processor.paths import ensure_media_dirs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -22,9 +22,10 @@ class ProcessorService:
         self.workers: dict[int, CameraWorker] = {}
         self._running = False
         self._monitor = SystemMonitor()
+        self._system_info = get_system_info()
         self._gallery: list[dict] = []
         self._gallery_loaded_at = 0.0
-        self._gallery_refresh_seconds = 60.0
+        self._gallery_refresh_seconds = 180.0
         self._media_server = ProcessorMediaServer(
             service=self,
             host="0.0.0.0",
@@ -68,6 +69,10 @@ class ProcessorService:
                     "online",
                     stats={"active_cameras": len(self.workers)},
                     metrics=metrics.to_dict(),
+                    hostname=self._system_info.get("hostname"),
+                    os_info=self._system_info.get("os"),
+                    version="1.0.0",
+                    capabilities=self._system_info,
                     media_port=settings.media_port,
                     media_token=settings.media_token,
                 )

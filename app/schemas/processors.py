@@ -64,6 +64,10 @@ class ProcessorHeartbeat(BaseModel):
     stats: dict | None = None
     metrics: SystemMetrics | None = None
     ip_address: str | None = None
+    hostname: str | None = None
+    os_info: str | None = None
+    version: str | None = None
+    capabilities: dict | None = None
     media_port: int | None = None
     media_token: str | None = None
 

@@ -216,6 +216,12 @@ async def processor_heartbeat(
         proc.ip_address = payload.ip_address
     elif request.client:
         proc.ip_address = request.client.host
+    if payload.hostname:
+        proc.hostname = payload.hostname
+    if payload.os_info:
+        proc.os_info = payload.os_info
+    if payload.version:
+        proc.version = payload.version
     if payload.media_port is not None or payload.media_token:
         capabilities = {}
         if proc.capabilities:
@@ -223,10 +229,21 @@ async def processor_heartbeat(
                 capabilities = json.loads(proc.capabilities)
             except (json.JSONDecodeError, TypeError):
                 capabilities = {}
+        if payload.capabilities:
+            capabilities.update(payload.capabilities)
         if payload.media_port is not None:
             capabilities["media_port"] = payload.media_port
         if payload.media_token:
             capabilities["media_token"] = payload.media_token
+        proc.capabilities = json.dumps(capabilities)
+    elif payload.capabilities:
+        capabilities = {}
+        if proc.capabilities:
+            try:
+                capabilities = json.loads(proc.capabilities)
+            except (json.JSONDecodeError, TypeError):
+                capabilities = {}
+        capabilities.update(payload.capabilities)
         proc.capabilities = json.dumps(capabilities)
     await session.commit()
     return {"ok": True}
