@@ -68,6 +68,12 @@ def _ensure_admin(user: models.User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
 
 
+def invalidate_gallery_cache() -> None:
+    global _gallery_cache, _gallery_cache_ts
+    _gallery_cache = None
+    _gallery_cache_ts = 0.0
+
+
 def _decode_snapshot_b64(snapshot_b64: str | None) -> bytes | None:
     if not snapshot_b64:
         return None
@@ -260,7 +266,11 @@ async def get_assignments(
         raise HTTPException(status_code=403, detail="Missing scope: processor:read")
     stmt = (
         select(models.ProcessorCameraAssignment)
-        .where(models.ProcessorCameraAssignment.processor_id == processor_id)
+        .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
+        .where(
+            models.ProcessorCameraAssignment.processor_id == processor_id,
+            models.Camera.deleted_at.is_(None),
+        )
         .options(selectinload(models.ProcessorCameraAssignment.camera))
     )
     result = await session.execute(stmt)
@@ -311,14 +321,27 @@ async def push_event(
     if et is None:
         raise HTTPException(status_code=400, detail=f"Unknown event type: {payload.event_type}")
     cam = await session.get(models.Camera, payload.camera_id)
-    if cam is None:
+    if cam is None or cam.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Camera not found")
     event_type_id = et.event_type_id
     review_required = payload.event_type == "face_unknown"
+    resolved_person_id = payload.person_id
+    if resolved_person_id is not None:
+        person = await session.get(models.Person, resolved_person_id)
+        if person is None or person.deleted_at is not None:
+            resolved_person_id = None
+            if payload.event_type == "face_recognized":
+                fallback_result = await session.execute(
+                    select(models.EventType).where(models.EventType.name == "face_unknown")
+                )
+                fallback = fallback_result.scalar_one_or_none()
+                if fallback is not None:
+                    event_type_id = fallback.event_type_id
+                    review_required = True
     evt = models.Event(
         camera_id=payload.camera_id,
         event_type_id=event_type_id,
-        person_id=payload.person_id,
+        person_id=resolved_person_id,
         confidence=payload.confidence,
         processor_id=processor_id,
         track_id=payload.track_id,
@@ -352,7 +375,7 @@ async def push_recording(
     if "processor:write" not in scopes and "*" not in scopes:
         raise HTTPException(status_code=403, detail="Missing scope: processor:write")
     cam = await session.get(models.Camera, payload.camera_id)
-    if not cam:
+    if not cam or cam.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Camera not found")
     vs_result = await session.execute(
         select(models.VideoStream).where(models.VideoStream.camera_id == payload.camera_id).limit(1)
@@ -413,6 +436,7 @@ async def get_gallery(
     pe_result = await session.execute(
         select(models.PersonEmbedding, models.Person)
         .join(models.Person, models.PersonEmbedding.person_id == models.Person.person_id)
+        .where(models.Person.deleted_at.is_(None))
     )
     rows = pe_result.all()
     gallery = []
@@ -426,7 +450,12 @@ async def get_gallery(
                 embedding_b64=base64.b64encode(emb_row.embedding).decode(),
             ))
     else:
-        result = await session.execute(select(models.Person).where(models.Person.embeddings.isnot(None)))
+        result = await session.execute(
+            select(models.Person).where(
+                models.Person.embeddings.isnot(None),
+                models.Person.deleted_at.is_(None),
+            )
+        )
         persons = result.scalars().all()
         for p in persons:
             label_parts = [p.last_name, p.first_name, p.middle_name]
@@ -481,7 +510,13 @@ async def list_processors(
     out = []
     for p in procs:
         cnt_result = await session.execute(
-            select(func.count()).where(models.ProcessorCameraAssignment.processor_id == p.processor_id)
+            select(func.count())
+            .select_from(models.ProcessorCameraAssignment)
+            .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
+            .where(
+                models.ProcessorCameraAssignment.processor_id == p.processor_id,
+                models.Camera.deleted_at.is_(None),
+            )
         )
         cnt = cnt_result.scalar() or 0
         caps = None
@@ -499,7 +534,10 @@ async def list_processors(
         cam_result = await session.execute(
             select(models.ProcessorCameraAssignment, models.Camera)
             .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
-            .where(models.ProcessorCameraAssignment.processor_id == p.processor_id)
+            .where(
+                models.ProcessorCameraAssignment.processor_id == p.processor_id,
+                models.Camera.deleted_at.is_(None),
+            )
         )
         assigned = [AssignedCameraInfo(camera_id=cam.camera_id, name=cam.name) for _, cam in cam_result.all()]
         out.append(ProcessorOut(
@@ -532,7 +570,7 @@ async def assign_cameras(
         raise HTTPException(status_code=404, detail="Processor not found")
     for cid in payload.camera_ids:
         cam = await session.get(models.Camera, cid)
-        if not cam:
+        if not cam or cam.deleted_at is not None:
             continue
         existing = await session.execute(
             select(models.ProcessorCameraAssignment).where(

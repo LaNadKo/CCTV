@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { clearApiUrl, getApiUrl, setApiUrl } from "../lib/api";
-import { defaultUiSettings, loadUiSettings, saveUiSettings, type LiveDensity } from "../lib/uiSettings";
+import { loadUiSettings, saveUiSettings, type LiveDensity } from "../lib/uiSettings";
+import { useAuth } from "../context/AuthContext";
 
 const NAV_OPTIONS = [
   { key: "/live", label: "Live" },
@@ -22,8 +23,32 @@ const DENSITY_LABELS: Record<LiveDensity, string> = {
 };
 
 const SettingsPage: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role_id === 1;
+  const isUser = user?.role_id === 1 || user?.role_id === 2;
+
+  const allowedNavOptions = useMemo(
+    () =>
+      NAV_OPTIONS.filter((option) => {
+        if (option.key === "/reviews" || option.key === "/reports") return isUser;
+        if (["/persons", "/cameras", "/processors", "/users", "/apikeys"].includes(option.key)) return isAdmin;
+        return true;
+      }),
+    [isAdmin, isUser]
+  );
+
+  const allowedNavKeys = useMemo(() => allowedNavOptions.map((option) => option.key), [allowedNavOptions]);
+  const fallbackPrimary = useMemo(() => (allowedNavKeys.includes("/live") ? ["/live"] : allowedNavKeys.slice(0, 1)), [allowedNavKeys]);
+
   const [apiUrl, setApiUrlDraft] = useState(getApiUrl());
-  const [settings, setSettings] = useState(loadUiSettings());
+  const [settings, setSettings] = useState(() => {
+    const loaded = loadUiSettings();
+    const primaryNav = loaded.primaryNav.filter((key) => allowedNavKeys.includes(key));
+    return {
+      ...loaded,
+      primaryNav: primaryNav.length ? primaryNav : fallbackPrimary,
+    };
+  });
   const [saved, setSaved] = useState<string | null>(null);
 
   const togglePrimary = (key: string) => {
@@ -32,15 +57,19 @@ const SettingsPage: React.FC = () => {
       const nextPrimary = exists
         ? prev.primaryNav.filter((item) => item !== key)
         : [...prev.primaryNav, key];
+      const normalized = nextPrimary.filter((item) => allowedNavKeys.includes(item));
       return {
         ...prev,
-        primaryNav: nextPrimary.length ? nextPrimary : defaultUiSettings.primaryNav,
+        primaryNav: normalized.length ? normalized : fallbackPrimary,
       };
     });
   };
 
   const persistUi = () => {
-    saveUiSettings(settings);
+    saveUiSettings({
+      ...settings,
+      primaryNav: settings.primaryNav.filter((key) => allowedNavKeys.includes(key)),
+    });
     setSaved("Настройки интерфейса сохранены. Перезапустите окно, если нужно полностью пересобрать навигацию.");
   };
 
@@ -73,7 +102,7 @@ const SettingsPage: React.FC = () => {
         <h3 style={{ margin: 0 }}>Главные вкладки</h3>
         <div className="muted">Выберите, какие разделы держать в верхней панели. Остальные будут жить в меню.</div>
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-          {NAV_OPTIONS.map((option) => {
+          {allowedNavOptions.map((option) => {
             const active = settings.primaryNav.includes(option.key);
             return (
               <button

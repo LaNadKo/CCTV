@@ -10,8 +10,13 @@ HERE = Path(__file__).resolve().parent
 ASSETS_DIR = HERE / "assets"
 
 
-def build() -> None:
-    cmd = [
+def _run(cmd: list[str]) -> None:
+    print("Running:", " ".join(cmd))
+    subprocess.run(cmd, cwd=str(HERE.parent), check=True)
+
+
+def _gui_cmd() -> list[str]:
+    return [
         sys.executable,
         "-m",
         "PyInstaller",
@@ -49,6 +54,10 @@ def build() -> None:
         "--hidden-import",
         "processor.media_server",
         "--hidden-import",
+        "processor.cli",
+        "--hidden-import",
+        "processor.runtime",
+        "--hidden-import",
         "processor.paths",
         "--hidden-import",
         "processor.tracker",
@@ -78,8 +87,59 @@ def build() -> None:
         "customtkinter",
         str(HERE / "run_gui.py"),
     ]
-    print("Running:", " ".join(cmd))
-    subprocess.run(cmd, cwd=str(HERE.parent), check=True)
+
+
+def _cli_cmd() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--onefile",
+        "--console",
+        "--specpath",
+        str(HERE),
+        "--workpath",
+        str(HERE / "build" / "cli"),
+        "--distpath",
+        str(HERE / "dist"),
+        "--name",
+        "CCTV-Processor-CLI",
+        "--icon",
+        str(ASSETS_DIR / "icon.ico"),
+        "--add-data",
+        f"{ASSETS_DIR};processor/assets",
+        "--hidden-import",
+        "processor",
+        "--hidden-import",
+        "processor.cli",
+        "--hidden-import",
+        "processor.runtime",
+        "--hidden-import",
+        "processor.client",
+        "--hidden-import",
+        "processor.config",
+        "--hidden-import",
+        "processor.camera_utils",
+        "--hidden-import",
+        "processor.monitor",
+        "--hidden-import",
+        "processor.vision",
+        "--hidden-import",
+        "cv2",
+        "--hidden-import",
+        "facenet_pytorch",
+        "--collect-submodules",
+        "facenet_pytorch",
+        "--collect-data",
+        "facenet_pytorch",
+        str(HERE / "cli.py"),
+    ]
+
+
+def build() -> None:
+    _run(_gui_cmd())
+    _run(_cli_cmd())
     print(f"\nBuild complete: {HERE / 'dist' / 'CCTV-Processor'}")
 
 

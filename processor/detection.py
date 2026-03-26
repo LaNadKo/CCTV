@@ -59,6 +59,7 @@ class CameraWorker:
         self._last_faces_info: list[tuple[tuple[int, int, int, int], str, bool]] = []
         self._last_faces_ts = 0.0
         self._last_activity_ts = 0.0
+        self._last_motion_ts = 0.0
         self._liveness_state: dict[str, dict[str, object]] = {}
 
         self._capture_lock = threading.Lock()
@@ -129,6 +130,7 @@ class CameraWorker:
                 motion = self._detect_motion(frame)
                 now = time.monotonic()
                 if motion:
+                    self._last_motion_ts = time.time()
                     self._last_activity_ts = time.time()
 
                 if self.assignment.get("detection_enabled", True) and (now - last_face_scan) >= max(settings.face_scan_interval, 0.5):
@@ -245,6 +247,15 @@ class CameraWorker:
                     continue
                 person_id, sim = match_embedding(face["embedding"], self._gallery)
                 recognized = person_id is not None
+                if not recognized:
+                    recent_motion = (time.time() - self._last_motion_ts) <= settings.unknown_face_requires_motion_seconds
+                    if not recent_motion:
+                        logger.debug(
+                            "Camera %s: suppressed unknown face without recent scene motion box=%s",
+                            self.camera_id,
+                            box,
+                        )
+                        continue
                 event_type = "face_recognized" if recognized else "face_unknown"
                 label = self._label_for_person(person_id) if recognized else "Unknown"
                 overlay_items.append((box, label, recognized))
@@ -352,7 +363,7 @@ class CameraWorker:
         bodies: list[dict] | None,
         now: float,
     ) -> bool:
-        from processor.antispoof import micro_movement_check
+        from processor.antispoof import lbp_texture_score, micro_movement_check
 
         self._prune_liveness_state(now)
         crop = self._crop_face(frame, box)
@@ -363,6 +374,7 @@ class CameraWorker:
         frame_area = max(frame.shape[0] * frame.shape[1], 1)
         face_area_ratio = ((x2 - x1) * (y2 - y1)) / frame_area
         large_face = face_area_ratio >= settings.antispoof_small_face_ratio
+        texture_score = lbp_texture_score(crop) if min(crop.shape[:2]) >= 32 else 0.0
         if bodies is None:
             body_supported = face_area_ratio >= 0.2
         else:
@@ -419,6 +431,8 @@ class CameraWorker:
         }
 
         if not large_face:
+            if texture_score < settings.antispoof_min_texture_score:
+                return False
             return movement_ok and stable_hits >= 2
         return movement_ok
 

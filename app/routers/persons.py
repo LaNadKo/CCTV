@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime
 from typing import List
 
 import cv2
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
-from app.permissions import is_admin
+from app.permissions import is_admin, is_at_least_user
 from app.processor_media import get_processor_media_base_url, get_processor_media_headers
 from app.schemas.persons import PersonCreate, PersonOut, PersonUpdate
 from app.routers.face import _extract_best_face_embedding
@@ -23,6 +24,16 @@ async def _ensure_admin(user: models.User, session: AsyncSession) -> None:
     if is_admin(user):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+
+def _is_deleted(instance) -> bool:
+    return getattr(instance, "deleted_at", None) is not None
+
+
+def _invalidate_gallery_cache() -> None:
+    from app.routers import processors as processors_router
+
+    processors_router.invalidate_gallery_cache()
 
 
 _EMB_ACCEPT_MIN = 0.6
@@ -168,7 +179,8 @@ async def list_persons(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[PersonOut]:
-    await _ensure_admin(current_user, session)
+    if not is_at_least_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     counts = (
         select(
             models.PersonEmbedding.person_id,
@@ -180,6 +192,7 @@ async def list_persons(
     res = await session.execute(
         select(models.Person, func.coalesce(counts.c.cnt, 0))
         .outerjoin(counts, counts.c.person_id == models.Person.person_id)
+        .where(models.Person.deleted_at.is_(None))
         .order_by(models.Person.person_id)
     )
     items: List[PersonOut] = []
@@ -231,7 +244,7 @@ async def update_person(
 ) -> PersonOut:
     await _ensure_admin(current_user, session)
     person = await session.get(models.Person, person_id)
-    if person is None:
+    if person is None or _is_deleted(person):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
     if payload.first_name is not None:
         person.first_name = payload.first_name
@@ -241,6 +254,7 @@ async def update_person(
         person.middle_name = payload.middle_name
     await session.commit()
     await session.refresh(person)
+    _invalidate_gallery_cache()
     count = await _embedding_count(session, person.person_id)
     return PersonOut(
         person_id=person.person_id,
@@ -262,8 +276,16 @@ async def delete_person(
     person = await session.get(models.Person, person_id)
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
-    await session.delete(person)
+    if _is_deleted(person):
+        return None
+    person.deleted_at = datetime.utcnow()
+    result = await session.execute(
+        select(models.Camera).where(models.Camera.tracking_target_person_id == person_id)
+    )
+    for camera in result.scalars().all():
+        camera.tracking_target_person_id = None
     await session.commit()
+    _invalidate_gallery_cache()
     return None
 
 
@@ -277,7 +299,7 @@ async def add_embedding_from_photo(
 ):
     await _ensure_admin(current_user, session)
     person = await session.get(models.Person, person_id)
-    if person is None:
+    if person is None or _is_deleted(person):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
     data = await file.read()
     image = np.frombuffer(data, np.uint8)
@@ -306,4 +328,5 @@ async def add_embedding_from_photo(
         if not person.embeddings:
             person.embeddings = emb.astype(np.float32).tobytes()
         await session.commit()
+        _invalidate_gallery_cache()
     return {"person_id": person.person_id, "embedding_len": len(emb), "status": status_name, "max_similarity": max_sim}

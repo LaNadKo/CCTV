@@ -235,13 +235,32 @@ async def enroll_person_from_snapshot(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    event = await session.get(models.Event, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
     snapshot_path = Path("snapshots").resolve() / f"event_{event_id}.jpg"
     if not snapshot_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
     image = _read_image_file(snapshot_path)
     if image is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot read snapshot")
-    emb = _extract_best_face_embedding(image)
+    emb = None
+    local_error: HTTPException | None = None
+    try:
+        emb = _extract_best_face_embedding(image)
+    except HTTPException as exc:
+        local_error = exc
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+    if emb is None:
+        from app.routers.persons import _extract_best_face_embedding_via_processor
+
+        try:
+            emb = await _extract_best_face_embedding_via_processor(session, image, event.camera_id)
+        except HTTPException:
+            if local_error is not None:
+                raise local_error
+            raise
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found in snapshot")
     person = models.Person(

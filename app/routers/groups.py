@@ -53,7 +53,10 @@ async def list_groups(
     out = []
     for g in groups:
         count = await session.execute(
-            select(func.count()).where(models.Camera.group_id == g.group_id)
+            select(func.count()).where(
+                models.Camera.group_id == g.group_id,
+                models.Camera.deleted_at.is_(None),
+            )
         )
         out.append(GroupOut(
             group_id=g.group_id,
@@ -76,7 +79,10 @@ async def get_group(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
 
     cams_result = await session.execute(
-        select(models.Camera).where(models.Camera.group_id == group_id)
+        select(models.Camera).where(
+            models.Camera.group_id == group_id,
+            models.Camera.deleted_at.is_(None),
+        )
     )
     cameras = [
         GroupCameraOut(camera_id=c.camera_id, name=c.name, location=c.location)
@@ -108,7 +114,10 @@ async def update_group(
     await session.commit()
     await session.refresh(group)
     count = await session.execute(
-        select(func.count()).where(models.Camera.group_id == group.group_id)
+        select(func.count()).where(
+            models.Camera.group_id == group.group_id,
+            models.Camera.deleted_at.is_(None),
+        )
     )
     return GroupOut(
         group_id=group.group_id,
@@ -131,7 +140,10 @@ async def delete_group(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     # Unassign cameras from this group
     cams_result = await session.execute(
-        select(models.Camera).where(models.Camera.group_id == group_id)
+        select(models.Camera).where(
+            models.Camera.group_id == group_id,
+            models.Camera.deleted_at.is_(None),
+        )
     )
     for cam in cams_result.scalars().all():
         cam.group_id = None
@@ -152,7 +164,7 @@ async def assign_camera_to_group(
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     cam = await session.get(models.Camera, camera_id)
-    if cam is None:
+    if cam is None or cam.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
     cam.group_id = group_id
     await session.commit()
@@ -168,7 +180,7 @@ async def unassign_camera_from_group(
 ):
     _ensure_admin(current_user)
     cam = await session.get(models.Camera, camera_id)
-    if cam is None:
+    if cam is None or cam.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
     if cam.group_id == group_id:
         cam.group_id = None
