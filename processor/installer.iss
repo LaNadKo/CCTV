@@ -1,11 +1,23 @@
 ; Inno Setup script for CCTV Processor
-; Requires: PyInstaller output in dist\CCTV-Processor\ and dist\CCTV-Processor-CLI.exe
+; Requires: PyInstaller output in dist\CCTV-Processor\
 
 #define MyAppName "CCTV Processor"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "CCTV System"
 #define MyAppExeName "CCTV-Processor.exe"
 #define MyCliExeName "CCTV-Processor-CLI.exe"
+
+#ifdef FastBuild
+  #define MyCompression "zip"
+  #define MySolidCompression "no"
+#else
+  #define MyCompression "lzma2/ultra64"
+  #define MySolidCompression "yes"
+#endif
+
+#ifexist "dist\CCTV-Processor-CLI.exe"
+  #define HaveCli
+#endif
 
 [Setup]
 AppId={{E7B2C4F8-A91D-3E56-70F1-B8C4D2A963E5}
@@ -17,8 +29,8 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer_output
 OutputBaseFilename=CCTV-Processor-Setup-{#MyAppVersion}
-Compression=lzma2/ultra64
-SolidCompression=yes
+Compression={#MyCompression}
+SolidCompression={#MySolidCompression}
 WizardStyle=modern
 SetupIconFile=assets\icon.ico
 PrivilegesRequired=lowest
@@ -35,12 +47,16 @@ Name: "startupheadless"; Description: "Запускать Processor в фоне 
 
 [Files]
 Source: "dist\CCTV-Processor\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef HaveCli
 Source: "dist\{#MyCliExeName}"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{#MyAppName} (Без GUI)"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--headless"
+#ifdef HaveCli
 Name: "{group}\{#MyAppName} CLI"; Filename: "{app}\{#MyCliExeName}"
+#endif
 Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

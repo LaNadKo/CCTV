@@ -155,21 +155,24 @@ def get_system_info() -> dict:
         if isinstance(gpu_name, bytes):
             gpu_name = gpu_name.decode()
         info["gpu"] = gpu_name
-        info["inference_device"] = "cuda"
         pynvml.nvmlShutdown()
     except Exception:
         pass
+    torch_available = False
     try:
         import torch
+        torch_available = True
         info["torch"] = torch.__version__
         if torch.cuda.is_available():
             info["gpu"] = torch.cuda.get_device_name(0)
             info["cuda"] = torch.version.cuda
             info["inference_device"] = "cuda"
-        elif "inference_device" not in info:
+        else:
             info["inference_device"] = "cpu"
     except ImportError:
         pass
+    if not torch_available:
+        info["inference_device"] = "cpu"
     if "inference_device" not in info:
         info["inference_device"] = "cpu"
     return info

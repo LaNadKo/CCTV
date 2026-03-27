@@ -6,21 +6,20 @@ import numpy as np
 
 def lbp_texture_score(face_bgr: np.ndarray) -> float:
     gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    lbp = np.zeros_like(gray, dtype=np.uint8)
-    for i in range(1, h - 1):
-        for j in range(1, w - 1):
-            center = gray[i, j]
-            code = 0
-            code |= (gray[i-1,j-1] >= center) << 7
-            code |= (gray[i-1,j] >= center) << 6
-            code |= (gray[i-1,j+1] >= center) << 5
-            code |= (gray[i,j+1] >= center) << 4
-            code |= (gray[i+1,j+1] >= center) << 3
-            code |= (gray[i+1,j] >= center) << 2
-            code |= (gray[i+1,j-1] >= center) << 1
-            code |= (gray[i,j-1] >= center)
-            lbp[i, j] = code
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        return 0.0
+
+    center = gray[1:-1, 1:-1]
+    lbp = np.zeros_like(center, dtype=np.uint8)
+    lbp |= ((gray[:-2, :-2] >= center).astype(np.uint8)) << 7
+    lbp |= ((gray[:-2, 1:-1] >= center).astype(np.uint8)) << 6
+    lbp |= ((gray[:-2, 2:] >= center).astype(np.uint8)) << 5
+    lbp |= ((gray[1:-1, 2:] >= center).astype(np.uint8)) << 4
+    lbp |= ((gray[2:, 2:] >= center).astype(np.uint8)) << 3
+    lbp |= ((gray[2:, 1:-1] >= center).astype(np.uint8)) << 2
+    lbp |= ((gray[2:, :-2] >= center).astype(np.uint8)) << 1
+    lbp |= (gray[1:-1, :-2] >= center).astype(np.uint8)
+
     hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
     hist = hist.astype(float) / (hist.sum() + 1e-6)
     variance = np.var(hist)

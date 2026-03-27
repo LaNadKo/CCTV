@@ -82,15 +82,41 @@ async def _proxy_processor_bytes(url: str, headers: dict[str, str]) -> Response:
     )
 
 
-async def _resolve_processor_media(session: AsyncSession, file_path: str) -> tuple[models.Processor, str] | None:
+async def _resolve_processor_media(
+    session: AsyncSession,
+    file_path: str,
+    camera_id: int | None = None,
+) -> tuple[models.Processor, str] | None:
     parsed = parse_processor_file_path(file_path)
     if not parsed:
         return None
     processor_id, relative_path = parsed
     proc = await get_processor_by_id(session, processor_id)
-    if proc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
-    return proc, relative_path
+    if proc is not None and proc.ip_address:
+        return proc, relative_path
+
+    # Recordings are stored on the processor machine. If backend/processor were
+    # reinstalled and the processor received a new id, keep the archive usable by
+    # falling back to the currently assigned online processor for the camera.
+    if camera_id is not None:
+        fallback_result = await session.execute(
+            select(models.Processor)
+            .join(
+                models.ProcessorCameraAssignment,
+                models.ProcessorCameraAssignment.processor_id == models.Processor.processor_id,
+            )
+            .where(
+                models.ProcessorCameraAssignment.camera_id == camera_id,
+                models.Processor.status == "online",
+            )
+            .order_by(models.Processor.last_heartbeat.desc(), models.Processor.processor_id.desc())
+            .limit(1)
+        )
+        fallback_proc = fallback_result.scalar_one_or_none()
+        if fallback_proc is not None and fallback_proc.ip_address:
+            return fallback_proc, relative_path
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
 
 
 def _processor_media_url(proc: models.Processor, prefix: str, relative_path: str) -> str:
@@ -221,7 +247,7 @@ async def download_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path)
+    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
     if processor_media is not None:
         proc, relative_path = processor_media
         return await _proxy_processor_stream(
@@ -361,7 +387,7 @@ async def stream_recording_mjpeg(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path)
+    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
     if processor_media is not None:
         proc, relative_path = processor_media
         return await _proxy_processor_stream(
@@ -419,7 +445,7 @@ async def snapshot_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path)
+    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
     if processor_media is not None:
         proc, relative_path = processor_media
         url = _processor_media_url(proc, "/media/recordings-snapshot", relative_path)

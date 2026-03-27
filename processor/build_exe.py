@@ -1,6 +1,7 @@
 """Build processor desktop app as a standalone .exe using PyInstaller."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -139,7 +140,9 @@ def _cli_cmd() -> list[str]:
 
 def build() -> None:
     _run(_gui_cmd())
-    _run(_cli_cmd())
+    skip_cli = os.environ.get("SKIP_PROCESSOR_CLI", "").strip().lower() in {"1", "true", "yes"}
+    if not skip_cli:
+        _run(_cli_cmd())
     print(f"\nBuild complete: {HERE / 'dist' / 'CCTV-Processor'}")
 
 

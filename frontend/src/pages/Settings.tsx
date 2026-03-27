@@ -1,25 +1,32 @@
 import { useMemo, useState } from "react";
 import { clearApiUrl, getApiUrl, setApiUrl } from "../lib/api";
-import { loadUiSettings, saveUiSettings, type LiveDensity } from "../lib/uiSettings";
+import { loadUiSettings, saveUiSettings, type LiveDensity, type ThemeMode } from "../lib/uiSettings";
 import { useAuth } from "../context/AuthContext";
 
 const NAV_OPTIONS = [
   { key: "/live", label: "Live" },
+  { key: "/recordings", label: "Записи" },
   { key: "/reviews", label: "Ревью" },
   { key: "/reports", label: "Отчёты" },
   { key: "/persons", label: "Персоны" },
-  { key: "/recordings", label: "Записи" },
   { key: "/groups", label: "Группы" },
   { key: "/cameras", label: "Камеры" },
   { key: "/processors", label: "Процессоры" },
   { key: "/users", label: "Пользователи" },
   { key: "/apikeys", label: "API-ключи" },
+  { key: "/help", label: "Справка" },
 ];
 
 const DENSITY_LABELS: Record<LiveDensity, string> = {
   compact: "Компактно",
   comfortable: "Стандартно",
   focus: "Крупно",
+};
+
+const THEME_LABELS: Record<ThemeMode, string> = {
+  system: "Как в системе",
+  dark: "Тёмная",
+  light: "Светлая",
 };
 
 const SettingsPage: React.FC = () => {
@@ -38,7 +45,11 @@ const SettingsPage: React.FC = () => {
   );
 
   const allowedNavKeys = useMemo(() => allowedNavOptions.map((option) => option.key), [allowedNavOptions]);
-  const fallbackPrimary = useMemo(() => (allowedNavKeys.includes("/live") ? ["/live"] : allowedNavKeys.slice(0, 1)), [allowedNavKeys]);
+  const fallbackPrimary = useMemo(
+    () =>
+      ["/live", "/recordings", "/reviews", "/reports"].filter((key) => allowedNavKeys.includes(key)).slice(0, 4),
+    [allowedNavKeys]
+  );
 
   const [apiUrl, setApiUrlDraft] = useState(getApiUrl());
   const [settings, setSettings] = useState(() => {
@@ -54,10 +65,8 @@ const SettingsPage: React.FC = () => {
   const togglePrimary = (key: string) => {
     setSettings((prev) => {
       const exists = prev.primaryNav.includes(key);
-      const nextPrimary = exists
-        ? prev.primaryNav.filter((item) => item !== key)
-        : [...prev.primaryNav, key];
-      const normalized = nextPrimary.filter((item) => allowedNavKeys.includes(item));
+      const nextPrimary = exists ? prev.primaryNav.filter((item) => item !== key) : [...prev.primaryNav, key];
+      const normalized = nextPrimary.filter((item) => allowedNavKeys.includes(item)).slice(0, 5);
       return {
         ...prev,
         primaryNav: normalized.length ? normalized : fallbackPrimary,
@@ -70,14 +79,13 @@ const SettingsPage: React.FC = () => {
       ...settings,
       primaryNav: settings.primaryNav.filter((key) => allowedNavKeys.includes(key)),
     });
-    setSaved("Настройки интерфейса сохранены. Перезапустите окно, если нужно полностью пересобрать навигацию.");
+    setSaved("Настройки интерфейса сохранены. Тема применяется сразу, а навигация обновится после перехода между разделами.");
   };
 
   return (
     <div className="stack" style={{ marginTop: 18 }}>
       <div>
         <h2 className="title">Настройки</h2>
-        <div className="muted">Кастомизация интерфейса desktop-клиента и адреса backend.</div>
       </div>
 
       {saved && <div className="success">{saved}</div>}
@@ -99,8 +107,24 @@ const SettingsPage: React.FC = () => {
       </div>
 
       <div className="card stack">
+        <h3 style={{ margin: 0 }}>Тема приложения</h3>
+        <div className="row" style={{ gap: 8 }}>
+          {(["system", "dark", "light"] as ThemeMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={settings.themeMode === mode ? "btn" : "btn secondary"}
+              onClick={() => setSettings((prev) => ({ ...prev, themeMode: mode }))}
+            >
+              {THEME_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+        <div className="muted">Режим «Как в системе» автоматически переключает интерфейс вместе с Windows или macOS.</div>
+      </div>
+
+      <div className="card stack">
         <h3 style={{ margin: 0 }}>Главные вкладки</h3>
-        <div className="muted">Выберите, какие разделы держать в верхней панели. Остальные будут жить в меню.</div>
+        <div className="muted">Выберите, какие разделы держать в шапке. Остальные будут находиться в меню.</div>
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
           {allowedNavOptions.map((option) => {
             const active = settings.primaryNav.includes(option.key);
@@ -131,14 +155,7 @@ const SettingsPage: React.FC = () => {
             </button>
           ))}
         </div>
-        <div className="muted">Компактный режим ближе к сетке Hik-Connect, крупный режим делает карточки больше.</div>
-      </div>
-
-      <div className="card stack">
-        <h3 style={{ margin: 0 }}>Поведение desktop-приложения</h3>
-        <div className="muted">
-          Если окно скрыто в трей, повторный запуск должен поднимать уже работающий экземпляр. После обновления desktop переустановите его поверх текущего.
-        </div>
+        <div className="muted">Компактный режим ближе к мониторной сетке, крупный делает акцент на одной-двух камерах.</div>
       </div>
 
       <div className="row" style={{ gap: 8 }}>

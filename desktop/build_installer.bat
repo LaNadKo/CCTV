@@ -31,6 +31,17 @@ if not exist "release\win-unpacked\resources.pak" (
     goto :fail
 )
 
+echo [2.6/3] Syncing latest frontend bundle into win-unpacked...
+if not exist "..\frontend\dist\index.html" (
+    echo ERROR: frontend dist not found.
+    goto :fail
+)
+if exist "release\win-unpacked\resources\frontend" (
+    rmdir /S /Q "release\win-unpacked\resources\frontend"
+)
+robocopy "..\frontend\dist" "release\win-unpacked\resources\frontend" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 goto :fail
+
 echo [3/3] Building installer with Inno Setup...
 if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss

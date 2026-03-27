@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createCamera, deleteCamera, getCameras, updateCamera, API_URL } from "../lib/api";
+import { API_URL, createCamera, deleteCamera, getCameras, updateCamera } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
 type Camera = {
@@ -34,16 +34,20 @@ type RoiZone = {
   polygon_points?: string;
 };
 
-async function fetchPresets(token: string, camId: number): Promise<Preset[]> {
-  const res = await fetch(`${API_URL}/admin/cameras/${camId}/presets`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return [];
-  return res.json();
+async function fetchPresets(token: string, cameraId: number): Promise<Preset[]> {
+  const response = await fetch(`${API_URL}/admin/cameras/${cameraId}/presets`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return [];
+  return response.json();
 }
 
-async function fetchRoiZones(token: string, camId: number): Promise<RoiZone[]> {
-  const res = await fetch(`${API_URL}/admin/cameras/${camId}/roi-zones`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return [];
-  return res.json();
+async function fetchRoiZones(token: string, cameraId: number): Promise<RoiZone[]> {
+  const response = await fetch(`${API_URL}/admin/cameras/${cameraId}/roi-zones`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return [];
+  return response.json();
 }
 
 const CamerasPage: React.FC = () => {
@@ -71,11 +75,13 @@ const CamerasPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await getCameras(token);
-      setCameras(res);
-      if (res.length && selectedId === null) setSelectedId(res[0].camera_id);
-    } catch (e: any) {
-      setError(e?.message || "Не удалось загрузить камеры.");
+      const response = await getCameras(token);
+      setCameras(response);
+      if (response.length && selectedId === null) {
+        setSelectedId(response[0].camera_id);
+      }
+    } catch (event: any) {
+      setError(event?.message || "Не удалось загрузить камеры.");
     } finally {
       setLoading(false);
     }
@@ -133,16 +139,16 @@ const CamerasPage: React.FC = () => {
 
   const grouped = useMemo(() => {
     const map: Record<string, Camera[]> = {};
-    cameras.forEach((c) => {
-      const key = c.location?.trim() || "Без локации";
+    cameras.forEach((camera) => {
+      const key = camera.location?.trim() || "Без локации";
       if (!map[key]) map[key] = [];
-      map[key].push(c);
+      map[key].push(camera);
     });
-    Object.values(map).forEach((arr) => arr.sort((a, b) => a.name.localeCompare(b.name)));
+    Object.values(map).forEach((items) => items.sort((left, right) => left.name.localeCompare(right.name)));
     return map;
   }, [cameras]);
 
-  const selected = cameras.find((c) => c.camera_id === selectedId) || null;
+  const selected = cameras.find((camera) => camera.camera_id === selectedId) || null;
 
   const submitCreate = async () => {
     if (!token) return;
@@ -166,8 +172,8 @@ const CamerasPage: React.FC = () => {
         recording_mode: "continuous",
       });
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Не удалось создать камеру.");
+    } catch (event: any) {
+      alert(event?.message || "Не удалось создать камеру.");
     }
   };
 
@@ -183,88 +189,90 @@ const CamerasPage: React.FC = () => {
         recording_mode: patch.recording_mode as "continuous" | "event" | undefined,
       });
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Не удалось обновить камеру");
+    } catch (event: any) {
+      alert(event?.message || "Не удалось обновить камеру");
     }
   };
 
   const removeSelected = async () => {
     if (!token || !selected) return;
-    if (!confirm(`Удалить камеру "${selected.name}"?`)) return;
+    if (!window.confirm(`Удалить камеру "${selected.name}"?`)) return;
     try {
       await deleteCamera(token, selected.camera_id);
       setSelectedId(null);
       await load();
-    } catch (e: any) {
-      alert(e?.message || "Не удалось удалить камеру");
+    } catch (event: any) {
+      alert(event?.message || "Не удалось удалить камеру");
     }
   };
 
   return (
-    <div className="stack" style={{ marginTop: 18 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
-        <div>
+    <div className="stack">
+      <section className="page-hero">
+        <div className="page-hero__content">
+          <div className="page-hero__eyebrow">Administration</div>
           <h2 className="title">Камеры</h2>
-          <div className="muted">Настройка параметров камер.</div>
         </div>
-        <button className="btn secondary" onClick={load}>
-          Обновить
-        </button>
-      </div>
+        <div className="page-actions">
+          <button className="btn secondary" onClick={load}>
+            Обновить
+          </button>
+        </div>
+      </section>
+
+      <section className="summary-grid">
+        <div className="summary-card">
+          <div className="summary-card__label">Всего камер</div>
+          <div className="summary-card__value">{cameras.length}</div>
+          <div className="summary-card__hint">Все активные камеры backend без удалённых сущностей.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Локаций</div>
+          <div className="summary-card__value">{Object.keys(grouped).length}</div>
+          <div className="summary-card__hint">Группировка списка по реальным местам установки камер.</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card__label">Выбрана</div>
+          <div className="summary-card__value">{selected ? selected.name : "—"}</div>
+          <div className="summary-card__hint">Карточка справа меняется без переключения на отдельные страницы.</div>
+        </div>
+      </section>
+
       {error && <div className="danger">{error}</div>}
 
-      <div className="grid" style={{ gridTemplateColumns: "260px 1fr", gap: 16 }}>
-        <div className="card" style={{ maxHeight: "70vh", overflowY: "auto" }}>
-          <h3 style={{ marginTop: 0 }}>Дерево камер</h3>
-          {loading ? (
-            <div className="muted">Загрузка...</div>
-          ) : (
-            Object.keys(grouped)
-              .sort()
-              .map((loc) => (
-                <div key={loc} className="stack" style={{ marginBottom: 10 }}>
-                  <div className="label" style={{ fontWeight: 600 }}>{loc}</div>
-                  {grouped[loc].map((c) => (
-                    <div
-                      key={c.camera_id}
-                      className={"tree-item" + (c.camera_id === selectedId ? " active" : "")}
-                      style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", background: c.camera_id === selectedId ? "#1f2a3a" : "transparent" }}
-                      onClick={() => setSelectedId(c.camera_id)}
-                    >
-                      {c.name}
-                    </div>
-                  ))}
-                </div>
-              ))
-          )}
-        </div>
+      <section className="admin-two-column">
+        <div className="stack-grid">
+          <div className="panel-card stack">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Добавить камеру</h3>
+                <div className="panel-card__lead">Минимальный набор для новой камеры и базовых режимов записи/детекции.</div>
+              </div>
+            </div>
 
-        <div className="stack" style={{ gap: 12 }}>
-          <div className="card">
-            <h3 style={{ marginTop: 0 }}>Добавить камеру</h3>
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 8 }}>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
               <label className="field">
                 <span className="label">Название</span>
-                <input className="input" value={createForm.name} onChange={(e) => setCreateForm((p) => ({ ...p, name: e.target.value }))} />
+                <input className="input" value={createForm.name} onChange={(event) => setCreateForm((prev) => ({ ...prev, name: event.target.value }))} />
               </label>
               <label className="field">
                 <span className="label">Локация</span>
-                <input className="input" value={createForm.location} onChange={(e) => setCreateForm((p) => ({ ...p, location: e.target.value }))} />
+                <input className="input" value={createForm.location} onChange={(event) => setCreateForm((prev) => ({ ...prev, location: event.target.value }))} />
               </label>
               <label className="field">
                 <span className="label">IP</span>
-                <input className="input" value={createForm.ip_address} onChange={(e) => setCreateForm((p) => ({ ...p, ip_address: e.target.value }))} />
+                <input className="input" value={createForm.ip_address} onChange={(event) => setCreateForm((prev) => ({ ...prev, ip_address: event.target.value }))} />
               </label>
               <label className="field">
                 <span className="label">Stream URL</span>
-                <input className="input" value={createForm.stream_url} onChange={(e) => setCreateForm((p) => ({ ...p, stream_url: e.target.value }))} />
+                <input className="input" value={createForm.stream_url} onChange={(event) => setCreateForm((prev) => ({ ...prev, stream_url: event.target.value }))} />
               </label>
               <label className="field">
                 <span className="label">Детекция</span>
                 <select
                   className="input"
                   value={createForm.detection_enabled ? "on" : "off"}
-                  onChange={(e) => setCreateForm((p) => ({ ...p, detection_enabled: e.target.value === "on" }))}
+                  onChange={(event) => setCreateForm((prev) => ({ ...prev, detection_enabled: event.target.value === "on" }))}
                 >
                   <option value="on">Включена</option>
                   <option value="off">Выключена</option>
@@ -275,51 +283,101 @@ const CamerasPage: React.FC = () => {
                 <select
                   className="input"
                   value={createForm.recording_mode}
-                  onChange={(e) => setCreateForm((p) => ({ ...p, recording_mode: e.target.value }))}
+                  onChange={(event) => setCreateForm((prev) => ({ ...prev, recording_mode: event.target.value }))}
                 >
                   <option value="continuous">Постоянная</option>
                   <option value="event">Событийная</option>
                 </select>
               </label>
             </div>
-            <button className="btn" style={{ marginTop: 10 }} onClick={submitCreate} disabled={!createForm.name}>
+
+            <button className="btn" onClick={submitCreate} disabled={!createForm.name}>
               Создать
             </button>
           </div>
 
-          <div className="card">
-            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-              <h3 style={{ marginTop: 0, marginBottom: 0 }}>Параметры камеры</h3>
+          <div className="panel-card">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Список камер</h3>
+                <div className="panel-card__lead">Камеры сгруппированы по локациям и быстро открываются для редактирования.</div>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="muted">Загрузка...</div>
+            ) : (
+              Object.keys(grouped)
+                .sort()
+                .map((location) => (
+                  <div key={location} className="stack" style={{ marginBottom: 14 }}>
+                    <div className="label" style={{ fontWeight: 700 }}>
+                      {location}
+                    </div>
+                    <div className="list-shell">
+                      {grouped[location].map((camera) => (
+                        <button
+                          key={camera.camera_id}
+                          className={`list-item${camera.camera_id === selectedId ? " active" : ""}`}
+                          onClick={() => setSelectedId(camera.camera_id)}
+                          type="button"
+                        >
+                          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                            <div className="list-item__title">{camera.name}</div>
+                            <span className="pill">{camera.recording_mode === "continuous" ? "24/7" : "event"}</span>
+                          </div>
+                          <div className="list-item__meta">
+                            {camera.ip_address || "IP не указан"} · {camera.detection_enabled ? "детекция включена" : "детекция выключена"}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))
+            )}
+          </div>
+        </div>
+
+        <div className="stack-grid">
+          <div className="panel-card stack">
+            <div className="panel-card__header">
+              <div>
+                <h3 className="panel-card__title">Параметры камеры</h3>
+                <div className="panel-card__lead">
+                  {selected ? "Все базовые настройки собраны в одном месте." : "Выберите камеру слева, чтобы открыть её карточку."}
+                </div>
+              </div>
               {selected && (
                 <button className="btn secondary" onClick={removeSelected}>
                   Удалить камеру
                 </button>
               )}
             </div>
+
             {selected ? (
-              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 8 }}>
+              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
                 <label className="field">
                   <span className="label">Название</span>
-                  <input className="input" value={selected.name} onChange={(e) => updateSelected({ name: e.target.value })} />
+                  <input className="input" value={selected.name} onChange={(event) => updateSelected({ name: event.target.value })} />
                 </label>
                 <label className="field">
                   <span className="label">Локация</span>
-                  <input className="input" value={selected.location || ""} onChange={(e) => updateSelected({ location: e.target.value })} />
+                  <input className="input" value={selected.location || ""} onChange={(event) => updateSelected({ location: event.target.value })} />
                 </label>
                 <label className="field">
                   <span className="label">IP</span>
-                  <input className="input" value={selected.ip_address || ""} onChange={(e) => updateSelected({ ip_address: e.target.value })} />
+                  <input className="input" value={selected.ip_address || ""} onChange={(event) => updateSelected({ ip_address: event.target.value })} />
                 </label>
                 <label className="field">
                   <span className="label">Stream URL</span>
-                  <input className="input" value={selected.stream_url || ""} onChange={(e) => updateSelected({ stream_url: e.target.value })} />
+                  <input className="input" value={selected.stream_url || ""} onChange={(event) => updateSelected({ stream_url: event.target.value })} />
                 </label>
                 <label className="field">
                   <span className="label">Детекция</span>
                   <select
                     className="input"
                     value={selected.detection_enabled ? "on" : "off"}
-                    onChange={(e) => updateSelected({ detection_enabled: e.target.value === "on" })}
+                    onChange={(event) => updateSelected({ detection_enabled: event.target.value === "on" })}
                   >
                     <option value="on">Включена</option>
                     <option value="off">Выключена</option>
@@ -330,7 +388,7 @@ const CamerasPage: React.FC = () => {
                   <select
                     className="input"
                     value={selected.recording_mode}
-                    onChange={(e) => updateSelected({ recording_mode: e.target.value as "continuous" | "event" })}
+                    onChange={(event) => updateSelected({ recording_mode: event.target.value as "continuous" | "event" })}
                   >
                     <option value="continuous">Постоянная</option>
                     <option value="event">Событийная</option>
@@ -338,20 +396,25 @@ const CamerasPage: React.FC = () => {
                 </label>
               </div>
             ) : (
-              <div className="muted">Выберите камеру слева.</div>
+              <div className="muted">Камера пока не выбрана.</div>
             )}
           </div>
 
           {selected && (
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>ONVIF Трекинг</h3>
-              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
+            <div className="panel-card stack">
+              <div className="panel-card__header">
+                <div>
+                  <h3 className="panel-card__title">ONVIF трекинг</h3>
+                  <div className="panel-card__lead">Подготовка параметров трекинга и режима ведения цели.</div>
+                </div>
+              </div>
+              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
                 <label className="field">
                   <span className="label">Трекинг</span>
                   <select
                     className="input"
                     value={selected.tracking_enabled ? "on" : "off"}
-                    onChange={(e) => updateSelected({ tracking_enabled: e.target.value === "on" } as any)}
+                    onChange={(event) => updateSelected({ tracking_enabled: event.target.value === "on" } as any)}
                   >
                     <option value="off">Выключен</option>
                     <option value="on">Включён</option>
@@ -362,7 +425,7 @@ const CamerasPage: React.FC = () => {
                   <select
                     className="input"
                     value={selected.tracking_mode || "off"}
-                    onChange={(e) => updateSelected({ tracking_mode: e.target.value } as any)}
+                    onChange={(event) => updateSelected({ tracking_mode: event.target.value } as any)}
                   >
                     <option value="off">Выключен</option>
                     <option value="auto">Авто</option>
@@ -375,8 +438,8 @@ const CamerasPage: React.FC = () => {
                     className="input"
                     type="number"
                     value={selected.tracking_target_person_id ?? ""}
-                    onChange={(e) =>
-                      updateSelected({ tracking_target_person_id: e.target.value ? Number(e.target.value) : null } as any)
+                    onChange={(event) =>
+                      updateSelected({ tracking_target_person_id: event.target.value ? Number(event.target.value) : null } as any)
                     }
                     placeholder="любой"
                   />
@@ -386,14 +449,19 @@ const CamerasPage: React.FC = () => {
           )}
 
           {selected && (
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>Пресеты PTZ</h3>
-              <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+            <div className="panel-card stack">
+              <div className="panel-card__header">
+                <div>
+                  <h3 className="panel-card__title">PTZ пресеты</h3>
+                  <div className="panel-card__lead">Быстрое управление точками обзора для ONVIF/PTZ-камер.</div>
+                </div>
+              </div>
+              <div className="page-actions">
                 <input
                   className="input"
-                  style={{ flex: 1 }}
+                  style={{ flex: 1, minWidth: 220 }}
                   value={newPresetName}
-                  onChange={(e) => setNewPresetName(e.target.value)}
+                  onChange={(event) => setNewPresetName(event.target.value)}
                   placeholder="Название пресета"
                 />
                 <button className="btn" onClick={addPreset} disabled={!newPresetName.trim()}>
@@ -401,15 +469,18 @@ const CamerasPage: React.FC = () => {
                 </button>
               </div>
               {presets.length === 0 ? (
-                <div className="muted">Нет пресетов.</div>
+                <div className="muted">Пресетов пока нет.</div>
               ) : (
-                <div className="stack" style={{ gap: 4 }}>
-                  {presets.map((p) => (
-                    <div key={p.camera_preset_id} className="row" style={{ justifyContent: "space-between" }}>
-                      <span>{p.name} (dwell: {p.dwell_seconds}с)</span>
-                      <button className="btn secondary" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => deletePreset(p.camera_preset_id)}>
-                        Удалить
-                      </button>
+                <div className="list-shell">
+                  {presets.map((preset) => (
+                    <div key={preset.camera_preset_id} className="list-item" style={{ cursor: "default" }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                        <div className="list-item__title">{preset.name}</div>
+                        <button className="btn secondary" onClick={() => deletePreset(preset.camera_preset_id)}>
+                          Удалить
+                        </button>
+                      </div>
+                      <div className="list-item__meta">dwell: {preset.dwell_seconds}с</div>
                     </div>
                   ))}
                 </div>
@@ -418,14 +489,19 @@ const CamerasPage: React.FC = () => {
           )}
 
           {selected && (
-            <div className="card">
-              <h3 style={{ marginTop: 0 }}>ROI Зоны</h3>
-              <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+            <div className="panel-card stack">
+              <div className="panel-card__header">
+                <div>
+                  <h3 className="panel-card__title">ROI зоны</h3>
+                  <div className="panel-card__lead">Области интереса для включения и исключения зон анализа.</div>
+                </div>
+              </div>
+              <div className="page-actions">
                 <input
                   className="input"
-                  style={{ flex: 1 }}
+                  style={{ flex: 1, minWidth: 220 }}
                   value={newRoiName}
-                  onChange={(e) => setNewRoiName(e.target.value)}
+                  onChange={(event) => setNewRoiName(event.target.value)}
                   placeholder="Название зоны"
                 />
                 <button className="btn" onClick={addRoi} disabled={!newRoiName.trim()}>
@@ -433,18 +509,18 @@ const CamerasPage: React.FC = () => {
                 </button>
               </div>
               {roiZones.length === 0 ? (
-                <div className="muted">Нет зон.</div>
+                <div className="muted">Зон пока нет.</div>
               ) : (
-                <div className="stack" style={{ gap: 4 }}>
-                  {roiZones.map((z) => (
-                    <div key={z.roi_zone_id} className="row" style={{ justifyContent: "space-between" }}>
-                      <span>
-                        {z.name}{" "}
-                        <span className="pill" style={{ fontSize: 11 }}>{z.zone_type}</span>
-                      </span>
-                      <button className="btn secondary" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => deleteRoi(z.roi_zone_id)}>
-                        Удалить
-                      </button>
+                <div className="list-shell">
+                  {roiZones.map((zone) => (
+                    <div key={zone.roi_zone_id} className="list-item" style={{ cursor: "default" }}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                        <div className="list-item__title">{zone.name}</div>
+                        <button className="btn secondary" onClick={() => deleteRoi(zone.roi_zone_id)}>
+                          Удалить
+                        </button>
+                      </div>
+                      <div className="list-item__meta">Тип зоны: {zone.zone_type}</div>
                     </div>
                   ))}
                 </div>
@@ -452,7 +528,7 @@ const CamerasPage: React.FC = () => {
             </div>
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 };
