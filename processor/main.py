@@ -9,6 +9,7 @@ from processor.camera_utils import resolve_source
 from processor.detection import CameraWorker
 from processor.media_server import ProcessorMediaServer
 from processor.monitor import SystemMonitor, get_system_info
+from processor.networking import detect_advertised_ip
 from processor.paths import ensure_media_dirs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -23,6 +24,9 @@ class ProcessorService:
         self._running = False
         self._monitor = SystemMonitor()
         self._system_info = get_system_info()
+        self._advertised_ip = detect_advertised_ip(settings.advertised_ip, backend_url=settings.backend_url)
+        if self._advertised_ip:
+            self._system_info["advertised_ip"] = self._advertised_ip
         self._gallery: list[dict] = []
         self._gallery_loaded_at = 0.0
         self._gallery_refresh_seconds = 180.0
@@ -69,6 +73,7 @@ class ProcessorService:
                     "online",
                     stats={"active_cameras": len(self.workers)},
                     metrics=metrics.to_dict(),
+                    ip_address=self._advertised_ip,
                     hostname=self._system_info.get("hostname"),
                     os_info=self._system_info.get("os"),
                     version="1.0.0",

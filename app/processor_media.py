@@ -55,9 +55,11 @@ def get_processor_media_token(proc: models.Processor) -> Optional[str]:
 
 
 def get_processor_media_base_url(proc: models.Processor) -> str:
-    if not proc.ip_address:
+    capabilities = get_processor_capabilities(proc)
+    host = capabilities.get("advertised_ip") or proc.ip_address
+    if not host:
         raise RuntimeError("Processor IP is unknown")
-    return f"http://{proc.ip_address}:{get_processor_media_port(proc)}"
+    return f"http://{host}:{get_processor_media_port(proc)}"
 
 
 def get_processor_media_headers(proc: models.Processor) -> dict[str, str]:

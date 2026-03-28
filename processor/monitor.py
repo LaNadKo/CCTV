@@ -175,4 +175,12 @@ def get_system_info() -> dict:
         info["inference_device"] = "cpu"
     if "inference_device" not in info:
         info["inference_device"] = "cpu"
+    try:
+        from processor.networking import detect_advertised_ip
+
+        advertised_ip = detect_advertised_ip()
+        if advertised_ip:
+            info["advertised_ip"] = advertised_ip
+    except Exception:
+        pass
     return info

@@ -33,6 +33,7 @@ def default_config() -> dict[str, Any]:
         "api_key": "",
         "processor_id": None,
         "processor_name": socket.gethostname(),
+        "advertised_ip": "",
         "max_workers": 4,
         "motion_threshold": 25.0,
         "face_scan_interval": 0.7,
@@ -75,6 +76,7 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "API_KEY": ("api_key", "str"),
         "PROCESSOR_ID": ("processor_id", "int"),
         "PROCESSOR_NAME": ("processor_name", "str"),
+        "PROCESSOR_ADVERTISED_IP": ("advertised_ip", "str"),
         "MAX_WORKERS": ("max_workers", "int"),
         "MOTION_THRESHOLD": ("motion_threshold", "float"),
         "FACE_SCAN_INTERVAL": ("face_scan_interval", "float"),
@@ -100,6 +102,7 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["API_KEY"] = str(config.get("api_key") or "")
     os.environ["PROCESSOR_ID"] = "" if config.get("processor_id") in (None, "") else str(config["processor_id"])
     os.environ["PROCESSOR_NAME"] = str(config.get("processor_name") or socket.gethostname())
+    os.environ["PROCESSOR_ADVERTISED_IP"] = str(config.get("advertised_ip") or "")
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
     os.environ["MOTION_THRESHOLD"] = str(config.get("motion_threshold", 25.0))
     os.environ["FACE_SCAN_INTERVAL"] = str(config.get("face_scan_interval", 0.7))
@@ -117,16 +120,21 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
     if not code:
         raise RuntimeError("Connection code is required")
 
+    from processor.networking import detect_advertised_ip
+
+    advertised_ip = detect_advertised_ip(str(config.get("advertised_ip") or "").strip(), backend_url=backend_url)
     system_info = get_system_info()
     payload = json.dumps(
         {
             "code": code,
             "name": config.get("processor_name") or socket.gethostname(),
+            "ip_address": advertised_ip,
             "hostname": system_info.get("hostname"),
             "os_info": system_info.get("os"),
             "version": "1.0.0",
             "capabilities": {
                 **system_info,
+                "advertised_ip": advertised_ip,
                 "media_port": int(config.get("media_port", 8777)),
                 "media_token": config.get("media_token"),
             },
@@ -158,6 +166,8 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
     connected["api_key"] = data["api_key"]
     connected["processor_id"] = data["processor_id"]
     connected["processor_name"] = data["name"]
+    if advertised_ip:
+        connected["advertised_ip"] = advertised_ip
     save_config(connected)
     return connected
 

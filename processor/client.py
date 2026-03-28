@@ -25,6 +25,7 @@ class BackendClient:
         status: str = "online",
         stats: dict | None = None,
         metrics: dict | None = None,
+        ip_address: str | None = None,
         hostname: str | None = None,
         os_info: str | None = None,
         version: str | None = None,
@@ -35,6 +36,8 @@ class BackendClient:
         payload = {"status": status, "stats": stats or {}}
         if metrics:
             payload["metrics"] = metrics
+        if ip_address:
+            payload["ip_address"] = ip_address
         if hostname:
             payload["hostname"] = hostname
         if os_info:

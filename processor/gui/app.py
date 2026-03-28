@@ -18,6 +18,7 @@ from tkinter import filedialog
 import customtkinter as ctk
 
 from processor.monitor import SystemMonitor, get_system_info, Metrics
+from processor.networking import detect_advertised_ip
 
 # ── Paths ──
 def _base_dir() -> Path:
@@ -52,6 +53,7 @@ def load_config() -> dict:
         "api_key": "",
         "processor_id": None,
         "processor_name": socket.gethostname(),
+        "advertised_ip": "",
         "max_workers": 4,
         "motion_threshold": 25.0,
         "face_scan_interval": 0.7,
@@ -244,14 +246,17 @@ class ProcessorApp(ctk.CTk):
             try:
                 import urllib.request
                 sysinfo = get_system_info()
+                advertised_ip = detect_advertised_ip(str(self.config_data.get("advertised_ip") or "").strip(), backend_url=url)
                 payload = json.dumps({
                     "code": code,
                     "name": name,
+                    "ip_address": advertised_ip,
                     "hostname": sysinfo.get("hostname"),
                     "os_info": sysinfo.get("os"),
                     "version": VERSION,
                     "capabilities": {
                         **sysinfo,
+                        "advertised_ip": advertised_ip,
                         "media_port": int(self.config_data.get("media_port", 8777)),
                         "media_token": self.config_data.get("media_token"),
                     },
@@ -265,6 +270,8 @@ class ProcessorApp(ctk.CTk):
                 self.config_data["api_key"] = data["api_key"]
                 self.config_data["processor_id"] = data["processor_id"]
                 self.config_data["processor_name"] = data["name"]
+                if advertised_ip:
+                    self.config_data["advertised_ip"] = advertised_ip
                 save_config(self.config_data)
                 self.after(0, lambda: self.conn_status.configure(
                     text=f"Подключен! ID: {data['processor_id']}", text_color="#28a745"))
