@@ -156,7 +156,12 @@ function Layout({ uiSettings }: { uiSettings: UiSettings }) {
   );
 
   const primaryTabs = useMemo(
-    () => allTabs.filter((tab) => tab.show && uiSettings.primaryNav.includes(tab.to)),
+    () => {
+      const visibleTabs = allTabs.filter((tab) => tab.show);
+      return uiSettings.primaryNav
+        .map((route) => visibleTabs.find((tab) => tab.to === route))
+        .filter((tab): tab is (typeof visibleTabs)[number] => Boolean(tab));
+    },
     [allTabs, uiSettings.primaryNav]
   );
 

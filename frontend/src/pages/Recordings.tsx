@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { API_URL, getCameras, getTimeline, listRecordings, recordingSnapshotUrl } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
@@ -127,6 +127,11 @@ function recordingMjpegUrl(recordingId: number, token: string): string {
   return `${API_URL}/recordings/file/${recordingId}/mjpeg?token=${encodeURIComponent(token)}`;
 }
 
+function clampDateToToday(value: string, today: string): string {
+  if (!value) return today;
+  return value > today ? today : value;
+}
+
 function eventMatchesFilter(event: TimelineEvent, filter: EventFilter): boolean {
   if (filter === "all") return true;
   if (filter === "human") return event.event_type === "face_recognized" || event.event_type === "face_unknown" || event.event_type === "person_detected";
@@ -163,6 +168,8 @@ const RecordingsPage: React.FC = () => {
   const [videoFallbackMap, setVideoFallbackMap] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const todayKey = toLocalDateKey(new Date());
+  const canMoveForward = selectedDate < todayKey;
 
   const load = async () => {
     if (!token) return;
@@ -293,10 +300,16 @@ const RecordingsPage: React.FC = () => {
       const start = secondsSinceDayStart(getRecordingStart(record));
       const end = secondsSinceDayStart(getRecordingEnd(record));
       const widthSeconds = Math.max(end - start, Math.max(record.duration_seconds || 60, 30));
+      const left = (start / DAY_SECONDS) * 100;
+      const width = Math.max((widthSeconds / DAY_SECONDS) * 100, 0.45);
+      const right = Math.min(left + width, 100);
       return {
         recordingId: record.recording_file_id,
-        left: (start / DAY_SECONDS) * 100,
-        width: Math.max((widthSeconds / DAY_SECONDS) * 100, 0.45),
+        hour: getRecordingStart(record).getHours(),
+        left,
+        width: right - left,
+        right,
+        center: left + (right - left) / 2,
       };
     });
   }, [records]);
@@ -326,6 +339,8 @@ const RecordingsPage: React.FC = () => {
     });
   }, [eventFilter, hourRecords, recordingEventsMap]);
 
+  const overviewSelectedHour = selectedRecording ? getRecordingStart(selectedRecording).getHours() : selectedHour;
+
   const openArchive = () => {
     setViewMode("archive");
   };
@@ -337,6 +352,24 @@ const RecordingsPage: React.FC = () => {
       setSelectedRecordingId(items[0].recording_file_id);
     }
     setViewMode("hour");
+  };
+
+  const handleTimelineClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!daySegments.length) return;
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return;
+
+    const percent = ((event.clientX - bounds.left) / bounds.width) * 100;
+    const matchedSegments = daySegments
+      .filter((segment) => percent >= segment.left && percent <= segment.right)
+      .sort((left, right) => Math.abs(left.center - percent) - Math.abs(right.center - percent));
+
+    const target = matchedSegments[0];
+    if (!target) return;
+
+    setSelectedRecordingId(target.recordingId);
+    setSelectedHour(target.hour);
   };
 
   const renderEmptyState = (
@@ -355,7 +388,7 @@ const RecordingsPage: React.FC = () => {
           <h2 className="title">Записи</h2>
           <div className="muted">Архив хранится на Processor и подтягивается через backend-прокси.</div>
         </div>
-        <div className="row recordings-toolbar">
+          <div className="row recordings-toolbar">
           <select
             className="input"
             value={cameraId ?? ""}
@@ -372,8 +405,18 @@ const RecordingsPage: React.FC = () => {
             <button className="btn secondary" onClick={() => setSelectedDate((current) => shiftDate(current, -1))}>
               ←
             </button>
-            <input type="date" className="input" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-            <button className="btn secondary" onClick={() => setSelectedDate((current) => shiftDate(current, 1))}>
+            <input
+              type="date"
+              className="input"
+              max={todayKey}
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(clampDateToToday(e.target.value, todayKey))}
+            />
+            <button
+              className="btn secondary"
+              onClick={() => setSelectedDate((current) => clampDateToToday(shiftDate(current, 1), todayKey))}
+              disabled={!canMoveForward}
+            >
               →
             </button>
           </div>
@@ -466,7 +509,7 @@ const RecordingsPage: React.FC = () => {
             </div>
 
             <div className="recordings-strip">
-              <div className="recordings-strip-track">
+              <div className="recordings-strip-track" onClick={handleTimelineClick} role="presentation">
                 {daySegments.map((segment) => (
                   <button
                     key={segment.recordingId}
@@ -477,7 +520,11 @@ const RecordingsPage: React.FC = () => {
                         : "recordings-strip-segment"
                     }
                     style={{ left: `${segment.left}%`, width: `${segment.width}%` }}
-                    onClick={() => setSelectedRecordingId(segment.recordingId)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedRecordingId(segment.recordingId);
+                      setSelectedHour(segment.hour);
+                    }}
                     title={`Клип #${segment.recordingId}`}
                   />
                 ))}
@@ -495,6 +542,25 @@ const RecordingsPage: React.FC = () => {
                 <span>12:00</span>
                 <span>18:00</span>
                 <span>24:00</span>
+              </div>
+              <div className="recordings-strip-hours">
+                {HOURS_ASC.map((hour) => {
+                  const count = recordsByHour[hour]?.length || 0;
+                  const isActive = overviewSelectedHour === hour;
+                  return (
+                    <button
+                      key={hour}
+                      type="button"
+                      className={`recordings-strip-hour${count ? " has-records" : ""}${isActive ? " active" : ""}`}
+                      onClick={() => count && openHour(hour)}
+                      disabled={!count}
+                      title={count ? `${count} клипов в ${String(hour).padStart(2, "0")}:00` : "Нет записей"}
+                    >
+                      <span>{String(hour).padStart(2, "0")}</span>
+                      <strong>{count || "·"}</strong>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
