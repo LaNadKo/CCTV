@@ -25,10 +25,49 @@ def base_dir() -> Path:
 
 CONFIG_FILE = base_dir() / "processor_config.json"
 LOG_FILE = base_dir() / "processor.log"
+_PROCESSING_BASE_FPS = 24.0
+_MAX_FRAME_INTERVAL_SECONDS = 5.0
+_FRAME_DIVISOR_CHOICES = (1, 2, 4, 8, 16, 32, 64, 120)
+
+
+def _sanitize_frame_divisor(value: Any, default: int) -> int:
+    try:
+        raw = int(value)
+    except (TypeError, ValueError):
+        raw = default
+    if raw <= 0:
+        raw = default
+    for candidate in _FRAME_DIVISOR_CHOICES:
+        if raw <= candidate:
+            return candidate
+    return _FRAME_DIVISOR_CHOICES[-1]
+
+
+def _frame_divisor_to_interval(divisor: int) -> float:
+    return round(min(_MAX_FRAME_INTERVAL_SECONDS, divisor / _PROCESSING_BASE_FPS), 3)
+
+
+def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    divisor = normalized.get("face_scan_divisor")
+    if divisor in (None, ""):
+        legacy_interval = normalized.get("face_scan_interval", 0.35)
+        try:
+            divisor = max(1, int(round(float(legacy_interval) * _PROCESSING_BASE_FPS)))
+        except (TypeError, ValueError):
+            divisor = 8
+    normalized["face_scan_divisor"] = _sanitize_frame_divisor(divisor, 8)
+    normalized["overlay_frame_divisor"] = _sanitize_frame_divisor(
+        normalized.get("overlay_frame_divisor", 1),
+        1,
+    )
+    normalized["face_scan_interval"] = _frame_divisor_to_interval(normalized["face_scan_divisor"])
+    return normalized
 
 
 def default_config() -> dict[str, Any]:
-    return {
+    return normalize_config(
+        {
         "backend_url": "",
         "api_key": "",
         "processor_id": None,
@@ -36,13 +75,16 @@ def default_config() -> dict[str, Any]:
         "advertised_ip": "",
         "max_workers": 4,
         "motion_threshold": 25.0,
-        "face_scan_interval": 0.7,
+        "face_scan_divisor": 8,
+        "overlay_frame_divisor": 1,
+        "face_scan_interval": 0.35,
         "recording_segment_seconds": 300,
         "recordings_dir": str(base_dir() / "media" / "recordings"),
         "snapshots_dir": str(base_dir() / "media" / "snapshots"),
         "media_port": 8777,
         "media_token": secrets.token_urlsafe(24),
-    }
+        }
+    )
 
 
 def load_config() -> dict[str, Any]:
@@ -50,7 +92,7 @@ def load_config() -> dict[str, Any]:
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
-                return {**defaults, **json.load(handle)}
+                return normalize_config({**defaults, **json.load(handle)})
         except Exception:
             pass
     return defaults
@@ -79,6 +121,8 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "PROCESSOR_ADVERTISED_IP": ("advertised_ip", "str"),
         "MAX_WORKERS": ("max_workers", "int"),
         "MOTION_THRESHOLD": ("motion_threshold", "float"),
+        "FACE_SCAN_DIVISOR": ("face_scan_divisor", "int"),
+        "OVERLAY_FRAME_DIVISOR": ("overlay_frame_divisor", "int"),
         "FACE_SCAN_INTERVAL": ("face_scan_interval", "float"),
         "RECORDING_SEGMENT_SECONDS": ("recording_segment_seconds", "int"),
         "RECORDINGS_DIR": ("recordings_dir", "str"),
@@ -94,10 +138,11 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         merged[config_key] = _coerce_env_value(raw_value, kind)
     if not merged.get("media_token"):
         merged["media_token"] = secrets.token_urlsafe(24)
-    return merged
+    return normalize_config(merged)
 
 
 def export_env(config: dict[str, Any]) -> None:
+    normalized = normalize_config(config)
     os.environ["BACKEND_URL"] = str(config.get("backend_url") or "")
     os.environ["API_KEY"] = str(config.get("api_key") or "")
     os.environ["PROCESSOR_ID"] = "" if config.get("processor_id") in (None, "") else str(config["processor_id"])
@@ -105,7 +150,9 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["PROCESSOR_ADVERTISED_IP"] = str(config.get("advertised_ip") or "")
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
     os.environ["MOTION_THRESHOLD"] = str(config.get("motion_threshold", 25.0))
-    os.environ["FACE_SCAN_INTERVAL"] = str(config.get("face_scan_interval", 0.7))
+    os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
+    os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))
+    os.environ["FACE_SCAN_INTERVAL"] = str(normalized.get("face_scan_interval", 0.35))
     os.environ["RECORDING_SEGMENT_SECONDS"] = str(config.get("recording_segment_seconds", 300))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))
@@ -114,6 +161,7 @@ def export_env(config: dict[str, Any]) -> None:
 
 
 def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
+    config = normalize_config(config)
     backend_url = str(config.get("backend_url") or "").strip().rstrip("/")
     if not backend_url:
         raise RuntimeError("BACKEND_URL is required for headless processor connection")
