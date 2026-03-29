@@ -9,7 +9,7 @@
   -moz-osx-font-smoothing: grayscale;
   --accent: #5ef0ff;
   --accent-2: #6f7bff;
-  --accent-soft: rgba(94, 240, 255, 0.12);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   --success: #22c55e;
   --warning: #f59e0b;
   --danger: #ef4444;
@@ -31,9 +31,9 @@
   --text-strong: #ffffff;
   --muted: #94a3b8;
   --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(94, 240, 255, 0.18);
-  --page-glow-a: rgba(94, 240, 255, 0.16);
-  --page-glow-b: rgba(111, 123, 255, 0.12);
+  --border-strong: color-mix(in srgb, var(--accent) 18%, transparent);
+  --page-glow-a: color-mix(in srgb, var(--accent) 16%, transparent);
+  --page-glow-b: color-mix(in srgb, var(--accent-2) 12%, transparent);
 }
 
 :root[data-theme="light"] {
@@ -46,9 +46,9 @@
   --text-strong: #091220;
   --muted: #5f718c;
   --border: rgba(15, 23, 42, 0.08);
-  --border-strong: rgba(79, 118, 255, 0.18);
-  --page-glow-a: rgba(94, 240, 255, 0.12);
-  --page-glow-b: rgba(111, 123, 255, 0.1);
+  --border-strong: color-mix(in srgb, var(--accent-2) 18%, transparent);
+  --page-glow-a: color-mix(in srgb, var(--accent) 12%, transparent);
+  --page-glow-b: color-mix(in srgb, var(--accent-2) 10%, transparent);
   --shadow-lg: 0 26px 70px rgba(148, 163, 184, 0.26);
   --shadow-md: 0 16px 34px rgba(148, 163, 184, 0.18);
 }
@@ -115,6 +115,6 @@ code {
 }
 
 ::selection {
-  background: rgba(94, 240, 255, 0.24);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
   color: var(--text-strong);
 }

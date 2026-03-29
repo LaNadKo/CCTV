@@ -13,7 +13,7 @@ import sys
 import threading
 import urllib.request
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import colorchooser, filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -48,23 +48,14 @@ _QUICK_PERFORMANCE_PRESETS: list[tuple[str, int, int, str]] = [
     ("Сбалансированный", 8, 1, "Основной рабочий режим: умеренная нагрузка и плавный live-оверлей."),
     ("Максимум", 1, 1, "Покадровая аналитика и покадровый оверлей для приоритета качества."),
 ]
-_THEME = {
-    "bg": "#08111E",
-    "panel": "#0C1728",
-    "card": "#101F34",
-    "card_alt": "#0D1B2C",
-    "border": "#1C3651",
-    "text": "#F4F7FB",
-    "muted": "#8CA0BC",
-    "accent": "#49C8E8",
-    "accent_hover": "#34B2D3",
-    "accent_soft": "#153C4E",
-    "success": "#33C28E",
-    "success_hover": "#26A576",
-    "warning": "#E6B85C",
-    "danger": "#E56D74",
-    "danger_hover": "#C7565D",
-}
+_DEFAULT_THEME_PRIMARY = "#49C8E8"
+_DEFAULT_THEME_SECONDARY = "#4C6FFF"
+_THEME_PRESETS: list[tuple[str, str, str]] = [
+    ("Processor", _DEFAULT_THEME_PRIMARY, _DEFAULT_THEME_SECONDARY),
+    ("Console", "#5EF0FF", "#6F7BFF"),
+    ("Signal", "#22C55E", "#14B8A6"),
+    ("Ember", "#F97316", "#EF4444"),
+]
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -123,6 +114,69 @@ def _frequency_description(divisor: int) -> str:
     return f"Примерно 1 кадр каждые {interval:.2f} сек, около {fps:.1f} кадр/с."
 
 
+def _normalize_hex_color(value: object, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    compact = value.strip().replace("#", "")
+    if len(compact) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in compact):
+        compact = "".join(ch * 2 for ch in compact)
+    if len(compact) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in compact):
+        return fallback
+    return f"#{compact.upper()}"
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    color = _normalize_hex_color(value, "#000000")
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def _mix_hex(base: str, tint: str, tint_ratio: float) -> str:
+    ratio = max(0.0, min(1.0, tint_ratio))
+    base_r, base_g, base_b = _hex_to_rgb(base)
+    tint_r, tint_g, tint_b = _hex_to_rgb(tint)
+    return "#{:02X}{:02X}{:02X}".format(
+        round(base_r * (1.0 - ratio) + tint_r * ratio),
+        round(base_g * (1.0 - ratio) + tint_g * ratio),
+        round(base_b * (1.0 - ratio) + tint_b * ratio),
+    )
+
+
+def _darken_hex(value: str, amount: float) -> str:
+    return _mix_hex(value, "#000000", amount)
+
+
+def _contrast_text(value: str) -> str:
+    red, green, blue = _hex_to_rgb(value)
+    luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
+    return "#04131A" if luminance >= 0.62 else "#F4F7FB"
+
+
+def _build_theme_palette(primary: str, secondary: str) -> dict[str, str]:
+    primary = _normalize_hex_color(primary, _DEFAULT_THEME_PRIMARY)
+    secondary = _normalize_hex_color(secondary, _DEFAULT_THEME_SECONDARY)
+    bg = "#08111E"
+    return {
+        "bg": bg,
+        "panel": _mix_hex(bg, secondary, 0.14),
+        "card": _mix_hex(bg, secondary, 0.2),
+        "card_alt": _mix_hex(bg, secondary, 0.12),
+        "border": _mix_hex(bg, secondary, 0.3),
+        "text": "#F4F7FB",
+        "muted": "#8CA0BC",
+        "accent": primary,
+        "accent_hover": _darken_hex(primary, 0.16),
+        "accent_soft": _mix_hex(bg, primary, 0.24),
+        "success": "#33C28E",
+        "success_hover": "#26A576",
+        "warning": "#E6B85C",
+        "danger": "#E56D74",
+        "danger_hover": "#C7565D",
+    }
+
+
+_THEME = _build_theme_palette(_DEFAULT_THEME_PRIMARY, _DEFAULT_THEME_SECONDARY)
+
+
 def _match_quick_preset(scan_divisor: int, overlay_divisor: int) -> str | None:
     scan_divisor = _sanitize_divisor(scan_divisor, 8)
     overlay_divisor = _sanitize_divisor(overlay_divisor, 1)
@@ -155,13 +209,23 @@ def _safe_text(value: object, fallback: str = "—") -> str:
 class ProcessorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.config_data = normalize_config(load_config())
+        self.config_data["theme_primary_color"] = _normalize_hex_color(
+            self.config_data.get("theme_primary_color"),
+            _DEFAULT_THEME_PRIMARY,
+        )
+        self.config_data["theme_secondary_color"] = _normalize_hex_color(
+            self.config_data.get("theme_secondary_color"),
+            _DEFAULT_THEME_SECONDARY,
+        )
+        self._apply_theme_palette()
+
         self.title(LOGO_TEXT)
         self.geometry("1320x820")
         self.minsize(1100, 720)
         self.configure(fg_color=_THEME["bg"])
         self._apply_window_icon()
 
-        self.config_data = normalize_config(load_config())
         if not self.config_data.get("processor_name"):
             self.config_data["processor_name"] = socket.gethostname()
         if not self.config_data.get("media_token"):
@@ -176,6 +240,7 @@ class ProcessorApp(ctk.CTk):
         self._running = False
         self._metrics: Metrics | None = None
         self._gui_log_handler: _GuiLogHandler | None = None
+        self._current_page = "connect"
 
         self._pages: dict[str, ctk.CTkBaseClass] = {}
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
@@ -190,6 +255,12 @@ class ProcessorApp(ctk.CTk):
             value=_divisor_label(self.config_data.get("overlay_frame_divisor", 1))
         )
         self.quick_preset_hint: ctk.CTkLabel | None = None
+        self.theme_primary_preview: ctk.CTkFrame | None = None
+        self.theme_secondary_preview: ctk.CTkFrame | None = None
+        self.theme_preview_card: ctk.CTkFrame | None = None
+        self.theme_preview_badge: ctk.CTkLabel | None = None
+        self.theme_preview_title: ctk.CTkLabel | None = None
+        self.theme_preview_text: ctk.CTkLabel | None = None
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -213,6 +284,15 @@ class ProcessorApp(ctk.CTk):
                 self.iconbitmap(str(icon_path))
         except Exception:
             pass
+
+    def _apply_theme_palette(self) -> None:
+        primary = _normalize_hex_color(self.config_data.get("theme_primary_color"), _DEFAULT_THEME_PRIMARY)
+        secondary = _normalize_hex_color(self.config_data.get("theme_secondary_color"), _DEFAULT_THEME_SECONDARY)
+        self.config_data["theme_primary_color"] = primary
+        self.config_data["theme_secondary_color"] = secondary
+        _THEME.clear()
+        _THEME.update(_build_theme_palette(primary, secondary))
+        self.configure(fg_color=_THEME["bg"])
 
     def _build_sidebar(self) -> None:
         self.sidebar = ctk.CTkFrame(self, width=248, corner_radius=0, fg_color=_THEME["panel"], border_width=0)
@@ -298,6 +378,7 @@ class ProcessorApp(ctk.CTk):
         return ctk.CTkButton(parent, text=text, command=command, width=width, height=height, corner_radius=14, fg_color=fg_color, hover_color=hover_color, text_color=text_color, font=ctk.CTkFont(size=14, weight="bold"))
 
     def _show_page(self, name: str) -> None:
+        self._current_page = name
         for page in self._pages.values():
             page.grid_remove()
         self._pages[name].grid(row=0, column=0, sticky="nsew")
@@ -306,7 +387,7 @@ class ProcessorApp(ctk.CTk):
             button.configure(
                 fg_color=_THEME["accent_soft"] if active else "transparent",
                 border_width=1 if active else 0,
-                border_color=_THEME["border"] if active else "transparent",
+                border_color=_THEME["border"],
                 text_color=_THEME["accent"] if active else _THEME["text"],
             )
 
@@ -329,6 +410,74 @@ class ProcessorApp(ctk.CTk):
         self._create_action_button(row, "Выбрать", lambda target=key, item=entry: self._browse_directory(target, item), tone="ghost", width=110, height=42).pack(side="left", padx=(10, 0))
         self._create_action_button(row, "Открыть", lambda item=entry: self._open_runtime_path(Path(item.get().strip())), tone="ghost", width=100, height=42).pack(side="left", padx=(10, 0))
         return entry
+
+    def _create_color_entry(self, parent, label: str, value: str, fallback: str) -> tuple[ctk.CTkEntry, ctk.CTkFrame]:
+        ctk.CTkLabel(parent, text=label, text_color=_THEME["muted"], anchor="w", font=ctk.CTkFont(size=13, weight="bold")).pack(fill="x", pady=(0, 6))
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 14))
+        swatch = ctk.CTkFrame(
+            row,
+            width=42,
+            height=42,
+            corner_radius=14,
+            fg_color=_normalize_hex_color(value, fallback),
+            border_width=1,
+            border_color=_THEME["border"],
+        )
+        swatch.pack(side="left")
+        swatch.pack_propagate(False)
+        entry = ctk.CTkEntry(row, height=42, corner_radius=14, fg_color=_THEME["panel"], border_color=_THEME["border"], text_color=_THEME["text"])
+        entry.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        entry.insert(0, _normalize_hex_color(value, fallback))
+        entry.bind("<KeyRelease>", lambda _event, item=entry, preview=swatch, default=fallback: self._refresh_theme_preview(item, preview, default))
+        self._create_action_button(
+            row,
+            "Выбрать",
+            lambda item=entry, preview=swatch, default=fallback: self._pick_theme_color(item, preview, default),
+            tone="ghost",
+            width=110,
+            height=42,
+        ).pack(side="left", padx=(10, 0))
+        return entry, swatch
+
+    def _set_theme_entry(self, entry: ctk.CTkEntry, swatch: ctk.CTkFrame, value: str, fallback: str) -> None:
+        normalized = _normalize_hex_color(value, fallback)
+        entry.delete(0, "end")
+        entry.insert(0, normalized)
+        self._refresh_theme_preview(entry, swatch, fallback)
+
+    def _refresh_theme_preview(self, entry: ctk.CTkEntry, swatch: ctk.CTkFrame, fallback: str) -> None:
+        color = _normalize_hex_color(entry.get().strip(), fallback)
+        swatch.configure(fg_color=color, border_color=_THEME["border"])
+        if not self.theme_preview_card or not self.theme_preview_badge or not self.theme_preview_title or not self.theme_preview_text:
+            return
+        primary = _normalize_hex_color(self.theme_primary_entry.get().strip(), _DEFAULT_THEME_PRIMARY)
+        secondary = _normalize_hex_color(self.theme_secondary_entry.get().strip(), _DEFAULT_THEME_SECONDARY)
+        preview_bg = _mix_hex(primary, secondary, 0.34)
+        preview_fg = _contrast_text(preview_bg)
+        badge_fg = _contrast_text(secondary)
+        self.theme_preview_card.configure(fg_color=preview_bg, border_color=secondary)
+        self.theme_preview_badge.configure(fg_color=secondary, text_color=badge_fg)
+        self.theme_preview_title.configure(text_color=preview_fg)
+        self.theme_preview_text.configure(text_color=preview_fg)
+
+    def _pick_theme_color(self, entry: ctk.CTkEntry, swatch: ctk.CTkFrame, fallback: str) -> None:
+        initial = _normalize_hex_color(entry.get().strip(), fallback)
+        _rgb, color = colorchooser.askcolor(color=initial, title="Выбор цвета интерфейса")
+        if not color:
+            return
+        self._set_theme_entry(entry, swatch, color, fallback)
+
+    def _apply_theme_preset(self, primary: str, secondary: str) -> None:
+        self._set_theme_entry(self.theme_primary_entry, self.theme_primary_preview, primary, _DEFAULT_THEME_PRIMARY)
+        self._set_theme_entry(self.theme_secondary_entry, self.theme_secondary_preview, secondary, _DEFAULT_THEME_SECONDARY)
+        self.settings_status.configure(
+            text="Палитра обновлена в форме. Сохраните настройки, чтобы сразу применить её к Processor GUI.",
+            text_color=_THEME["muted"],
+        )
+
+    def _reset_theme_colors(self) -> None:
+        self._apply_theme_preset(_DEFAULT_THEME_PRIMARY, _DEFAULT_THEME_SECONDARY)
 
     def _add_help_section(self, parent, title: str, lines: list[str]) -> None:
         card, body = self._create_card(parent, title)
@@ -588,6 +737,86 @@ class ProcessorApp(ctk.CTk):
         self.snapshots_dir_entry = self._create_path_entry(storage_body, "snapshots_dir", "Папка для снимков", str(self.config_data.get("snapshots_dir") or ""))
         ctk.CTkLabel(storage_body, text="Эти пути не записываются в backend и не сохраняются в БД. Они используются только на текущем ПК, где запущен Processor.", text_color=_THEME["muted"], wraplength=500, justify="left").pack(anchor="w", pady=(8, 0))
 
+        theme_card, theme_body = self._create_card(grid, "Тема интерфейса", "Можно менять основной и дополнительный цвет локального Processor GUI. Тема применяется сразу после сохранения.")
+        theme_card.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=(20, 0))
+
+        presets_row = ctk.CTkFrame(theme_body, fg_color="transparent")
+        presets_row.pack(fill="x", pady=(0, 14))
+        for index, (label, primary, secondary) in enumerate(_THEME_PRESETS):
+            self._create_action_button(
+                presets_row,
+                label,
+                lambda preset_primary=primary, preset_secondary=secondary: self._apply_theme_preset(preset_primary, preset_secondary),
+                tone="ghost",
+                width=150,
+                height=40,
+            ).pack(side="left", padx=(0, 10 if index < len(_THEME_PRESETS) - 1 else 0))
+
+        colors_grid = ctk.CTkFrame(theme_body, fg_color="transparent")
+        colors_grid.pack(fill="x")
+        colors_grid.grid_columnconfigure(0, weight=1)
+        colors_grid.grid_columnconfigure(1, weight=1)
+
+        primary_wrap = ctk.CTkFrame(colors_grid, fg_color="transparent")
+        primary_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.theme_primary_entry, self.theme_primary_preview = self._create_color_entry(
+            primary_wrap,
+            "Основной цвет",
+            str(self.config_data.get("theme_primary_color") or _DEFAULT_THEME_PRIMARY),
+            _DEFAULT_THEME_PRIMARY,
+        )
+
+        secondary_wrap = ctk.CTkFrame(colors_grid, fg_color="transparent")
+        secondary_wrap.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.theme_secondary_entry, self.theme_secondary_preview = self._create_color_entry(
+            secondary_wrap,
+            "Дополнительный цвет",
+            str(self.config_data.get("theme_secondary_color") or _DEFAULT_THEME_SECONDARY),
+            _DEFAULT_THEME_SECONDARY,
+        )
+
+        preview_row = ctk.CTkFrame(theme_body, fg_color="transparent")
+        preview_row.pack(fill="x", pady=(0, 14))
+        self.theme_preview_card = ctk.CTkFrame(
+            preview_row,
+            fg_color=_mix_hex(
+                str(self.config_data.get("theme_primary_color") or _DEFAULT_THEME_PRIMARY),
+                str(self.config_data.get("theme_secondary_color") or _DEFAULT_THEME_SECONDARY),
+                0.34,
+            ),
+            corner_radius=20,
+            border_width=1,
+            border_color=str(self.config_data.get("theme_secondary_color") or _DEFAULT_THEME_SECONDARY),
+        )
+        self.theme_preview_card.pack(side="left", fill="x", expand=True)
+        self.theme_preview_badge = ctk.CTkLabel(
+            self.theme_preview_card,
+            text="Preview",
+            fg_color=str(self.config_data.get("theme_secondary_color") or _DEFAULT_THEME_SECONDARY),
+            corner_radius=999,
+            padx=10,
+            pady=4,
+        )
+        self.theme_preview_badge.pack(anchor="w", padx=18, pady=(18, 8))
+        self.theme_preview_title = ctk.CTkLabel(
+            self.theme_preview_card,
+            text="Processor Palette",
+            font=ctk.CTkFont(size=22, weight="bold"),
+        )
+        self.theme_preview_title.pack(anchor="w", padx=18)
+        self.theme_preview_text = ctk.CTkLabel(
+            self.theme_preview_card,
+            text="Кнопки, карточки и активная навигация подстроятся под выбранную палитру после сохранения.",
+            wraplength=560,
+            justify="left",
+        )
+        self.theme_preview_text.pack(anchor="w", padx=18, pady=(8, 18))
+        self._refresh_theme_preview(self.theme_primary_entry, self.theme_primary_preview, _DEFAULT_THEME_PRIMARY)
+
+        theme_actions = ctk.CTkFrame(theme_body, fg_color="transparent")
+        theme_actions.pack(fill="x")
+        self._create_action_button(theme_actions, "Сбросить тему", self._reset_theme_colors, tone="ghost", width=160, height=40).pack(side="left")
+
         footer = ctk.CTkFrame(page, fg_color="transparent")
         footer.pack(fill="x", padx=24, pady=(0, 24))
         self._create_action_button(footer, "Сохранить настройки", self._save_settings, tone="accent", width=220, height=44).pack(side="left")
@@ -751,6 +980,8 @@ class ProcessorApp(ctk.CTk):
 
     def _save_settings(self) -> None:
         try:
+            previous_primary = _normalize_hex_color(self.config_data.get("theme_primary_color"), _DEFAULT_THEME_PRIMARY)
+            previous_secondary = _normalize_hex_color(self.config_data.get("theme_secondary_color"), _DEFAULT_THEME_SECONDARY)
             self.config_data["max_workers"] = max(1, int(self.max_workers_entry.get().strip() or "1"))
             self.config_data["motion_threshold"] = float(self.motion_threshold_entry.get().strip() or "25.0")
             self.config_data["recording_segment_seconds"] = max(30, int(self.recording_segment_entry.get().strip() or "300"))
@@ -758,11 +989,27 @@ class ProcessorApp(ctk.CTk):
             self.config_data["snapshots_dir"] = self.snapshots_dir_entry.get().strip() or str(_base_dir() / "media" / "snapshots")
             self.config_data["face_scan_divisor"] = _LABEL_TO_DIVISOR.get(self.face_scan_divisor_var.get(), 8)
             self.config_data["overlay_frame_divisor"] = _LABEL_TO_DIVISOR.get(self.overlay_frame_divisor_var.get(), 1)
+            self.config_data["theme_primary_color"] = _normalize_hex_color(
+                self.theme_primary_entry.get().strip(),
+                _DEFAULT_THEME_PRIMARY,
+            )
+            self.config_data["theme_secondary_color"] = _normalize_hex_color(
+                self.theme_secondary_entry.get().strip(),
+                _DEFAULT_THEME_SECONDARY,
+            )
             self.config_data = normalize_config(self.config_data)
             save_config(self.config_data)
+            theme_changed = (
+                self.config_data["theme_primary_color"] != previous_primary
+                or self.config_data["theme_secondary_color"] != previous_secondary
+            )
+            if theme_changed:
+                self._apply_theme_palette()
+                self._rebuild_ui("settings")
             self._sync_ui_from_config()
             restart_note = " Перезапустите обработку, если сервис уже запущен." if self._running else ""
-            self.settings_status.configure(text=f"Настройки сохранены.{restart_note}", text_color=_THEME["success"])
+            theme_note = " Тема GUI обновлена." if theme_changed else ""
+            self.settings_status.configure(text=f"Настройки сохранены.{theme_note}{restart_note}", text_color=_THEME["success"])
             self.after(5000, lambda: self.settings_status.configure(text=""))
         except Exception as exc:
             self.settings_status.configure(text=f"Ошибка сохранения: {exc}", text_color=_THEME["danger"])
@@ -968,9 +1215,71 @@ class ProcessorApp(ctk.CTk):
         _replace(self.recording_segment_entry, self.config_data.get("recording_segment_seconds", 300))
         _replace(self.recordings_dir_entry, self.config_data.get("recordings_dir", _base_dir() / "media" / "recordings"))
         _replace(self.snapshots_dir_entry, self.config_data.get("snapshots_dir", _base_dir() / "media" / "snapshots"))
+        self._set_theme_entry(
+            self.theme_primary_entry,
+            self.theme_primary_preview,
+            str(self.config_data.get("theme_primary_color") or _DEFAULT_THEME_PRIMARY),
+            _DEFAULT_THEME_PRIMARY,
+        )
+        self._set_theme_entry(
+            self.theme_secondary_entry,
+            self.theme_secondary_preview,
+            str(self.config_data.get("theme_secondary_color") or _DEFAULT_THEME_SECONDARY),
+            _DEFAULT_THEME_SECONDARY,
+        )
         self.face_scan_divisor_var.set(_divisor_label(self.config_data.get("face_scan_divisor", 8)))
         self.overlay_frame_divisor_var.set(_divisor_label(self.config_data.get("overlay_frame_divisor", 1)))
         self._update_frequency_labels()
+
+    def _sync_runtime_controls(self) -> None:
+        if self._running:
+            self.start_btn.configure(state="disabled")
+            self.stop_btn.configure(state="normal")
+            self._set_status("online")
+            if "status" in self._summary_labels:
+                self._summary_labels["status"].configure(text="Работает")
+        else:
+            self.start_btn.configure(state="normal")
+            self.stop_btn.configure(state="disabled")
+            self._set_status("offline")
+            if "status" in self._summary_labels:
+                self._summary_labels["status"].configure(text="Отключен")
+
+    def _rebuild_ui(self, preferred_page: str | None = None) -> None:
+        log_snapshot = ""
+        if hasattr(self, "log_box"):
+            try:
+                log_snapshot = self.log_box.get("1.0", "end-1c")
+            except Exception:
+                log_snapshot = ""
+
+        for container_name in ("sidebar", "content"):
+            container = getattr(self, container_name, None)
+            if container is not None:
+                container.destroy()
+
+        self._pages = {}
+        self._nav_buttons = {}
+        self._metric_cards = {}
+        self._summary_labels = {}
+        self._connect_summary_labels = {}
+        self._settings_entries = {}
+        self.info_labels = {}
+        self.quick_preset_hint = None
+        self.theme_primary_preview = None
+        self.theme_secondary_preview = None
+        self.theme_preview_card = None
+        self.theme_preview_badge = None
+        self.theme_preview_title = None
+        self.theme_preview_text = None
+
+        self._build_sidebar()
+        self._build_content()
+        self._show_page(preferred_page or self._current_page)
+        self._sync_ui_from_config()
+        self._sync_runtime_controls()
+        if log_snapshot:
+            self._append_log(log_snapshot + ("\n" if not log_snapshot.endswith("\n") else ""))
 
     def _sync_ui_from_config(self) -> None:
         self.config_data = normalize_config(self.config_data)
@@ -978,6 +1287,7 @@ class ProcessorApp(ctk.CTk):
         self._update_info_labels()
         self._update_dashboard_summary()
         self._refresh_settings_form()
+        self._sync_runtime_controls()
 
     def _open_runtime_path(self, path: Path) -> None:
         try:

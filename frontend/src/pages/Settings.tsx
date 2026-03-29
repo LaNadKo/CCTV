@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { clearApiUrl, getApiUrl, setApiUrl } from "../lib/api";
-import { loadUiSettings, saveUiSettings, type LiveDensity, type ThemeMode, type UiSettings } from "../lib/uiSettings";
+import {
+  DEFAULT_PRIMARY_ACCENT,
+  DEFAULT_SECONDARY_ACCENT,
+  loadUiSettings,
+  saveUiSettings,
+  type LiveDensity,
+  type ThemeMode,
+  type UiSettings,
+} from "../lib/uiSettings";
 import { useAuth } from "../context/AuthContext";
 
 const NAV_OPTIONS = [
@@ -30,6 +38,13 @@ const THEME_LABELS: Record<ThemeMode, string> = {
   dark: "Тёмная",
   light: "Светлая",
 };
+
+const ACCENT_PRESETS = [
+  { label: "Console", primary: DEFAULT_PRIMARY_ACCENT, secondary: DEFAULT_SECONDARY_ACCENT },
+  { label: "Arctic", primary: "#4ad7ff", secondary: "#3b82f6" },
+  { label: "Signal", primary: "#22c55e", secondary: "#14b8a6" },
+  { label: "Ember", primary: "#f97316", secondary: "#ef4444" },
+] as const;
 
 function reorderList(items: string[], fromIndex: number, toIndex: number): string[] {
   if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
@@ -208,6 +223,102 @@ const SettingsPage: React.FC = () => {
           ))}
         </div>
         <div className="muted">Режим «Как в системе» автоматически синхронизируется с настройками Windows и macOS.</div>
+      </div>
+
+      <div className="card stack">
+        <div className="stack" style={{ gap: 6 }}>
+          <h3 style={{ margin: 0 }}>Акцентные цвета</h3>
+          <div className="muted">
+            Основной и дополнительный цвет применяются сразу и влияют на web/desktop-оболочку Console.
+          </div>
+        </div>
+
+        <div className="settings-theme-presets">
+          {ACCENT_PRESETS.map((preset) => {
+            const active =
+              settings.primaryAccent === preset.primary.toLowerCase() &&
+              settings.secondaryAccent === preset.secondary.toLowerCase();
+
+            return (
+              <button
+                key={preset.label}
+                className={`settings-theme-preset${active ? " active" : ""}`}
+                onClick={() =>
+                  updateSettings((prev) => ({
+                    ...prev,
+                    primaryAccent: preset.primary,
+                    secondaryAccent: preset.secondary,
+                  }))
+                }
+                type="button"
+              >
+                <span
+                  className="settings-theme-preset__swatch"
+                  style={{ background: `linear-gradient(135deg, ${preset.primary}, ${preset.secondary})` }}
+                />
+                <span className="settings-theme-preset__title">{preset.label}</span>
+                <span className="muted">
+                  {preset.primary.toUpperCase()} / {preset.secondary.toUpperCase()}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="settings-theme-grid">
+          <label className="settings-theme-color-card">
+            <span className="label">Основной цвет</span>
+            <div className="settings-theme-color-row">
+              <input
+                className="settings-theme-color-input"
+                onChange={(event) => updateSettings((prev) => ({ ...prev, primaryAccent: event.target.value }))}
+                type="color"
+                value={settings.primaryAccent}
+              />
+              <code className="settings-theme-color-value">{settings.primaryAccent.toUpperCase()}</code>
+            </div>
+          </label>
+
+          <label className="settings-theme-color-card">
+            <span className="label">Дополнительный цвет</span>
+            <div className="settings-theme-color-row">
+              <input
+                className="settings-theme-color-input"
+                onChange={(event) => updateSettings((prev) => ({ ...prev, secondaryAccent: event.target.value }))}
+                type="color"
+                value={settings.secondaryAccent}
+              />
+              <code className="settings-theme-color-value">{settings.secondaryAccent.toUpperCase()}</code>
+            </div>
+          </label>
+        </div>
+
+        <div
+          className="settings-theme-preview"
+          style={{ background: `linear-gradient(135deg, ${settings.primaryAccent}, ${settings.secondaryAccent})` }}
+        >
+          <div className="settings-theme-preview__badge">Live Preview</div>
+          <div className="settings-theme-preview__title">Console Palette</div>
+          <div className="settings-theme-preview__text">
+            Карточки, кнопки и активные вкладки используют эту пару цветов в текущей теме.
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            className="btn secondary"
+            onClick={() =>
+              updateSettings((prev) => ({
+                ...prev,
+                primaryAccent: DEFAULT_PRIMARY_ACCENT,
+                secondaryAccent: DEFAULT_SECONDARY_ACCENT,
+              }))
+            }
+            type="button"
+          >
+            Сбросить цвета
+          </button>
+        </div>
       </div>
 
       <div className="card stack">

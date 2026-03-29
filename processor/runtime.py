@@ -78,6 +78,8 @@ def default_config() -> dict[str, Any]:
         "face_scan_divisor": 8,
         "overlay_frame_divisor": 1,
         "face_scan_interval": 0.35,
+        "theme_primary_color": "#49C8E8",
+        "theme_secondary_color": "#4C6FFF",
         "recording_segment_seconds": 300,
         "recordings_dir": str(base_dir() / "media" / "recordings"),
         "snapshots_dir": str(base_dir() / "media" / "snapshots"),

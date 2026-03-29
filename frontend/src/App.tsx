@@ -43,12 +43,18 @@ function resolveThemeMode(mode: ThemeMode): "dark" | "light" {
   return "dark";
 }
 
+function applyAccentPalette(settings: UiSettings): void {
+  document.documentElement.style.setProperty("--accent", settings.primaryAccent);
+  document.documentElement.style.setProperty("--accent-2", settings.secondaryAccent);
+}
+
 function ThemeSync({ settings }: { settings: UiSettings }) {
   useEffect(() => {
     const applyTheme = () => {
       const resolved = resolveThemeMode(settings.themeMode);
       document.documentElement.dataset.theme = resolved;
       document.documentElement.style.colorScheme = resolved;
+      applyAccentPalette(settings);
     };
 
     applyTheme();
@@ -61,7 +67,7 @@ function ThemeSync({ settings }: { settings: UiSettings }) {
     const handleChange = () => applyTheme();
     media.addEventListener("change", handleChange);
     return () => media.removeEventListener("change", handleChange);
-  }, [settings.themeMode]);
+  }, [settings.primaryAccent, settings.secondaryAccent, settings.themeMode]);
 
   return null;
 }
