@@ -5,6 +5,24 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+derive_compose_project_name() {
+    local raw_name transliterated sanitized
+    raw_name="$(basename "$PROJECT_DIR")"
+    transliterated="$(printf '%s' "$raw_name" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$raw_name")"
+    sanitized="$(printf '%s' "$transliterated" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+    if [ -z "$sanitized" ]; then
+        sanitized="cctvlocal"
+    fi
+    printf '%s\n' "$sanitized"
+}
+
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(derive_compose_project_name)}"
+export COMPOSE_PROJECT_NAME
+
+compose_cmd() {
+    docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
+}
+
 cd "$PROJECT_DIR"
 
 echo "!!! ВНИМАНИЕ !!!"
@@ -17,21 +35,21 @@ if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
 fi
 
 echo "Остановка сервера..."
-docker compose down
+compose_cmd down
 
 echo "Удаление базы данных..."
-docker volume rm "$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')_pgdata" 2>/dev/null || \
+docker volume rm "${COMPOSE_PROJECT_NAME}_pgdata" 2>/dev/null || \
 docker volume rm cctv_pgdata 2>/dev/null || \
 echo "Volume не найден, продолжаем..."
 
 echo "Запуск с чистой базой..."
-docker compose up -d --build db backend mediamtx
+compose_cmd up -d --build db backend mediamtx
 
 echo ""
 echo "Ожидание инициализации..."
 sleep 8
 
-docker compose ps
+compose_cmd ps
 
 echo ""
 echo "=== Чистый старт выполнен ==="

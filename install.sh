@@ -12,6 +12,7 @@ CCTV_INSTALL_DIR="${CCTV_INSTALL_DIR:-}"
 CCTV_FORCE_OVERWRITE_ENV="${CCTV_FORCE_OVERWRITE_ENV:-0}"
 CCTV_DOMAIN="${CCTV_DOMAIN:-}"
 CCTV_DB_PASSWORD="${CCTV_DB_PASSWORD:-}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
 
 # Цвета
 RED='\033[0;31m'
@@ -38,6 +39,30 @@ log_info()    { echo -e "${GREEN}[✓]${NC} $1"; }
 log_warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
 log_error()   { echo -e "${RED}[✗]${NC} $1"; }
 log_step()    { echo -e "${BLUE}[→]${NC} $1"; }
+
+derive_compose_project_name() {
+    local source_path="$1"
+    local raw_name transliterated sanitized
+    raw_name="$(basename "$source_path")"
+    transliterated="$(printf '%s' "$raw_name" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$raw_name")"
+    sanitized="$(printf '%s' "$transliterated" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+    if [ -z "$sanitized" ]; then
+        sanitized="cctvlocal"
+    fi
+    printf '%s\n' "$sanitized"
+}
+
+ensure_compose_project_name() {
+    if [ -z "$COMPOSE_PROJECT_NAME" ]; then
+        COMPOSE_PROJECT_NAME="$(derive_compose_project_name "${1:-$PWD}")"
+    fi
+    export COMPOSE_PROJECT_NAME
+    log_info "Docker Compose project: $COMPOSE_PROJECT_NAME"
+}
+
+compose_cmd() {
+    docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
+}
 
 # Проверка root
 check_root() {
@@ -143,6 +168,7 @@ choose_install_dir() {
             sudo chown "$USER:$USER" "$(dirname "$INSTALL_DIR")"
         fi
         log_info "Директория установки: $INSTALL_DIR"
+        ensure_compose_project_name "$INSTALL_DIR"
         return
     fi
 
@@ -185,6 +211,7 @@ choose_install_dir() {
     fi
 
     log_info "Директория установки: $INSTALL_DIR"
+    ensure_compose_project_name "$INSTALL_DIR"
 }
 
 # Клонирование или обновление репозитория
@@ -272,10 +299,10 @@ start_services() {
     cd "$INSTALL_DIR"
 
     # Останавливаем старое и удаляем volumes для чистого старта
-    docker compose down -v 2>/dev/null || true
+    compose_cmd down -v 2>/dev/null || true
 
     # Собираем и запускаем
-    docker compose up -d --build db backend mediamtx
+    compose_cmd up -d --build db backend mediamtx
 
     echo ""
     log_step "Ожидание запуска сервисов..."
@@ -293,7 +320,7 @@ start_services() {
     echo ""
 
     if [ $retries -eq 0 ]; then
-        log_warn "Бэкенд долго запускается. Проверьте логи: docker compose logs backend"
+        log_warn "Бэкенд долго запускается. Проверьте логи: docker compose -p $COMPOSE_PROJECT_NAME logs backend"
     else
         log_info "Бэкенд готов"
     fi
@@ -301,16 +328,16 @@ start_services() {
 
 # Вывод итогов
 print_summary() {
-    LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+    local summary_host="${DOMAIN:-localhost}"
 
     echo ""
     echo -e "${CYAN}════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  ✓ CCTV Console успешно установлен!${NC}"
     echo -e "${CYAN}════════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${BLUE}API:${NC}         http://$LOCAL_IP:8000"
-    echo -e "  ${BLUE}Swagger:${NC}     http://$LOCAL_IP:8000/docs"
-    echo -e "  ${BLUE}RTSP:${NC}        rtsp://$LOCAL_IP:8554"
+    echo -e "  ${BLUE}API:${NC}         http://$summary_host:8000"
+    echo -e "  ${BLUE}Swagger:${NC}     http://$summary_host:8000/docs"
+    echo -e "  ${BLUE}RTSP:${NC}        rtsp://$summary_host:8554"
     echo ""
     echo -e "  ${YELLOW}Логин:${NC}       admin"
     echo -e "  ${YELLOW}Пароль:${NC}      admin"
@@ -327,7 +354,7 @@ print_summary() {
     echo ""
     echo -e "  ${CYAN}Подключение клиентов:${NC}"
     echo -e "  В Desktop/Mobile приложении укажите URL сервера:"
-    echo -e "  ${GREEN}http://$LOCAL_IP:8000${NC}"
+    echo -e "  ${GREEN}http://$summary_host:8000${NC}"
     echo ""
 }
 
