@@ -188,6 +188,7 @@ function Layout({ uiSettings }: { uiSettings: UiSettings }) {
   const menuActive = secondaryTabs.some((tab) => location.pathname.startsWith(tab.to));
   const roleLabel = isAdmin ? "Администратор" : user?.role_id === 2 ? "Оператор" : "Наблюдатель";
   const roleClass = isAdmin ? "role-admin" : user?.role_id === 2 ? "role-user" : "role-viewer";
+  const userDisplayName = [user?.last_name, user?.first_name, user?.middle_name].filter(Boolean).join(" ") || user?.login || "";
 
   return (
     <div className="shell app-shell">
@@ -234,7 +235,7 @@ function Layout({ uiSettings }: { uiSettings: UiSettings }) {
         {user && (
           <div className="user-panel">
             <div className="user-panel__meta">
-              <div className="user-panel__name">{user.login}</div>
+              <div className="user-panel__name">{userDisplayName}</div>
               <span className={`role-badge ${roleClass}`}>{roleLabel}</span>
             </div>
             <button className="btn secondary" onClick={logout}>

@@ -99,16 +99,47 @@ export async function loginApi(login: string, password: string, totp_code?: stri
   );
 }
 
+export type CurrentUser = {
+  user_id: number;
+  login: string;
+  role_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  middle_name: string | null;
+  face_login_enabled: boolean;
+  must_change_password: boolean;
+  totp_enabled: boolean;
+};
+
 export async function me(token: string) {
-  return request<{ user_id: number; login: string; role_id: number; face_login_enabled: boolean; must_change_password: boolean }>(
-    "/auth/me",
-    "GET",
-    token
-  );
+  return request<CurrentUser>("/auth/me", "GET", token);
 }
 
 export async function changePassword(token: string, current_password: string, new_password: string) {
   return request<{ ok: boolean }>("/auth/change-password", "POST", token, { current_password, new_password });
+}
+
+export async function updateProfile(
+  token: string,
+  payload: { first_name?: string | null; last_name?: string | null; middle_name?: string | null }
+) {
+  return request<CurrentUser>("/auth/profile", "PATCH", token, payload);
+}
+
+export async function getTotpStatus(token: string) {
+  return request<{ enabled: boolean }>("/auth/totp/status", "GET", token);
+}
+
+export async function setupTotp(token: string) {
+  return request<{ secret: string; provisioning_uri: string }>("/auth/totp/setup", "POST", token);
+}
+
+export async function activateTotp(token: string, code: string) {
+  return request<{ enabled: boolean }>("/auth/totp/activate", "POST", token, { code });
+}
+
+export async function disableTotp(token: string) {
+  return request<{ enabled: boolean }>("/auth/totp/disable", "POST", token);
 }
 
 export async function getCameras(token: string, groupId?: number | null) {
@@ -545,6 +576,9 @@ export type UserOut = {
   user_id: number;
   login: string;
   role_id: number;
+  first_name: string | null;
+  last_name: string | null;
+  middle_name: string | null;
   face_login_enabled: boolean;
   must_change_password: boolean;
 };
@@ -553,8 +587,18 @@ export async function adminListUsers(token: string) {
   return request<UserOut[]>("/admin/users", "GET", token);
 }
 
-export async function adminCreateUser(token: string, login: string, password: string, role_id: number) {
-  return request<UserOut>("/admin/users", "POST", token, { login, password, role_id });
+export async function adminCreateUser(
+  token: string,
+  payload: {
+    login: string;
+    password: string;
+    role_id: number;
+    first_name?: string;
+    last_name?: string;
+    middle_name?: string;
+  }
+) {
+  return request<UserOut>("/admin/users", "POST", token, payload);
 }
 
 export async function adminDeleteUser(token: string, userId: number) {

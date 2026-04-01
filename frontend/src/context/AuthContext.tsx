@@ -1,45 +1,55 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { me } from "../lib/api";
-
-type User = {
-  user_id: number;
-  login: string;
-  role_id: number;
-  face_login_enabled: boolean;
-};
+import { me, type CurrentUser } from "../lib/api";
 
 type AuthContextValue = {
-  user: User | null;
+  user: CurrentUser | null;
   token: string | null;
-  login: (token: string, user: User) => void;
+  login: (token: string, user: CurrentUser) => void;
   logout: () => void;
   loading: boolean;
+  refreshUser: () => Promise<CurrentUser | null>;
+  replaceUser: (user: CurrentUser | null) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
 const STORAGE_KEY = "cctv_token";
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState<boolean>(!!token);
 
+  const refreshUser = async (): Promise<CurrentUser | null> => {
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return null;
+    }
+
+    try {
+      const data = await me(token);
+      setUser(data);
+      return data;
+    } catch (error) {
+      console.error("Failed to fetch profile", error);
+      setToken(null);
+      setUser(null);
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const init = async () => {
-      if (!token) return;
-      try {
-        const data = await me(token);
-        setUser(data);
-      } catch (e) {
-        console.error("Failed to fetch profile", e);
-        setToken(null);
-        localStorage.removeItem(STORAGE_KEY);
-      } finally {
-        setLoading(false);
-      }
-    };
-    init();
+    if (!token) {
+      setLoading(false);
+      setUser(null);
+      return;
+    }
+
+    setLoading(true);
+    void refreshUser();
   }, [token]);
 
   const value = useMemo<AuthContextValue>(
@@ -57,6 +67,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setToken(null);
         setUser(null);
       },
+      refreshUser,
+      replaceUser: setUser,
     }),
     [user, token, loading]
   );
