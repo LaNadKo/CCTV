@@ -79,6 +79,15 @@ class EndpointInfo(BaseModel):
     endpoint_url: str
     username: str | None = None
     password_secret: str | None = None
+    is_primary: bool = False
+
+
+class PresetInfo(BaseModel):
+    camera_preset_id: int
+    name: str
+    preset_token: str | None = None
+    order_index: int = 0
+    dwell_seconds: int = 10
 
 
 class CameraAssignment(BaseModel):
@@ -90,7 +99,12 @@ class CameraAssignment(BaseModel):
     recording_mode: str
     tracking_enabled: bool
     tracking_mode: str
+    tracking_target_person_id: int | None = None
+    connection_kind: str = "manual"
+    supports_ptz: bool = False
+    onvif_profile_token: str | None = None
     endpoints: list[EndpointInfo] = []
+    presets: list[PresetInfo] = []
 
 
 # ── Events ──

@@ -1,4 +1,4 @@
-from typing import List, Optional
+﻿from typing import List, Optional
 import logging
 
 import httpx
@@ -6,13 +6,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
 from app.permissions import check_permission, user_camera_permission_sync
 from app.processor_media import get_processor_media_base_url, get_processor_media_headers
-from app.schemas.cameras import CameraOut, CameraPermissionOut
+from app.schemas.cameras import CameraEndpointInfo, CameraOut, CameraPermissionOut
+from app.services.onvif import (
+    endpoint_has_onvif,
+    endpoint_kinds,
+    load_device_metadata,
+    primary_stream_url,
+    read_ptz_capabilities,
+)
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 log = logging.getLogger("app.activity")
@@ -59,39 +67,45 @@ async def list_cameras(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[CameraOut]:
+    stmt = select(models.Camera).where(models.Camera.deleted_at.is_(None)).options(selectinload(models.Camera.endpoints))
     if group_id is not None:
-        result = await session.execute(
-            select(models.Camera).where(
-                models.Camera.group_id == group_id,
-                models.Camera.deleted_at.is_(None),
-            )
-        )
-    else:
-        result = await session.execute(
-            select(models.Camera).where(models.Camera.deleted_at.is_(None))
-        )
-    cams = result.scalars().all()
+        stmt = stmt.where(models.Camera.group_id == group_id)
+    result = await session.execute(stmt)
+    cameras = result.scalars().all()
 
-    perm = user_camera_permission_sync(current_user)
-    if perm is None:
+    permission = user_camera_permission_sync(current_user)
+    if permission is None:
         return []
 
     return [
         CameraOut(
-            camera_id=cam.camera_id,
-            name=cam.name,
-            location=cam.location,
-            ip_address=cam.ip_address,
-            stream_url=cam.stream_url,
-            permission=perm,
-            detection_enabled=cam.detection_enabled,
-            recording_mode=cam.recording_mode,
-            tracking_enabled=cam.tracking_enabled,
-            tracking_mode=cam.tracking_mode,
-            tracking_target_person_id=cam.tracking_target_person_id,
-            group_id=cam.group_id,
+            camera_id=camera.camera_id,
+            name=camera.name,
+            location=camera.location,
+            ip_address=camera.ip_address,
+            stream_url=primary_stream_url(camera.stream_url, camera.endpoints),
+            permission=permission,
+            detection_enabled=camera.detection_enabled,
+            recording_mode=camera.recording_mode,
+            tracking_enabled=camera.tracking_enabled,
+            tracking_mode=camera.tracking_mode,
+            tracking_target_person_id=camera.tracking_target_person_id,
+            group_id=camera.group_id,
+            connection_kind=camera.connection_kind,
+            onvif_enabled=endpoint_has_onvif(camera.endpoints),
+            supports_ptz=camera.supports_ptz,
+            ptz_capabilities=read_ptz_capabilities(load_device_metadata(camera.device_metadata), camera.supports_ptz),
+            endpoint_kinds=endpoint_kinds(camera.endpoints),
+            endpoints=[
+                CameraEndpointInfo(
+                    endpoint_kind=endpoint.endpoint_kind,
+                    endpoint_url=endpoint.endpoint_url,
+                    is_primary=endpoint.is_primary,
+                )
+                for endpoint in camera.endpoints
+            ],
         )
-        for cam in cams
+        for camera in cameras
     ]
 
 
@@ -107,11 +121,11 @@ async def get_camera_permission(
             models.Camera.deleted_at.is_(None),
         )
     )
-    cam = result.scalar_one_or_none()
-    if cam is None:
+    camera = result.scalar_one_or_none()
+    if camera is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
-    perm = user_camera_permission_sync(current_user)
-    return CameraPermissionOut(camera_id=camera_id, permission=perm, allowed=perm is not None)
+    permission = user_camera_permission_sync(current_user)
+    return CameraPermissionOut(camera_id=camera_id, permission=permission, allowed=permission is not None)
 
 
 @router.get("/{camera_id}/stream")
@@ -121,12 +135,12 @@ async def stream_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user_allow_query),
 ):
-    cam = await session.get(models.Camera, camera_id)
-    if cam is None or cam.deleted_at is not None:
+    camera = await session.get(models.Camera, camera_id)
+    if camera is None or camera.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
 
-    perm = user_camera_permission_sync(current_user)
-    if not check_permission(perm, "view"):
+    permission = user_camera_permission_sync(current_user)
+    if not check_permission(permission, "view"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this camera")
 
     assignment_result = await session.execute(
@@ -145,14 +159,14 @@ async def stream_camera(
             detail="Live stream is available only through an assigned processor",
         )
 
-    _, proc = assignment_row
+    _, processor = assignment_row
     try:
-        return await _proxy_processor_camera_stream(proc, camera_id, overlay=annotate)
+        return await _proxy_processor_camera_stream(processor, camera_id, overlay=annotate)
     except Exception as exc:
         log.warning(
             "camera.stream.processor_proxy_failed camera=%s processor=%s reason=%s",
             camera_id,
-            proc.processor_id,
+            processor.processor_id,
             exc,
         )
         raise HTTPException(

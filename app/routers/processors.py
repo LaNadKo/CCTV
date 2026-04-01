@@ -23,6 +23,7 @@ from app.schemas.processors import (
     AssignedCameraInfo,
     CameraAssignment,
     EndpointInfo,
+    PresetInfo,
     GalleryEntry,
     GenerateCodeOut,
     ProcessorConnect,
@@ -281,14 +282,30 @@ async def get_assignments(
         ep_result = await session.execute(
             select(models.CameraEndpoint).where(models.CameraEndpoint.camera_id == cam.camera_id)
         )
+        preset_result = await session.execute(
+            select(models.CameraPreset)
+            .where(models.CameraPreset.camera_id == cam.camera_id)
+            .order_by(models.CameraPreset.order_index.asc(), models.CameraPreset.camera_preset_id.asc())
+        )
         endpoints = [
             EndpointInfo(
                 endpoint_kind=e.endpoint_kind,
                 endpoint_url=e.endpoint_url,
                 username=e.username,
                 password_secret=e.password_secret,
+                is_primary=e.is_primary,
             )
             for e in ep_result.scalars().all()
+        ]
+        presets = [
+            PresetInfo(
+                camera_preset_id=row.camera_preset_id,
+                name=row.name,
+                preset_token=row.preset_token,
+                order_index=row.order_index,
+                dwell_seconds=row.dwell_seconds,
+            )
+            for row in preset_result.scalars().all()
         ]
         out.append(CameraAssignment(
             camera_id=cam.camera_id,
@@ -299,7 +316,12 @@ async def get_assignments(
             recording_mode=cam.recording_mode,
             tracking_enabled=cam.tracking_enabled,
             tracking_mode=cam.tracking_mode,
+            tracking_target_person_id=cam.tracking_target_person_id,
+            connection_kind=cam.connection_kind,
+            supports_ptz=cam.supports_ptz,
+            onvif_profile_token=cam.onvif_profile_token,
             endpoints=endpoints,
+            presets=presets,
         ))
     return out
 

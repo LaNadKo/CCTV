@@ -65,11 +65,15 @@ class Group(Base):
 
 class Camera(Base):
     __tablename__ = "cameras"
+    __table_args__ = (
+        CheckConstraint("connection_kind IN ('manual', 'onvif', 'rtsp', 'http')", name="cameras_connection_kind_chk"),
+    )
 
     camera_id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
     stream_url: Mapped[Optional[str]] = mapped_column(String(500))
+    connection_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default="manual")
     status_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("statuses.status_id", ondelete="SET NULL")
     )
@@ -87,11 +91,18 @@ class Camera(Base):
     tracking_target_person_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("persons.person_id", ondelete="SET NULL")
     )
+    supports_ptz: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    onvif_profile_token: Mapped[Optional[str]] = mapped_column(String(255))
+    device_metadata: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
 
     status: Mapped[Optional[Status]] = relationship()
     group: Mapped[Optional[Group]] = relationship()
+    endpoints: Mapped[list["CameraEndpoint"]] = relationship(back_populates="camera", cascade="all, delete-orphan")
+    presets: Mapped[list["CameraPreset"]] = relationship(back_populates="camera", cascade="all, delete-orphan")
+    roi_zones: Mapped[list["CameraRoiZone"]] = relationship(back_populates="camera", cascade="all, delete-orphan")
+    events: Mapped[list["Event"]] = relationship(back_populates="camera")
 
 
 class CameraEndpoint(Base):
@@ -110,7 +121,7 @@ class CameraEndpoint(Base):
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
 
-    camera: Mapped[Camera] = relationship()
+    camera: Mapped[Camera] = relationship(back_populates="endpoints")
 
 
 class VideoStream(Base):
@@ -296,7 +307,7 @@ class Event(Base):
     # Phase 3: object tracking
     track_id: Mapped[Optional[int]] = mapped_column(Integer)
 
-    camera: Mapped[Camera] = relationship()
+    camera: Mapped[Camera] = relationship(back_populates="events")
     event_type: Mapped[EventType] = relationship()
     person: Mapped[Optional[Person]] = relationship()
     recording_file: Mapped[Optional[RecordingFile]] = relationship()
@@ -502,7 +513,7 @@ class CameraPreset(Base):
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     dwell_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=10, server_default="10")
 
-    camera: Mapped[Camera] = relationship()
+    camera: Mapped[Camera] = relationship(back_populates="presets")
 
 
 # ── Phase 3: ROI Zones ──
@@ -519,7 +530,7 @@ class CameraRoiZone(Base):
     zone_type: Mapped[str] = mapped_column(String(20), nullable=False, default="include", server_default="include")
     polygon_points: Mapped[Optional[str]] = mapped_column(Text)  # JSON array of {x, y}
 
-    camera: Mapped[Camera] = relationship()
+    camera: Mapped[Camera] = relationship(back_populates="roi_zones")
 
 
 # ── Phase 5: Homes (Xiaomi Home style) ──

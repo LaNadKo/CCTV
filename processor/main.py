@@ -101,18 +101,30 @@ class ProcessorService:
                     self._gallery_loaded_at = now
                 for a in assignments:
                     cid = a["camera_id"]
-                    if cid not in self.workers:
-                        source = resolve_source(a)
-                        if source is None:
-                            logger.warning("No source for camera %d", cid)
-                            continue
+                    source = resolve_source(a)
+                    if source is None:
+                        logger.warning("No source for camera %d", cid)
+                        continue
+                    worker = self.workers.get(cid)
+                    if worker is None:
                         worker = CameraWorker(a, self.client, source)
                         await worker.set_gallery(self._gallery)
                         self.workers[cid] = worker
                         asyncio.create_task(worker.start(self.processor_id))
                         logger.info("Started worker for camera %d", cid)
-                    else:
-                        await self.workers[cid].set_gallery(self._gallery)
+                        continue
+
+                    if worker.source != source:
+                        worker.stop()
+                        replacement = CameraWorker(a, self.client, source)
+                        await replacement.set_gallery(self._gallery)
+                        self.workers[cid] = replacement
+                        asyncio.create_task(replacement.start(self.processor_id))
+                        logger.info("Restarted worker for camera %d after source update", cid)
+                        continue
+
+                    await worker.update_assignment(a)
+                    await worker.set_gallery(self._gallery)
             except Exception:
                 logger.exception("Assignment poll failed")
             await asyncio.sleep(settings.poll_interval)
