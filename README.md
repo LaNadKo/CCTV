@@ -65,6 +65,118 @@ Console (Web / Electron)
                     +----> RTSP / ONVIF / локальные источники
 ```
 
+## Схемы работы
+
+### 1. Схема развёртывания
+
+```text
+┌────────────────────┐
+│   Console Web      │
+│   Console Desktop  │
+└─────────┬──────────┘
+          │ HTTP / JWT
+          v
+┌────────────────────┐
+│   Backend API      │
+│   FastAPI          │
+└───┬─────────┬──────┘
+    │         │
+    │         └─────────────────────┐
+    v                               v
+┌───────────────┐           ┌────────────────┐
+│ PostgreSQL    │           │ MediaMTX       │
+│ users/events  │           │ RTSP server    │
+└───────────────┘           └────────────────┘
+                                        ^
+                                        │
+                           publish / consume media
+                                        │
+                               ┌────────┴────────┐
+                               │   Processor     │
+                               │ detection/track │
+                               └────────┬────────┘
+                                        │
+                                        v
+                               ┌─────────────────┐
+                               │ RTSP / ONVIF /  │
+                               │ local sources   │
+                               └─────────────────┘
+```
+
+### 2. Медиапоток live и архива
+
+```text
+Camera / RTSP source
+        |
+        v
+   Processor
+   - opens stream
+   - detects face/person
+   - draws overlay
+   - writes snapshots / recordings
+        |
+        +----------------------> Backend metadata
+        |                        - detections
+        |                        - review queue
+        |                        - recording index
+        |
+        +----------------------> Media endpoint / file storage
+                                 |
+                                 v
+                           Console requests
+                           - live stream
+                           - recordings
+                           - event snapshots
+```
+
+### 3. Подключение Processor
+
+```text
+Administrator in Console
+        |
+        | generate connection code
+        v
+     Backend
+        |
+        | one-time registration data
+        v
+    Processor GUI
+        |
+        | sends code + backend URL
+        v
+     Backend
+        |
+        | returns processor identity + API key
+        v
+    Processor runtime
+        |
+        +--> heartbeat
+        +--> gallery sync
+        +--> camera assignments
+        +--> detections / media metadata
+```
+
+### 4. Цепочка ревью событий
+
+```text
+Camera frame
+    |
+    v
+Processor detection
+    |
+    +--> known person  ---------> event in backend
+    |
+    +--> unknown / uncertain ---> review queue
+                                   |
+                                   v
+                              Console / Review
+                                   |
+                    approve + assign person / reject
+                                   |
+                                   v
+                              reports / timeline / archive
+```
+
 ## Состав проекта
 
 | Компонент | Назначение | Технологии |
@@ -91,9 +203,9 @@ Console (Web / Electron)
 rtsp://192.168.50.3:554/stream1
 ```
 
-### 2. Демонстрация без полноценной IP-камеры
+### 2. Работа через локальный RTSP-источник
 
-Если нужно показать систему только с веб-камерой ноутбука или USB-камерой, можно опубликовать поток в `MediaMTX` через `ffmpeg`, а затем использовать его как обычный `RTSP`-источник.
+Если под рукой нет отдельной IP-камеры, можно опубликовать поток с веб-камеры ноутбука или USB-камеры в `MediaMTX` через `ffmpeg`, а затем использовать его как обычный `RTSP`-источник.
 
 Пример для Windows:
 
@@ -284,23 +396,6 @@ README.md
 - `PyTorch`
 - `MediaMTX`
 - `Docker Compose`
-
-## Для демонстрации
-
-Если нужно быстро показать программу:
-- поднять `backend + db + mediamtx`
-- войти в `Console` под `admin`
-- подключить `Processor`
-- либо добавить реальную IP-камеру
-- либо подать поток с веб-камеры через `ffmpeg` в `MediaMTX`
-
-Этого достаточно, чтобы продемонстрировать:
-- live
-- ревью
-- базу персон
-- записи
-- отчёты
-- работу `Processor`
 
 ## Примечание
 
