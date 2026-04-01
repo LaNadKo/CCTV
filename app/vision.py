@@ -155,29 +155,15 @@ async def load_gallery(session: AsyncSession) -> List[Tuple[int, np.ndarray, str
         .join(models.Person, models.PersonEmbedding.person_id == models.Person.person_id)
     )
     rows = res.all()
-    if rows:
-        for emb_row, p in rows:
-            try:
-                emb = np.frombuffer(emb_row.embedding, dtype=np.float32)
-                if emb.size == 0:
-                    continue
-                emb = _normalize_vec(emb)
-                gallery.append((p.person_id, emb, _person_label(p)))
-            except Exception:
+    for emb_row, p in rows:
+        try:
+            emb = np.frombuffer(emb_row.embedding, dtype=np.float32)
+            if emb.size == 0:
                 continue
-    else:
-        # legacy fallback
-        res = await session.execute(select(models.Person).where(models.Person.embeddings.is_not(None)))
-        persons = res.scalars().all()
-        for p in persons:
-            try:
-                emb = np.frombuffer(p.embeddings, dtype=np.float32)
-                if emb.size == 0:
-                    continue
-                emb = _normalize_vec(emb)
-                gallery.append((p.person_id, emb, _person_label(p)))
-            except Exception:
-                continue
+            emb = _normalize_vec(emb)
+            gallery.append((p.person_id, emb, _person_label(p)))
+        except Exception:
+            continue
     log.info("gallery.loaded total=%d", len(gallery))
     return gallery
 

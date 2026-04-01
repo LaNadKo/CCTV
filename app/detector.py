@@ -372,14 +372,15 @@ class DetectionManager:
 
     async def _refresh_gallery(self, session: AsyncSession) -> None:
         res = await session.execute(
-            select(models.Person).where(models.Person.embeddings.is_not(None))
+            select(models.PersonEmbedding.person_id, models.PersonEmbedding.embedding)
+            .join(models.Person, models.Person.person_id == models.PersonEmbedding.person_id)
+            .where(models.Person.deleted_at.is_(None))
         )
-        persons = res.scalars().all()
         gallery: List[Tuple[int, np.ndarray]] = []
-        for p in persons:
+        for person_id, raw_embedding in res.all():
             try:
-                emb = np.frombuffer(p.embeddings, dtype=np.float32)
-                gallery.append((p.person_id, emb))
+                emb = np.frombuffer(raw_embedding, dtype=np.float32)
+                gallery.append((person_id, emb))
             except Exception:
                 continue
         self._gallery = gallery
