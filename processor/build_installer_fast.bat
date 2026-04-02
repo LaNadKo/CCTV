@@ -43,7 +43,7 @@ if errorlevel 1 (
 echo.
 echo ============================================
 echo   FAST BUILD COMPLETE!
-echo   Installer: installer_output\CCTV-Processor-Setup-1.0.0.exe
+echo   Installer set: installer_output\CCTV-Processor-Setup-1.0.0.exe + *.bin
 echo   Mode: zip compression, no solid archive, CLI skipped
 echo ============================================
 pause

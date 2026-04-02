@@ -31,6 +31,10 @@ OutputDir=installer_output
 OutputBaseFilename=CCTV-Processor-Setup-{#MyAppVersion}
 Compression={#MyCompression}
 SolidCompression={#MySolidCompression}
+; The packaged Processor distribution is larger than a single Setup.exe can hold.
+; Emit Setup.exe plus .bin slices instead of aborting near the Windows file size limit.
+DiskSpanning=yes
+DiskSliceSize=max
 WizardStyle=modern
 SetupIconFile=assets\icon.ico
 PrivilegesRequired=lowest
