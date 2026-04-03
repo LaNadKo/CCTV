@@ -344,9 +344,18 @@ python run_gui.py --headless
 
 ## Сборка приложений
 
+Перед сборкой на чистом Windows-ПК должны быть установлены:
+- `Node.js` и `npm`
+- `Python 3.11`
+- `Inno Setup 6` (`ISCC.exe`)
+
+Для первой Windows-сборки `Console` рекомендуется либо включить `Windows Developer Mode`, либо запускать терминал от имени администратора. Иначе `electron-builder` может завершиться ошибкой при распаковке `winCodeSign` с сообщением о невозможности создать symbolic link. Также при первой сборке требуется доступ в интернет для загрузки служебных бинарников `electron-builder`.
+
 ### Console Installer / Portable
 
 ```bash
+cd frontend
+npm install
 cd desktop
 npm install
 npm run build:win
@@ -360,6 +369,7 @@ npm run build:win
 
 ```bash
 cd processor
+pip install -r requirements.txt
 python build_exe.py
 iscc installer.iss
 ```
