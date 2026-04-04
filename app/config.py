@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +33,17 @@ class Settings(BaseSettings):
         default="processor-secret-key-2026",
         validation_alias="PROCESSOR_API_KEY",
     )
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, value):
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"release", "prod", "production", "0", "false", "no", "off"}:
+                return False
+            if lowered in {"debug", "dev", "development", "1", "true", "yes", "on"}:
+                return True
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

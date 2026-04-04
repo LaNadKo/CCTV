@@ -325,8 +325,6 @@ async def add_embedding_from_photo(
                 source="photo",
             )
         )
-        if not person.embeddings:
-            person.embeddings = emb.astype(np.float32).tobytes()
         await session.commit()
         _invalidate_gallery_cache()
     return {"person_id": person.person_id, "embedding_len": len(emb), "status": status_name, "max_similarity": max_sim}

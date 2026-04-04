@@ -1,5 +1,6 @@
 import logging
 import time
+from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.config import settings
-from app.routers import auth, groups, cameras, users, admin, detections, api_keys, recordings
+from app.routers import auth, groups, cameras, admin, detections, api_keys, recordings
 from app.routers import processors as processors_router
 from app.routers import persons as persons_router
 from app.routers import reports as reports_router
@@ -88,7 +89,6 @@ async def health_db(session: AsyncSession = Depends(db.get_session)) -> dict:
 app.include_router(auth.router)
 app.include_router(groups.router)
 app.include_router(cameras.router)
-app.include_router(users.router)
 if _has_face:
     app.include_router(face_router.router)
 app.include_router(admin.router)
@@ -98,8 +98,13 @@ app.include_router(recordings.router)
 app.include_router(processors_router.router)
 app.include_router(persons_router.router)
 app.include_router(reports_router.router)
-app.mount("/recordings/static", StaticFiles(directory="recordings"), name="recordings-static")
-app.mount("/snapshots", StaticFiles(directory="snapshots"), name="snapshots-static")
+
+RECORDINGS_STATIC_DIR = Path("recordings")
+SNAPSHOTS_STATIC_DIR = Path("snapshots")
+RECORDINGS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+SNAPSHOTS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/recordings/static", StaticFiles(directory=str(RECORDINGS_STATIC_DIR)), name="recordings-static")
+app.mount("/snapshots", StaticFiles(directory=str(SNAPSHOTS_STATIC_DIR)), name="snapshots-static")
 
 detector_manager = None
 

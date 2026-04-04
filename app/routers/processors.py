@@ -440,31 +440,14 @@ async def get_gallery(
     )
     rows = pe_result.all()
     gallery = []
-    if rows:
-        for emb_row, p in rows:
-            label_parts = [p.last_name, p.first_name, p.middle_name]
-            label = " ".join(x for x in label_parts if x) or f"Person #{p.person_id}"
-            gallery.append(GalleryEntry(
-                person_id=p.person_id,
-                label=label,
-                embedding_b64=base64.b64encode(emb_row.embedding).decode(),
-            ))
-    else:
-        result = await session.execute(
-            select(models.Person).where(
-                models.Person.embeddings.isnot(None),
-                models.Person.deleted_at.is_(None),
-            )
-        )
-        persons = result.scalars().all()
-        for p in persons:
-            label_parts = [p.last_name, p.first_name, p.middle_name]
-            label = " ".join(x for x in label_parts if x) or f"Person #{p.person_id}"
-            gallery.append(GalleryEntry(
-                person_id=p.person_id,
-                label=label,
-                embedding_b64=base64.b64encode(p.embeddings).decode(),
-            ))
+    for emb_row, p in rows:
+        label_parts = [p.last_name, p.first_name, p.middle_name]
+        label = " ".join(x for x in label_parts if x) or f"Person #{p.person_id}"
+        gallery.append(GalleryEntry(
+            person_id=p.person_id,
+            label=label,
+            embedding_b64=base64.b64encode(emb_row.embedding).decode(),
+        ))
     _gallery_cache = gallery
     _gallery_cache_ts = now
     return gallery

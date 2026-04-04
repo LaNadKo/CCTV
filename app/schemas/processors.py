@@ -97,7 +97,7 @@ class CameraAssignment(BaseModel):
 
 class ProcessorEventIn(BaseModel):
     camera_id: int
-    event_type: str  # motion | face_recognized | face_unknown | body_detected
+    event_type: str  # face_recognized | face_unknown | motion_detected | person_detected
     person_id: int | None = None
     confidence: float | None = None
     track_id: int | None = None

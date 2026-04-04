@@ -111,6 +111,30 @@ def _l2_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(a - b))
 
 
+async def _create_person_with_embedding(
+    session: AsyncSession,
+    emb: np.ndarray,
+    first_name: str | None,
+    last_name: str | None,
+    middle_name: str | None,
+) -> models.Person:
+    person = models.Person(
+        first_name=first_name,
+        last_name=last_name,
+        middle_name=middle_name,
+    )
+    session.add(person)
+    await session.flush()
+    session.add(
+        models.PersonEmbedding(
+            person_id=person.person_id,
+            embedding=emb.astype(np.float32).tobytes(),
+            source="face_enroll",
+        )
+    )
+    return person
+
+
 @router.post("/enroll", response_model=FaceEnrollResponse)
 async def enroll_face(
     payload: FaceEmbedding,
@@ -157,13 +181,13 @@ async def enroll_person_photo(
     emb = _extract_best_face_embedding(image)
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found")
-    person = models.Person(
+    person = await _create_person_with_embedding(
+        session,
+        emb,
         first_name=first_name,
         last_name=last_name,
         middle_name=middle_name,
-        embeddings=emb.astype(np.float32).tobytes(),
     )
-    session.add(person)
     await session.commit()
     await session.refresh(person)
     return {"person_id": person.person_id, "embedding_len": len(emb)}
@@ -214,13 +238,13 @@ async def enroll_person_from_recording(
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found in frame")
 
-    person = models.Person(
+    person = await _create_person_with_embedding(
+        session,
+        emb,
         first_name=first_name,
         last_name=last_name,
         middle_name=middle_name,
-        embeddings=emb.astype(np.float32).tobytes(),
     )
-    session.add(person)
     await session.commit()
     await session.refresh(person)
     return {"person_id": person.person_id, "from_recording": recording_id, "embedding_len": len(emb)}
@@ -263,13 +287,13 @@ async def enroll_person_from_snapshot(
             raise
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found in snapshot")
-    person = models.Person(
+    person = await _create_person_with_embedding(
+        session,
+        emb,
         first_name=first_name,
         last_name=last_name,
         middle_name=middle_name,
-        embeddings=emb.astype(np.float32).tobytes(),
     )
-    session.add(person)
     await session.commit()
     await session.refresh(person)
     return {"person_id": person.person_id, "from_event": event_id, "embedding_len": len(emb)}

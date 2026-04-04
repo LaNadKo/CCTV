@@ -30,33 +30,21 @@ class Role(Base):
     name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
 
 
-class Profile(Base):
-    __tablename__ = "profiles"
-
-    profile_id: Mapped[int] = mapped_column(primary_key=True)
-    last_name: Mapped[Optional[str]] = mapped_column(String(100))
-    first_name: Mapped[Optional[str]] = mapped_column(String(100))
-    middle_name: Mapped[Optional[str]] = mapped_column(String(100))
-    email: Mapped[Optional[str]] = mapped_column(String(150), unique=True)
-    phone: Mapped[Optional[str]] = mapped_column(String(30))
-
-
 class User(Base):
     __tablename__ = "users"
 
     user_id: Mapped[int] = mapped_column(primary_key=True)
     login: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_name: Mapped[Optional[str]] = mapped_column(String(100))
+    first_name: Mapped[Optional[str]] = mapped_column(String(100))
+    middle_name: Mapped[Optional[str]] = mapped_column(String(100))
     face_login_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.role_id", ondelete="RESTRICT"), nullable=False)
-    profile_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("profiles.profile_id", ondelete="SET NULL"), unique=True
-    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
 
     role: Mapped[Role] = relationship()
-    profile: Mapped[Optional[Profile]] = relationship()
 
 
 class Status(Base):
@@ -169,55 +157,6 @@ class StorageTarget(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
 
 
-class UserCameraPermission(Base):
-    __tablename__ = "user_camera_permissions"
-    __table_args__ = (
-        CheckConstraint("permission IN ('view', 'control', 'admin')", name="user_camera_permissions_chk"),
-    )
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
-    camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.camera_id", ondelete="CASCADE"), primary_key=True)
-    permission: Mapped[str] = mapped_column(String(20), primary_key=True)
-    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    user: Mapped[User] = relationship()
-    camera: Mapped[Camera] = relationship()
-
-
-class UserGroup(Base):
-    __tablename__ = "user_groups"
-    __table_args__ = (
-        CheckConstraint("membership_role IN ('owner', 'admin', 'member')", name="user_groups_role_chk"),
-    )
-
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
-    group_id: Mapped[int] = mapped_column(ForeignKey("groups.group_id", ondelete="CASCADE"), primary_key=True)
-    membership_role: Mapped[str] = mapped_column(String(10), nullable=False, default="member", server_default="member")
-    invited_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    user: Mapped[User] = relationship(foreign_keys=[user_id])
-    invited_by_user: Mapped[Optional[User]] = relationship(foreign_keys=[invited_by])
-    group: Mapped[Group] = relationship()
-
-
-class GroupCameraPermission(Base):
-    __tablename__ = "group_camera_permissions"
-    __table_args__ = (
-        CheckConstraint("permission IN ('view', 'control', 'admin')", name="group_camera_permissions_chk"),
-        CheckConstraint("target_role IN ('admin', 'member')", name="group_camera_permissions_target_chk"),
-    )
-
-    group_id: Mapped[int] = mapped_column(ForeignKey("groups.group_id", ondelete="CASCADE"), primary_key=True)
-    camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.camera_id", ondelete="CASCADE"), primary_key=True)
-    target_role: Mapped[str] = mapped_column(String(10), primary_key=True, default="member", server_default="member")
-    permission: Mapped[str] = mapped_column(String(20), primary_key=True)
-    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    group: Mapped[Group] = relationship()
-    camera: Mapped[Camera] = relationship()
-
-
 class UserMfaMethod(Base):
     __tablename__ = "user_mfa_methods"
     __table_args__ = (
@@ -292,7 +231,6 @@ class Person(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(100))
     first_name: Mapped[Optional[str]] = mapped_column(String(100))
     middle_name: Mapped[Optional[str]] = mapped_column(String(100))
-    embeddings: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("person_categories.person_category_id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
@@ -475,15 +413,11 @@ class UserFaceTemplate(Base):
 
 
 # Indexes (including partials)
-Index("profiles_phone_unique_idx", Profile.phone, unique=True, postgresql_where=Profile.phone.isnot(None))
 Index("users_role_idx", User.role_id)
 Index("cameras_status_idx", Camera.status_id)
 Index("cameras_group_idx", Camera.group_id)
 Index("camera_endpoints_camera_idx", CameraEndpoint.camera_id)
 Index("video_streams_camera_idx", VideoStream.camera_id)
-Index("user_camera_permissions_camera_idx", UserCameraPermission.camera_id)
-Index("user_groups_group_idx", UserGroup.group_id)
-Index("group_camera_permissions_camera_idx", GroupCameraPermission.camera_id)
 Index("user_mfa_methods_user_idx", UserMfaMethod.user_id)
 Index("push_subscriptions_user_idx", PushSubscription.user_id)
 Index("events_camera_idx", Event.camera_id)
@@ -590,97 +524,6 @@ class CameraRoiZone(Base):
 
 # ── Phase 5: Homes (Xiaomi Home style) ──
 
-class Home(Base):
-    __tablename__ = "homes"
-
-    home_id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(150), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(String(500))
-    invite_code: Mapped[Optional[str]] = mapped_column(String(100), unique=True)
-    invite_code_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
-    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    created_by: Mapped[User] = relationship()
-
-
-class Room(Base):
-    __tablename__ = "rooms"
-
-    room_id: Mapped[int] = mapped_column(primary_key=True)
-    home_id: Mapped[int] = mapped_column(ForeignKey("homes.home_id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(String(150), nullable=False)
-    order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    home: Mapped[Home] = relationship()
-
-
-class RoomCamera(Base):
-    __tablename__ = "room_cameras"
-
-    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.room_id", ondelete="CASCADE"), primary_key=True)
-    camera_id: Mapped[int] = mapped_column(ForeignKey("cameras.camera_id", ondelete="CASCADE"), primary_key=True)
-    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    room: Mapped[Room] = relationship()
-    camera: Mapped[Camera] = relationship()
-
-
-class HomeMember(Base):
-    __tablename__ = "home_members"
-    __table_args__ = (
-        CheckConstraint("role IN ('owner', 'admin', 'member', 'guest')", name="home_members_role_chk"),
-    )
-
-    home_id: Mapped[int] = mapped_column(ForeignKey("homes.home_id", ondelete="CASCADE"), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True)
-    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member", server_default="member")
-    invited_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"))
-    invited_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
-    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    home: Mapped[Home] = relationship()
-    user: Mapped[User] = relationship(foreign_keys=[user_id])
-    invited_by_user: Mapped[Optional[User]] = relationship(foreign_keys=[invited_by])
-
-
-class HomeInvitation(Base):
-    __tablename__ = "home_invitations"
-    __table_args__ = (
-        CheckConstraint("invite_type IN ('link', 'email', 'qr')", name="home_invitations_type_chk"),
-        CheckConstraint("role IN ('admin', 'member', 'guest')", name="home_invitations_role_chk"),
-    )
-
-    invitation_id: Mapped[int] = mapped_column(primary_key=True)
-    home_id: Mapped[int] = mapped_column(ForeignKey("homes.home_id", ondelete="CASCADE"), nullable=False)
-    invited_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    invite_type: Mapped[str] = mapped_column(String(20), nullable=False, default="link", server_default="link")
-    invite_code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    target_email: Mapped[Optional[str]] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member", server_default="member")
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
-    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
-    accepted_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"))
-
-    home: Mapped[Home] = relationship()
-    invited_by: Mapped[User] = relationship(foreign_keys=[invited_by_user_id])
-
-
-class HomeActivityLog(Base):
-    __tablename__ = "home_activity_log"
-
-    activity_id: Mapped[int] = mapped_column(primary_key=True)
-    home_id: Mapped[int] = mapped_column(ForeignKey("homes.home_id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"))
-    action: Mapped[str] = mapped_column(String(100), nullable=False)
-    details: Mapped[Optional[str]] = mapped_column(Text)  # JSON
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    home: Mapped[Home] = relationship()
-    user: Mapped[Optional[User]] = relationship()
-
-
 class ApiKey(Base):
     __tablename__ = "api_keys"
 
@@ -702,11 +545,3 @@ Index("camera_roi_zones_camera_idx", CameraRoiZone.camera_id)
 Index("events_processor_idx", Event.processor_id)
 Index("cameras_deleted_at_idx", Camera.deleted_at)
 Index("persons_deleted_at_idx", Person.deleted_at)
-Index("homes_created_by_idx", Home.created_by_user_id)
-Index("rooms_home_idx", Room.home_id)
-Index("room_cameras_camera_idx", RoomCamera.camera_id)
-Index("home_members_user_idx", HomeMember.user_id)
-Index("home_invitations_home_idx", HomeInvitation.home_id)
-Index("home_invitations_code_idx", HomeInvitation.invite_code)
-Index("home_activity_home_idx", HomeActivityLog.home_id)
-Index("home_activity_created_idx", HomeActivityLog.created_at)

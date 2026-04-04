@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, status, Form
@@ -13,6 +13,7 @@ from app.dependencies import get_current_user
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
+    ProfileUpdateRequest,
     TokenResponse,
     TotpCodeRequest,
     TotpSetupResponse,
@@ -49,6 +50,31 @@ async def _log_auth_event(
     await session.commit()
 
 
+async def _get_totp_method(session: AsyncSession, user_id: int) -> models.UserMfaMethod | None:
+    result = await session.execute(
+        select(models.UserMfaMethod).where(
+            models.UserMfaMethod.user_id == user_id,
+            models.UserMfaMethod.mfa_type == "totp",
+            models.UserMfaMethod.is_enabled.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _user_out(user: models.User, *, totp_enabled: bool) -> UserOut:
+    return UserOut(
+        user_id=user.user_id,
+        login=user.login,
+        role_id=user.role_id,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        middle_name=user.middle_name,
+        face_login_enabled=user.face_login_enabled,
+        must_change_password=user.must_change_password,
+        totp_enabled=totp_enabled,
+    )
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(
     payload: LoginRequest,
@@ -64,15 +90,7 @@ async def login(
         await _log_auth_event(session, user.user_id, method="password", success=False, reason="invalid_password")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    # Check TOTP requirement
-    result_totp = await session.execute(
-        select(models.UserMfaMethod).where(
-            models.UserMfaMethod.user_id == user.user_id,
-            models.UserMfaMethod.mfa_type == "totp",
-            models.UserMfaMethod.is_enabled.is_(True),
-        )
-    )
-    totp_method = result_totp.scalar_one_or_none()
+    totp_method = await _get_totp_method(session, user.user_id)
     method_used = "password"
     if totp_method and totp_method.secret:
         method_used = "password+totp"
@@ -94,7 +112,6 @@ async def login_form(
     totp_code: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
-    """Same as /auth/login but accepts form-data (username/password), used by Swagger UI."""
     payload = LoginRequest(login=form_data.username, password=form_data.password, totp_code=totp_code)
     return await login(payload=payload, session=session)
 
@@ -114,8 +131,35 @@ async def change_password(
 
 
 @router.get("/me", response_model=UserOut)
-async def me(current_user: models.User = Depends(get_current_user)) -> UserOut:
-    return UserOut.model_validate(current_user)
+async def me(
+    current_user: models.User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> UserOut:
+    totp_enabled = await _get_totp_method(session, current_user.user_id) is not None
+    return _user_out(current_user, totp_enabled=totp_enabled)
+
+
+@router.patch("/profile", response_model=UserOut)
+async def update_profile(
+    payload: ProfileUpdateRequest,
+    current_user: models.User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> UserOut:
+    current_user.first_name = payload.first_name.strip() if payload.first_name else None
+    current_user.last_name = payload.last_name.strip() if payload.last_name else None
+    current_user.middle_name = payload.middle_name.strip() if payload.middle_name else None
+    await session.commit()
+    await session.refresh(current_user)
+    totp_enabled = await _get_totp_method(session, current_user.user_id) is not None
+    return _user_out(current_user, totp_enabled=totp_enabled)
+
+
+@router.get("/totp/status", response_model=TotpStatusResponse)
+async def totp_status(
+    current_user: models.User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TotpStatusResponse:
+    return TotpStatusResponse(enabled=await _get_totp_method(session, current_user.user_id) is not None)
 
 
 @router.post("/totp/setup", response_model=TotpSetupResponse)

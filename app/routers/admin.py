@@ -92,6 +92,9 @@ async def create_user(
         login=payload.login,
         password_hash=hash_password(payload.password),
         role_id=payload.role_id,
+        first_name=payload.first_name.strip() if payload.first_name else None,
+        last_name=payload.last_name.strip() if payload.last_name else None,
+        middle_name=payload.middle_name.strip() if payload.middle_name else None,
     )
     session.add(user)
     await session.commit()
@@ -259,23 +262,31 @@ async def list_persons(
     current_user: models.User = Depends(get_current_user),
 ):
     _ensure_admin(current_user)
+    counts = (
+        select(
+            models.PersonEmbedding.person_id,
+            func.count(models.PersonEmbedding.person_embedding_id).label("embedding_count"),
+        )
+        .group_by(models.PersonEmbedding.person_id)
+        .subquery()
+    )
     result = await session.execute(
-        select(models.Person)
+        select(models.Person, func.coalesce(counts.c.embedding_count, 0))
+        .outerjoin(counts, counts.c.person_id == models.Person.person_id)
         .where(models.Person.deleted_at.is_(None))
         .order_by(models.Person.person_id)
     )
-    persons = result.scalars().all()
     return [
         {
-            "person_id": p.person_id,
-            "first_name": p.first_name,
-            "last_name": p.last_name,
-            "middle_name": p.middle_name,
-            "category_id": p.category_id,
-            "has_embedding": p.embeddings is not None,
-            "created_at": str(p.created_at) if p.created_at else None,
+            "person_id": person.person_id,
+            "first_name": person.first_name,
+            "last_name": person.last_name,
+            "middle_name": person.middle_name,
+            "category_id": person.category_id,
+            "has_embedding": int(embedding_count or 0) > 0,
+            "created_at": str(person.created_at) if person.created_at else None,
         }
-        for p in persons
+        for person, embedding_count in result.all()
     ]
 
 
@@ -291,7 +302,6 @@ async def create_person(
         last_name=payload.last_name,
         middle_name=payload.middle_name,
         category_id=payload.category_id,
-        embeddings=payload.embeddings,
     )
     session.add(person)
     await session.commit()

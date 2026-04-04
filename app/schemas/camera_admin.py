@@ -45,7 +45,6 @@ class PersonCreate(BaseModel):
     last_name: Optional[str] = None
     middle_name: Optional[str] = None
     category_id: Optional[int] = None
-    embeddings: Optional[bytes] = Field(default=None, description="Raw bytes of embedding (optional)")
 
 
 class PersonUpdate(BaseModel):
@@ -53,7 +52,6 @@ class PersonUpdate(BaseModel):
     last_name: Optional[str] = None
     middle_name: Optional[str] = None
     category_id: Optional[int] = None
-    embeddings: Optional[bytes] = None
 
 
 class EventCreate(BaseModel):

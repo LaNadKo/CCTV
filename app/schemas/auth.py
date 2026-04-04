@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+﻿from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -22,11 +22,18 @@ class UserOut(BaseModel):
     user_id: int
     login: str
     role_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    middle_name: str | None = None
     face_login_enabled: bool
     must_change_password: bool = False
+    totp_enabled: bool = False
 
-    class Config:
-        from_attributes = True
+
+class ProfileUpdateRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    middle_name: str | None = None
 
 
 class TotpSetupResponse(BaseModel):
