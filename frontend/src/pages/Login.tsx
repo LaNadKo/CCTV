@@ -9,6 +9,7 @@ const LoginPage: React.FC = () => {
   const nav = useNavigate();
   const location = useLocation();
   const from = (location.state as any)?.from?.pathname || "/live";
+
   const [form, setForm] = useState({ login: "", password: "" });
   const [totpCode, setTotpCode] = useState("");
   const [totpRequired, setTotpRequired] = useState(false);
@@ -40,7 +41,7 @@ const LoginPage: React.FC = () => {
         setTotpRequired(true);
         setLastCreds({ login: form.login, password: form.password });
       } else {
-        setError(err?.message || "Ошибка входа");
+        setError(err?.message || "?????? ?????");
       }
     } finally {
       setLoading(false);
@@ -63,7 +64,7 @@ const LoginPage: React.FC = () => {
       login(response.access_token, profile);
       nav(from, { replace: true });
     } catch (err: any) {
-      setError(err?.message || "Ошибка входа по TOTP");
+      setError(err?.message || "?????? ????????????? ???????????");
     } finally {
       setLoading(false);
       setTotpRequired(false);
@@ -74,13 +75,14 @@ const LoginPage: React.FC = () => {
   const handleChangePassword = async () => {
     if (!tempToken || !lastCreds) return;
     if (newPassword.length < 6) {
-      setError("Пароль должен быть не менее 6 символов");
+      setError("?????? ?????? ???? ?? ????? 6 ????????");
       return;
     }
     if (newPassword !== newPasswordConfirm) {
-      setError("Пароли не совпадают");
+      setError("?????? ?? ?????????");
       return;
     }
+
     setLoading(true);
     setError(null);
     try {
@@ -90,7 +92,7 @@ const LoginPage: React.FC = () => {
       login(response.access_token, profile);
       nav(from, { replace: true });
     } catch (err: any) {
-      setError(err?.message || "Ошибка смены пароля");
+      setError(err?.message || "?????? ????? ??????");
     } finally {
       setLoading(false);
     }
@@ -101,14 +103,12 @@ const LoginPage: React.FC = () => {
       <section className="auth-panel auth-panel--form auth-panel--solo">
         <div className="stack" style={{ gap: 6 }}>
           <span className="pill">CCTV Console</span>
-          <h1 className="title" style={{ margin: 0 }}>
-            Вход в систему
-          </h1>
+          <h1 className="title" style={{ margin: 0 }}>???? ? ???????</h1>
         </div>
 
         <form className="stack" onSubmit={handleSubmit}>
           <label className="field">
-            <span className="label">Логин</span>
+            <span className="label">?????</span>
             <input
               className="input"
               value={form.login}
@@ -118,7 +118,7 @@ const LoginPage: React.FC = () => {
             />
           </label>
           <label className="field">
-            <span className="label">Пароль</span>
+            <span className="label">??????</span>
             <input
               className="input"
               type="password"
@@ -129,14 +129,14 @@ const LoginPage: React.FC = () => {
           </label>
           {error && !mustChangePassword && <div className="danger">{error}</div>}
           <button className="btn" type="submit" disabled={loading}>
-            {loading ? "Входим..." : "Войти"}
+            {loading ? "??????..." : "?????"}
           </button>
         </form>
 
         <details className="auth-advanced">
-          <summary className="muted">Настройка сервера</summary>
+          <summary className="muted">????????? ???????</summary>
           <div className="field" style={{ marginTop: 12 }}>
-            <span className="label">URL сервера</span>
+            <span className="label">URL ???????</span>
             <input
               className="input"
               defaultValue={getApiUrl()}
@@ -155,10 +155,10 @@ const LoginPage: React.FC = () => {
       {totpRequired && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h3 style={{ marginTop: 0 }}>Введите TOTP</h3>
-            <p className="muted">Введите код из приложения-аутентификатора.</p>
+            <h3 style={{ marginTop: 0 }}>??????? ????????????? ??? ???????????</h3>
+            <p className="muted">??????? ??? ?? ??????????-???????????????.</p>
             <div className="field" style={{ marginTop: 8 }}>
-              <span className="label">TOTP код</span>
+              <span className="label">????????????? ???</span>
               <input
                 className="input"
                 value={totpCode}
@@ -167,12 +167,8 @@ const LoginPage: React.FC = () => {
               />
             </div>
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn" onClick={submitTotp} disabled={loading}>
-                Подтвердить
-              </button>
-              <button className="btn secondary" onClick={() => setTotpRequired(false)}>
-                Отмена
-              </button>
+              <button className="btn" onClick={submitTotp} disabled={loading}>???????????</button>
+              <button className="btn secondary" onClick={() => setTotpRequired(false)}>??????</button>
             </div>
           </div>
         </div>
@@ -181,32 +177,22 @@ const LoginPage: React.FC = () => {
       {mustChangePassword && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h3 style={{ marginTop: 0 }}>Смена пароля</h3>
-            <p className="muted">Необходимо сменить пароль при первом входе.</p>
+            <h3 style={{ marginTop: 0 }}>????? ??????</h3>
+            <p className="muted">?????????? ??????? ?????? ??? ?????? ?????.</p>
             <div className="stack" style={{ marginTop: 8 }}>
               <label className="field">
-                <span className="label">Новый пароль</span>
-                <input
-                  className="input"
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                />
+                <span className="label">????? ??????</span>
+                <input className="input" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
               </label>
               <label className="field">
-                <span className="label">Подтверждение</span>
-                <input
-                  className="input"
-                  type="password"
-                  value={newPasswordConfirm}
-                  onChange={(event) => setNewPasswordConfirm(event.target.value)}
-                />
+                <span className="label">?????????????</span>
+                <input className="input" type="password" value={newPasswordConfirm} onChange={(event) => setNewPasswordConfirm(event.target.value)} />
               </label>
               {error && <div className="danger">{error}</div>}
             </div>
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={handleChangePassword} disabled={loading || !newPassword}>
-                Сменить пароль
+                ??????? ??????
               </button>
             </div>
           </div>
