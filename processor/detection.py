@@ -129,7 +129,14 @@ class CameraWorker:
         self._writer_started_dt: datetime | None = None
         self._writer_frame_size: tuple[int, int] | None = None
 
+        self._tracking_controller = None
+        self._auto_tracker = None
+        self._patrol_mode = None
+        self._tracking_last_target_monotonic = 0.0
+        self._tracking_idle_seconds = 1.2
+
         ensure_media_dirs()
+        self._setup_tracking_runtime()
 
     def _similarity_to_confidence(self, sim: float | None, recognized: bool) -> float | None:
         if sim is None:
@@ -160,6 +167,110 @@ class CameraWorker:
     async def set_gallery(self, gallery: list[dict]):
         self._gallery = gallery
 
+    async def update_assignment(self, assignment: dict) -> None:
+        self.assignment = assignment
+        self._setup_tracking_runtime()
+
+    def _setup_tracking_runtime(self) -> None:
+        tracking_enabled = bool(self.assignment.get("tracking_enabled"))
+        tracking_mode = str(self.assignment.get("tracking_mode") or "off")
+        has_onvif = bool(self.assignment.get("connection_kind") == "onvif" and self.assignment.get("supports_ptz"))
+        endpoints = self.assignment.get("endpoints") or []
+        has_onvif_endpoint = any(item.get("endpoint_kind") == "onvif" for item in endpoints)
+        if not tracking_enabled or tracking_mode == "off" or not has_onvif or not has_onvif_endpoint:
+            self._tracking_controller = None
+            self._auto_tracker = None
+            self._patrol_mode = None
+            self._tracking_last_target_monotonic = 0.0
+            return
+
+        from processor.tracking import AutoTracker, OnvifController, PatrolMode
+
+        if self._tracking_controller is None:
+            self._tracking_controller = OnvifController(self.assignment)
+        else:
+            self._tracking_controller.refresh_assignment(self.assignment)
+
+        if self._auto_tracker is None:
+            self._auto_tracker = AutoTracker(self._tracking_controller)
+        else:
+            self._auto_tracker.refresh_assignment(self.assignment)
+
+        presets = self.assignment.get("presets") or []
+        if presets:
+            if self._patrol_mode is None:
+                self._patrol_mode = PatrolMode(self._tracking_controller, presets)
+            else:
+                self._patrol_mode.refresh_assignment(self.assignment)
+                self._patrol_mode.refresh_presets(presets)
+        else:
+            self._patrol_mode = None
+
+    def _select_tracking_target(self, body_tracks: list[dict], frame_shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:
+        frame_h, frame_w = frame_shape[:2]
+        target_person_id = self.assignment.get("tracking_target_person_id")
+        best_box: tuple[int, int, int, int] | None = None
+        best_score = float("-inf")
+        for state in body_tracks:
+            box = state.get("tracking_box")
+            if not isinstance(box, tuple):
+                box = state.get("box")
+            if not isinstance(box, tuple):
+                continue
+            hits = int(state.get("hits", 0))
+            if hits < 2:
+                continue
+            person_id = state.get("person_id")
+            recognized = bool(state.get("recognized"))
+            if target_person_id is not None and person_id != target_person_id:
+                continue
+            pose_support = self._track_has_pose_support(state, strict=not recognized)
+            if not recognized and not pose_support and target_person_id is None:
+                continue
+            x1, y1, x2, y2 = box
+            box_w = max(x2 - x1, 1)
+            box_h = max(y2 - y1, 1)
+            area_ratio = min(0.45, (box_w * box_h) / max(frame_w * frame_h, 1))
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            center_dx = abs(center_x - (frame_w / 2)) / max(frame_w / 2, 1)
+            center_dy = abs(center_y - (frame_h / 2)) / max(frame_h / 2, 1)
+            center_score = 1.0 - min(1.0, (center_dx * 0.65) + (center_dy * 0.35))
+            freshness = max(0.0, 1.0 - ((time.time() - float(state.get("last_seen", 0.0))) / 2.5))
+            score = (hits * 0.8) + (center_score * 4.5) + (area_ratio * 5.0) + (freshness * 2.0)
+            if pose_support:
+                score += 1.2
+            if recognized:
+                score += 2.5
+            if target_person_id is not None and person_id == target_person_id:
+                score += 100.0
+            if score > best_score:
+                best_score = score
+                best_box = tuple(int(v) for v in box)
+        return best_box
+
+    def _apply_tracking(self, body_tracks: list[dict], frame_shape: tuple[int, ...]) -> None:
+        if not self._auto_tracker:
+            return
+        now = time.monotonic()
+        target_box = self._select_tracking_target(body_tracks, frame_shape)
+        tracking_mode = str(self.assignment.get("tracking_mode") or "off")
+        if target_box is not None:
+            self._tracking_last_target_monotonic = now
+            if self._patrol_mode:
+                self._patrol_mode.interrupt()
+            self._auto_tracker.track(target_box, frame_shape[1], frame_shape[0])
+            return
+
+        if self._patrol_mode and tracking_mode == "patrol":
+            self._patrol_mode.resume()
+            if (now - self._tracking_last_target_monotonic) >= self._tracking_idle_seconds:
+                self._auto_tracker.stop(force=True)
+            self._patrol_mode.step(now)
+            return
+
+        self._auto_tracker.stop(force=(now - self._tracking_last_target_monotonic) >= self._tracking_idle_seconds)
+
     async def start(self, processor_id: int):
         self.processor_id = processor_id
         self._running = True
@@ -168,6 +279,8 @@ class CameraWorker:
 
     def stop(self):
         self._running = False
+        if self._auto_tracker:
+            self._auto_tracker.stop(force=True)
 
     def get_stream_frame(self, overlay: bool = True) -> bytes | None:
         with self._frame_lock:
@@ -379,6 +492,7 @@ class CameraWorker:
                 }
                 self._dispatch_event(payload, local_snapshot=snapshot if snapshot_b64 else None)
 
+            self._apply_tracking(body_tracks, frame.shape)
             body_overlay_items = self._build_body_overlay_items(body_tracks, now)
             if overlay_items:
                 self._last_faces_info = overlay_items

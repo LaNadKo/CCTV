@@ -437,7 +437,7 @@ const ReviewsPage = () => {
 
             <div className="review-picker-summary">
               <span className="pill">{filteredPersons.length}</span>
-              <div className="muted">Список использует тот же неточный поиск, что и вкладка «Персоны».</div>
+              <div className="muted">Поиск поддерживает неполные совпадения по ФИО и ID.</div>
             </div>
 
             <div className="person-picker-list">

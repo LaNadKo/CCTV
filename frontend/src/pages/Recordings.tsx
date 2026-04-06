@@ -386,7 +386,7 @@ const RecordingsPage: React.FC = () => {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Записи</h2>
-          <div className="muted">Архив хранится на Processor и подтягивается через backend-прокси.</div>
+          <div className="muted">Показаны записи, доступные через назначенный Processor.</div>
         </div>
           <div className="row recordings-toolbar">
           <select

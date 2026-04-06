@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { adminCreateUser, adminDeleteUser, adminListUsers, adminSetUserRole, type UserOut } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
-const ROLES: Record<number, string> = { 1: "?????????????", 2: "????????", 3: "???????????" };
+const ROLES: Record<number, string> = { 1: "Администратор", 2: "Оператор", 3: "Смотрящий" };
 
 function formatFullName(user: Pick<UserOut, "last_name" | "first_name" | "middle_name">): string {
-  return [user.last_name, user.first_name, user.middle_name].filter(Boolean).join(" ") || "?? ?????????";
+  return [user.last_name, user.first_name, user.middle_name].filter(Boolean).join(" ") || "Не указано";
 }
 
 const UsersPage: React.FC = () => {
@@ -29,7 +29,7 @@ const UsersPage: React.FC = () => {
     try {
       setUsers(await adminListUsers(token));
     } catch (event: any) {
-      setError(event?.message || "?????? ???????? ?????????????");
+      setError(event?.message || "Ошибка загрузки пользователей");
     } finally {
       setLoading(false);
     }
@@ -60,17 +60,17 @@ const UsersPage: React.FC = () => {
       });
       await load();
     } catch (event: any) {
-      alert(event?.message || "?????? ???????? ????????????");
+      alert(event?.message || "Ошибка создания пользователя");
     }
   };
 
   const handleDelete = async (userId: number) => {
-    if (!token || !window.confirm("??????? ?????????????")) return;
+    if (!token || !window.confirm("Удалить пользователя?")) return;
     try {
       await adminDeleteUser(token, userId);
       await load();
     } catch (event: any) {
-      alert(event?.message || "?????? ????????");
+      alert(event?.message || "Ошибка удаления");
     }
   };
 
@@ -80,7 +80,7 @@ const UsersPage: React.FC = () => {
       await adminSetUserRole(token, userId, newRoleId);
       await load();
     } catch (event: any) {
-      alert(event?.message || "?????? ????? ????");
+      alert(event?.message || "Ошибка смены роли");
     }
   };
 
@@ -98,30 +98,30 @@ const UsersPage: React.FC = () => {
       <section className="page-hero">
         <div className="page-hero__content">
           <div className="page-hero__eyebrow">Administration</div>
-          <h2 className="title">????????????</h2>
+          <h2 className="title">Пользователи</h2>
         </div>
         <div className="page-actions">
           <button className="btn secondary" onClick={() => void load()}>
-            ????????
+            Обновить
           </button>
         </div>
       </section>
 
       <section className="summary-grid">
         <div className="summary-card">
-          <div className="summary-card__label">????? ?????????????</div>
+          <div className="summary-card__label">Всего пользователей</div>
           <div className="summary-card__value">{users.length}</div>
-          <div className="summary-card__hint">????????? ??????? ?????? backend.</div>
+          <div className="summary-card__hint">Активные учётные записи из backend.</div>
         </div>
         <div className="summary-card">
-          <div className="summary-card__label">??????????????</div>
+          <div className="summary-card__label">Администраторы</div>
           <div className="summary-card__value">{stats.admins}</div>
-          <div className="summary-card__hint">?????? ?????? ? ???????????? ? ????????????.</div>
+          <div className="summary-card__hint">Полный доступ к настройкам и управлению системой.</div>
         </div>
         <div className="summary-card">
-          <div className="summary-card__label">????????? / ???????????</div>
+          <div className="summary-card__label">Операторы / смотрящие</div>
           <div className="summary-card__value">{stats.operators + stats.viewers}</div>
-          <div className="summary-card__hint">??????? ??????? ?????? ??? ???????????? ????????????.</div>
+          <div className="summary-card__hint">Пользователи для повседневной эксплуатации комплекса.</div>
         </div>
       </section>
 
@@ -131,67 +131,67 @@ const UsersPage: React.FC = () => {
         <div className="panel-card stack">
           <div className="panel-card__header">
             <div>
-              <h3 className="panel-card__title">????? ????????????</h3>
-              <div className="panel-card__lead">???????? ??????? ?????? ? ??????????? ???????? ???.</div>
+              <h3 className="panel-card__title">Новый пользователь</h3>
+              <div className="panel-card__lead">Создайте учётную запись и назначьте подходящую роль.</div>
             </div>
           </div>
 
           <label className="field">
-            <span className="label">???????</span>
+            <span className="label">Фамилия</span>
             <input className="input" value={form.last_name} onChange={(event) => setForm((prev) => ({ ...prev, last_name: event.target.value }))} />
           </label>
           <label className="field">
-            <span className="label">???</span>
+            <span className="label">Имя</span>
             <input className="input" value={form.first_name} onChange={(event) => setForm((prev) => ({ ...prev, first_name: event.target.value }))} />
           </label>
           <label className="field">
-            <span className="label">????????</span>
+            <span className="label">Отчество</span>
             <input className="input" value={form.middle_name} onChange={(event) => setForm((prev) => ({ ...prev, middle_name: event.target.value }))} />
           </label>
           <label className="field">
-            <span className="label">?????</span>
+            <span className="label">Логин</span>
             <input className="input" value={form.login} onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))} />
           </label>
           <label className="field">
-            <span className="label">??????</span>
+            <span className="label">Пароль</span>
             <input className="input" type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} />
           </label>
           <label className="field">
-            <span className="label">????</span>
+            <span className="label">Роль</span>
             <select className="input" value={form.role_id} onChange={(event) => setForm((prev) => ({ ...prev, role_id: Number(event.target.value) }))}>
-              <option value={1}>?????????????</option>
-              <option value={2}>????????</option>
-              <option value={3}>???????????</option>
+              <option value={1}>Администратор</option>
+              <option value={2}>Оператор</option>
+              <option value={3}>Смотрящий</option>
             </select>
           </label>
           <button className="btn" onClick={handleCreate} disabled={!form.login.trim() || !form.password}>
-            ??????? ????????????
+            Создать пользователя
           </button>
         </div>
 
         <div className="panel-card">
           <div className="panel-card__header">
             <div>
-              <h3 className="panel-card__title">??????? ??????? ??????</h3>
-              <div className="panel-card__lead">???, ???? ? ?????? ????? ?????? ?? ???? ????????????? ???????.</div>
+              <h3 className="panel-card__title">Текущие учётные записи</h3>
+              <div className="panel-card__lead">Здесь можно менять роли и удалять лишних пользователей.</div>
             </div>
             <span className="pill">{users.length}</span>
           </div>
 
           {loading ? (
-            <div className="muted">????????...</div>
+            <div className="muted">Загрузка...</div>
           ) : users.length === 0 ? (
-            <div className="muted">????????????? ???? ???.</div>
+            <div className="muted">Пользователей пока нет.</div>
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table className="soft-table">
                 <thead>
                   <tr>
-                    <th>???</th>
-                    <th>?????</th>
-                    <th>????</th>
-                    <th>??????</th>
-                    <th style={{ textAlign: "right" }}>????????</th>
+                    <th>ФИО</th>
+                    <th>Логин</th>
+                    <th>Роль</th>
+                    <th>Пароль</th>
+                    <th style={{ textAlign: "right" }}>Действия</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -199,39 +199,39 @@ const UsersPage: React.FC = () => {
                     <tr key={user.user_id}>
                       <td>
                         <div style={{ fontWeight: 700 }}>{formatFullName(user)}</div>
-                        {user.user_id === currentUser?.user_id && <div className="muted">??????? ???????</div>}
+                        {user.user_id === currentUser?.user_id && <div className="muted">Текущий пользователь</div>}
                       </td>
                       <td>{user.login}</td>
                       <td>
                         {user.user_id === currentUser?.user_id ? (
-                          <span className="pill">{ROLES[user.role_id] || `???? ${user.role_id}`}</span>
+                          <span className="pill">{ROLES[user.role_id] || `Роль ${user.role_id}`}</span>
                         ) : (
                           <select
                             className="input"
                             value={user.role_id}
                             onChange={(event) => void handleRoleChange(user.user_id, Number(event.target.value))}
                           >
-                            <option value={1}>?????????????</option>
-                            <option value={2}>????????</option>
-                            <option value={3}>???????????</option>
+                            <option value={1}>Администратор</option>
+                            <option value={2}>Оператор</option>
+                            <option value={3}>Смотрящий</option>
                           </select>
                         )}
                       </td>
                       <td>
                         {user.must_change_password ? (
                           <span className="pill" style={{ color: "#f87171" }}>
-                            ??????? ????? ??????
+                            Требует смены пароля
                           </span>
                         ) : (
                           <span className="pill" style={{ color: "#22c55e" }}>
-                            ???????
+                            Активен
                           </span>
                         )}
                       </td>
                       <td style={{ textAlign: "right" }}>
                         {user.user_id !== currentUser?.user_id && (
                           <button className="btn secondary" onClick={() => void handleDelete(user.user_id)}>
-                            ???????
+                            Удалить
                           </button>
                         )}
                       </td>

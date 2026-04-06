@@ -9,7 +9,6 @@ let mainWindow = null;
 let localServer = null;
 let isQuitting = false;
 let tray = null;
-const LOCAL_SERVER_PORT = 32145;
 
 app.setAppUserModelId("com.cctv.console");
 
@@ -26,8 +25,8 @@ if (!gotSingleInstanceLock) {
   });
 }
 
-// Window state persistence
 const stateFile = path.join(app.getPath("userData"), "window-state.json");
+
 function loadWindowState() {
   try {
     return JSON.parse(fs.readFileSync(stateFile, "utf-8"));
@@ -35,6 +34,7 @@ function loadWindowState() {
     return { width: 1200, height: 800 };
   }
 }
+
 function saveWindowState() {
   if (!mainWindow) return;
   const bounds = mainWindow.getBounds();
@@ -49,42 +49,84 @@ function showMainWindow() {
   mainWindow.webContents.focus();
 }
 
-// Mime types for local server
 const MIME = {
-  ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
-  ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
-  ".svg": "image/svg+xml", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json",
-  ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
 };
+
+const UTF8_MIME_EXTENSIONS = new Set([".html", ".js", ".css", ".json", ".svg", ".webmanifest"]);
 
 function startLocalServer(frontendDir) {
   return new Promise((resolve) => {
     if (localServer && localServer.listening) {
-      resolve(LOCAL_SERVER_PORT);
+      resolve(localServer.address().port);
       return;
     }
+
     localServer = http.createServer((req, res) => {
       const parsed = url.parse(req.url);
       let filePath = path.join(frontendDir, parsed.pathname === "/" ? "index.html" : parsed.pathname);
-      // SPA fallback: if file doesn't exist, serve index.html
       if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         filePath = path.join(frontendDir, "index.html");
       }
+
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME[ext] || "application/octet-stream";
+      const responseType = UTF8_MIME_EXTENSIONS.has(ext) ? `${contentType}; charset=utf-8` : contentType;
+
       try {
-        const data = fs.readFileSync(filePath);
-        res.writeHead(200, { "Content-Type": contentType });
+        let data = fs.readFileSync(filePath);
+        if (ext === ".html") {
+          const html = data
+            .toString("utf-8")
+            .replace(/<script id="vite-plugin-pwa:register-sw"[^>]*><\/script>/g, "")
+            .replace(
+              "</body>",
+              `<script>
+                (async () => {
+                  try {
+                    if ("serviceWorker" in navigator) {
+                      const registrations = await navigator.serviceWorker.getRegistrations();
+                      await Promise.all(registrations.map((registration) => registration.unregister()));
+                    }
+                    if ("caches" in window) {
+                      const keys = await caches.keys();
+                      await Promise.all(keys.map((key) => caches.delete(key)));
+                    }
+                  } catch {}
+                })();
+              </script></body>`
+            );
+          data = Buffer.from(html, "utf-8");
+        }
+        res.writeHead(200, {
+          "Content-Type": responseType,
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0",
+        });
         res.end(data);
       } catch {
         res.writeHead(404);
         res.end("Not found");
       }
     });
+
     localServer.once("error", (error) => {
       console.error("Failed to start local frontend server", error);
     });
-    localServer.listen(LOCAL_SERVER_PORT, "127.0.0.1", () => resolve(LOCAL_SERVER_PORT));
+
+    localServer.listen(0, "127.0.0.1", () => resolve(localServer.address().port));
   });
 }
 
@@ -114,7 +156,13 @@ async function createWindow() {
     backgroundColor: "#0b1021",
   });
 
-  // Load app
+  try {
+    await mainWindow.webContents.session.clearStorageData({ storages: ["serviceworkers", "cachestorage"] });
+    await mainWindow.webContents.session.clearCache();
+  } catch (error) {
+    console.warn("Failed to clear Electron web cache", error);
+  }
+
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools({ mode: "detach" });
@@ -132,40 +180,52 @@ async function createWindow() {
       mainWindow.hide();
     }
   });
-  mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 
-  // Open external links in browser
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+  mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    shell.openExternal(targetUrl);
     return { action: "deny" };
   });
 
-  // App menu
   const menuTemplate = [
     {
       label: "CCTV Console",
       submenu: [
-        { label: "Настройки сервера", click: () => mainWindow?.webContents.executeJavaScript("document.querySelector('details summary')?.click()") },
+        {
+          label: "Настройки сервера",
+          click: () => mainWindow?.webContents.executeJavaScript("document.querySelector('details summary')?.click()"),
+        },
         { type: "separator" },
         { label: "Перезагрузить", role: "reload" },
         { label: "DevTools", role: "toggleDevTools" },
         { type: "separator" },
-        { label: "Выход", click: () => { isQuitting = true; app.quit(); } },
+        {
+          label: "Выход",
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
       ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+
   return mainWindow;
 }
 
 function ensureTray() {
   if (tray) return tray;
+
   const iconPath = path.join(__dirname, "build", "icon.png");
   tray = new Tray(iconPath);
   tray.setToolTip("CCTV Console");
   tray.on("double-click", async () => {
     await createWindow();
   });
+
   const refreshMenu = () => {
     tray.setContextMenu(
       Menu.buildFromTemplate([
@@ -200,6 +260,7 @@ function ensureTray() {
       ])
     );
   };
+
   refreshMenu();
   return tray;
 }

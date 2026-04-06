@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import {
   activateTotp,
   clearApiUrl,
@@ -22,30 +23,30 @@ import {
 
 const NAV_OPTIONS = [
   { key: "/live", label: "Live" },
-  { key: "/recordings", label: "??????" },
-  { key: "/reviews", label: "?????" },
-  { key: "/reports", label: "??????" },
-  { key: "/persons", label: "???????" },
-  { key: "/groups", label: "??????" },
-  { key: "/cameras", label: "??????" },
-  { key: "/processors", label: "??????????" },
-  { key: "/users", label: "????????????" },
-  { key: "/apikeys", label: "API-?????" },
-  { key: "/help", label: "???????" },
+  { key: "/recordings", label: "Архив" },
+  { key: "/reviews", label: "Ревью" },
+  { key: "/reports", label: "Отчёты" },
+  { key: "/persons", label: "Персоны" },
+  { key: "/groups", label: "Группы" },
+  { key: "/cameras", label: "Камеры" },
+  { key: "/processors", label: "Процессоры" },
+  { key: "/users", label: "Пользователи" },
+  { key: "/apikeys", label: "API-ключи" },
+  { key: "/help", label: "Справка" },
 ] as const;
 
 const MAX_PRIMARY_NAV = 5;
 
 const DENSITY_LABELS: Record<LiveDensity, string> = {
-  compact: "?????????",
-  comfortable: "??????????",
-  focus: "??????",
+  compact: "Компактно",
+  comfortable: "Стандартно",
+  focus: "Крупно",
 };
 
 const THEME_LABELS: Record<ThemeMode, string> = {
-  system: "??? ? ???????",
-  dark: "??????",
-  light: "???????",
+  system: "Как в системе",
+  dark: "Тёмная",
+  light: "Светлая",
 };
 
 const ACCENT_PRESETS = [
@@ -113,6 +114,7 @@ const SettingsPage: React.FC = () => {
 
   const [totpEnabled, setTotpEnabled] = useState<boolean>(!!user?.totp_enabled);
   const [totpSetupData, setTotpSetupData] = useState<{ secret: string; provisioning_uri: string } | null>(null);
+  const [totpModalOpen, setTotpModalOpen] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [totpBusy, setTotpBusy] = useState(false);
   const [totpMessage, setTotpMessage] = useState<string | null>(null);
@@ -141,7 +143,7 @@ const SettingsPage: React.FC = () => {
         const status = await getTotpStatus(token);
         setTotpEnabled(status.enabled);
       } catch {
-        // ignore, profile page should still stay usable
+        // keep page usable even if backend is unavailable
       }
     };
     void loadTotp();
@@ -221,9 +223,9 @@ const SettingsPage: React.FC = () => {
         middle_name: profile.middle_name.trim() || null,
       });
       await refreshUser();
-      setProfileMessage("??????? ????????");
+      setProfileMessage("Профиль обновлён");
     } catch (error: any) {
-      setProfileError(error?.message || "?? ??????? ????????? ???????");
+      setProfileError(error?.message || "Не удалось сохранить профиль");
     } finally {
       setProfileBusy(false);
     }
@@ -237,9 +239,10 @@ const SettingsPage: React.FC = () => {
     try {
       const setup = await setupTotp(token);
       setTotpSetupData(setup);
+      setTotpModalOpen(true);
       setTotpCode("");
     } catch (error: any) {
-      setTotpError(error?.message || "?? ??????? ??????????? TOTP");
+      setTotpError(error?.message || "Не удалось подготовить TOTP");
     } finally {
       setTotpBusy(false);
     }
@@ -254,11 +257,12 @@ const SettingsPage: React.FC = () => {
       const status = await activateTotp(token, totpCode.trim());
       setTotpEnabled(status.enabled);
       setTotpSetupData(null);
+      setTotpModalOpen(false);
       setTotpCode("");
       await refreshUser();
-      setTotpMessage("????????????? ??????????? ????????");
+      setTotpMessage("Двухфакторная авторизация включена");
     } catch (error: any) {
-      setTotpError(error?.message || "???????? ????????????? ???");
+      setTotpError(error?.message || "Некорректный проверочный код");
     } finally {
       setTotpBusy(false);
     }
@@ -273,11 +277,12 @@ const SettingsPage: React.FC = () => {
       await disableTotp(token);
       setTotpEnabled(false);
       setTotpSetupData(null);
+      setTotpModalOpen(false);
       setTotpCode("");
       await refreshUser();
-      setTotpMessage("????????????? ??????????? ?????????");
+      setTotpMessage("Двухфакторная авторизация отключена");
     } catch (error: any) {
-      setTotpError(error?.message || "?? ??????? ????????? TOTP");
+      setTotpError(error?.message || "Не удалось отключить TOTP");
     } finally {
       setTotpBusy(false);
     }
@@ -287,97 +292,134 @@ const SettingsPage: React.FC = () => {
     <div className="stack" style={{ marginTop: 18 }}>
       <div className="page-hero">
         <div className="page-hero__content">
-          <h2 className="title">?????????</h2>
-          <div className="muted">??????? ????????????, ????????????? ??????????? ? ????????? ?????????? Console.</div>
+          <h2 className="title">Настройки</h2>
+          <div className="muted">Управление профилем, внешним видом интерфейса и подключением к backend Console.</div>
         </div>
       </div>
 
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>????????? ???????</h3>
-        <div className="muted">? ??????? ???????? ?????? ???????, ??? ? ????????.</div>
+        <h3 style={{ margin: 0 }}>Профиль</h3>
+        <div className="muted">Эти данные отображаются в интерфейсе и входят в отчёты.</div>
         <label className="field">
-          <span className="label">???????</span>
+          <span className="label">Фамилия</span>
           <input className="input" value={profile.last_name} onChange={(event) => setProfile((prev) => ({ ...prev, last_name: event.target.value }))} />
         </label>
         <label className="field">
-          <span className="label">???</span>
+          <span className="label">Имя</span>
           <input className="input" value={profile.first_name} onChange={(event) => setProfile((prev) => ({ ...prev, first_name: event.target.value }))} />
         </label>
         <label className="field">
-          <span className="label">????????</span>
+          <span className="label">Отчество</span>
           <input className="input" value={profile.middle_name} onChange={(event) => setProfile((prev) => ({ ...prev, middle_name: event.target.value }))} />
         </label>
         {profileError && <div className="danger">{profileError}</div>}
         {profileMessage && <div className="success">{profileMessage}</div>}
         <div className="row" style={{ gap: 8 }}>
           <button className="btn" onClick={handleProfileSave} type="button" disabled={profileBusy}>
-            {profileBusy ? "?????????..." : "????????? ???????"}
+            {profileBusy ? "Сохранение..." : "Сохранить профиль"}
           </button>
         </div>
       </div>
 
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>????????????? ???????????</h3>
-        <div className="muted">??? ????? ???????????? TOTP-??? ?? ??????????-???????????????.</div>
+        <h3 style={{ margin: 0 }}>Двухфакторная авторизация</h3>
+        <div className="muted">Для входа используется TOTP-код из приложения-аутентификатора.</div>
         <div className="row" style={{ gap: 8, alignItems: "center" }}>
           <span className="pill" style={{ color: totpEnabled ? "#22c55e" : "#f87171" }}>
-            {totpEnabled ? "????????" : "?????????"}
+            {totpEnabled ? "Включена" : "Отключена"}
           </span>
           {totpEnabled ? (
             <button className="btn secondary" onClick={handleTotpDisable} type="button" disabled={totpBusy}>
-              ?????????
+              Отключить
             </button>
           ) : (
-            <button className="btn" onClick={handleTotpSetup} type="button" disabled={totpBusy}>
-              ????????? TOTP
-            </button>
+            <>
+              <button className="btn" onClick={handleTotpSetup} type="button" disabled={totpBusy}>
+                Подключить TOTP
+              </button>
+              {totpSetupData && (
+                <button className="btn secondary" onClick={() => setTotpModalOpen(true)} type="button" disabled={totpBusy}>
+                  Показать QR-код
+                </button>
+              )}
+            </>
           )}
         </div>
-
-        {totpSetupData && !totpEnabled && (
-          <div className="stack" style={{ gap: 10 }}>
-            <div className="muted">???????? ?????? ? ??????????-?????????????? ? ??????????? ????????? ?????.</div>
-            <label className="field">
-              <span className="label">??????</span>
-              <input className="input" readOnly value={totpSetupData.secret} />
-            </label>
-            <label className="field">
-              <span className="label">Provisioning URI</span>
-              <input className="input" readOnly value={totpSetupData.provisioning_uri} />
-            </label>
-            <label className="field">
-              <span className="label">??? ?????????????</span>
-              <input className="input" placeholder="123456" value={totpCode} onChange={(event) => setTotpCode(event.target.value)} />
-            </label>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn" onClick={handleTotpActivate} type="button" disabled={totpBusy || !totpCode.trim()}>
-                ??????????? ???????????
-              </button>
-              <button className="btn secondary" onClick={() => { setTotpSetupData(null); setTotpCode(""); setTotpError(null); setTotpMessage(null); }} type="button">
-                ??????
-              </button>
-            </div>
-          </div>
-        )}
 
         {totpError && <div className="danger">{totpError}</div>}
         {totpMessage && <div className="success">{totpMessage}</div>}
       </div>
 
+      {totpModalOpen && totpSetupData && !totpEnabled && (
+        <div className="modal-backdrop" onClick={() => setTotpModalOpen(false)}>
+          <div className="modal settings-totp-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="stack" style={{ gap: 14 }}>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <div className="stack" style={{ gap: 6 }}>
+                  <h3 style={{ margin: 0 }}>Подключение TOTP</h3>
+                  <div className="muted">Отсканируйте QR-код в приложении-аутентификаторе, затем введите код подтверждения для завершения настройки.</div>
+                </div>
+                <button className="btn secondary" onClick={() => setTotpModalOpen(false)} type="button">
+                  Закрыть
+                </button>
+              </div>
+
+              <div className="settings-totp-qr-card">
+                <QRCodeSVG value={totpSetupData.provisioning_uri} size={220} bgColor="#ffffff" fgColor="#111827" includeMargin />
+              </div>
+
+              <div className="stack" style={{ gap: 8 }}>
+                <div className="label">Секрет</div>
+                <code className="settings-totp-secret">{totpSetupData.secret}</code>
+              </div>
+
+              <label className="field">
+                <span className="label">Provisioning URI</span>
+                <input className="input" readOnly value={totpSetupData.provisioning_uri} />
+              </label>
+
+              <label className="field">
+                <span className="label">Проверочный код</span>
+                <input className="input" placeholder="123456" value={totpCode} onChange={(event) => setTotpCode(event.target.value)} />
+              </label>
+
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn" onClick={handleTotpActivate} type="button" disabled={totpBusy || !totpCode.trim()}>
+                  Подтвердить подключение
+                </button>
+                <button
+                  className="btn secondary"
+                  onClick={() => {
+                    setTotpModalOpen(false);
+                    setTotpSetupData(null);
+                    setTotpCode("");
+                    setTotpError(null);
+                    setTotpMessage(null);
+                  }}
+                  type="button"
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>??????????? ? backend</h3>
+        <h3 style={{ margin: 0 }}>Подключение к backend</h3>
         <label className="field">
           <span className="label">API URL</span>
           <input className="input" value={apiUrl} onChange={(event) => setApiUrlDraft(event.target.value)} />
         </label>
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn" onClick={() => setApiUrl(apiUrl)} type="button">????????? ?????</button>
-          <button className="btn secondary" onClick={clearApiUrl} type="button">????????</button>
+          <button className="btn" onClick={() => setApiUrl(apiUrl)} type="button">Применить адрес</button>
+          <button className="btn secondary" onClick={clearApiUrl} type="button">Сбросить</button>
         </div>
       </div>
 
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>???? ??????????</h3>
+        <h3 style={{ margin: 0 }}>Тема интерфейса</h3>
         <div className="row" style={{ gap: 8 }}>
           {(["system", "dark", "light"] as ThemeMode[]).map((mode) => (
             <button
@@ -394,8 +436,8 @@ const SettingsPage: React.FC = () => {
 
       <div className="card stack">
         <div className="stack" style={{ gap: 6 }}>
-          <h3 style={{ margin: 0 }}>????????? ?????</h3>
-          <div className="muted">???????? ? ?????????????? ???? ??????????? ????? ?? ???? ???????? Console.</div>
+          <h3 style={{ margin: 0 }}>Акцентные цвета</h3>
+          <div className="muted">Цвета и предустановки темы интерфейса для всех экранов Console.</div>
         </div>
 
         <div className="settings-theme-presets">
@@ -427,7 +469,7 @@ const SettingsPage: React.FC = () => {
 
         <div className="settings-theme-grid">
           <label className="settings-theme-color-card">
-            <span className="label">???????? ????</span>
+            <span className="label">Основной цвет</span>
             <div className="settings-theme-color-row">
               <input className="settings-theme-color-input" onChange={(event) => updateSettings((prev) => ({ ...prev, primaryAccent: event.target.value }))} type="color" value={settings.primaryAccent} />
               <code className="settings-theme-color-value">{settings.primaryAccent.toUpperCase()}</code>
@@ -435,7 +477,7 @@ const SettingsPage: React.FC = () => {
           </label>
 
           <label className="settings-theme-color-card">
-            <span className="label">?????????????? ????</span>
+            <span className="label">Вторичный цвет</span>
             <div className="settings-theme-color-row">
               <input className="settings-theme-color-input" onChange={(event) => updateSettings((prev) => ({ ...prev, secondaryAccent: event.target.value }))} type="color" value={settings.secondaryAccent} />
               <code className="settings-theme-color-value">{settings.secondaryAccent.toUpperCase()}</code>
@@ -446,7 +488,7 @@ const SettingsPage: React.FC = () => {
         <div className="settings-theme-preview" style={{ background: `linear-gradient(135deg, ${settings.primaryAccent}, ${settings.secondaryAccent})` }}>
           <div className="settings-theme-preview__badge">Live Preview</div>
           <div className="settings-theme-preview__title">Console Palette</div>
-          <div className="settings-theme-preview__text">????????, ?????? ? ???????? ??????? ?????????? ??? ???? ?????? ? ??????? ????.</div>
+          <div className="settings-theme-preview__text">Пример того, как выбранная палитра будет выглядеть на карточках и управляющих элементах интерфейса.</div>
         </div>
 
         <div className="row" style={{ gap: 8 }}>
@@ -461,15 +503,15 @@ const SettingsPage: React.FC = () => {
             }
             type="button"
           >
-            ???????? ?????
+            Сбросить цвета
           </button>
         </div>
       </div>
 
       <div className="card stack">
         <div className="stack" style={{ gap: 6 }}>
-          <h3 style={{ margin: 0 }}>??????? ??????</h3>
-          <div className="muted">?? {MAX_PRIMARY_NAV} ??????? ? ?????. ???????? ????? ????????????? ????? ??? ?????? ??????? ????????.</div>
+          <h3 style={{ margin: 0 }}>Главная навигация</h3>
+          <div className="muted">До {MAX_PRIMARY_NAV} вкладок в шапке. Остальные разделы остаются доступными через меню.</div>
         </div>
 
         <div className="settings-nav-order">
@@ -487,20 +529,20 @@ const SettingsPage: React.FC = () => {
                 <span className="pill">#{index + 1}</span>
                 <div>
                   <div className="settings-nav-item__title">{option.label}</div>
-                  <div className="muted">??????? ???????????? ? ?????? ???????? ???????.</div>
+                  <div className="muted">Эта вкладка отображается в верхней панели навигации.</div>
                 </div>
               </div>
               <div className="page-actions">
-                <button className="btn secondary" onClick={() => movePrimary(option.key, -1)} disabled={index === 0} type="button">?</button>
-                <button className="btn secondary" onClick={() => movePrimary(option.key, 1)} disabled={index === selectedNavOptions.length - 1} type="button">?</button>
-                <button className="btn secondary" onClick={() => togglePrimary(option.key)} type="button">??????</button>
+                <button className="btn secondary" onClick={() => movePrimary(option.key, -1)} disabled={index === 0} type="button">Выше</button>
+                <button className="btn secondary" onClick={() => movePrimary(option.key, 1)} disabled={index === selectedNavOptions.length - 1} type="button">Ниже</button>
+                <button className="btn secondary" onClick={() => togglePrimary(option.key)} type="button">Убрать</button>
               </div>
             </article>
           ))}
         </div>
 
         <div className="stack" style={{ gap: 10 }}>
-          <div className="label">????????? ???????</div>
+          <div className="label">Доступные разделы</div>
           <div className="settings-nav-palette">
             {availableNavOptions.map((option) => (
               <button key={option.key} className="hour-card" onClick={() => togglePrimary(option.key)} disabled={selectedNavOptions.length >= MAX_PRIMARY_NAV} type="button">
@@ -509,13 +551,13 @@ const SettingsPage: React.FC = () => {
             ))}
           </div>
           {selectedNavOptions.length >= MAX_PRIMARY_NAV && (
-            <div className="muted">????????? ????? ???????? ???????. ??????? ???? ???????, ????? ???????? ??????.</div>
+            <div className="muted">Достигнут лимит главных вкладок. Уберите одну из текущих, чтобы добавить новую.</div>
           )}
         </div>
       </div>
 
       <div className="card stack">
-        <h3 style={{ margin: 0 }}>??? Live</h3>
+        <h3 style={{ margin: 0 }}>Плотность Live</h3>
         <div className="row" style={{ gap: 8 }}>
           {(["compact", "comfortable", "focus"] as LiveDensity[]).map((density) => (
             <button
@@ -528,7 +570,7 @@ const SettingsPage: React.FC = () => {
             </button>
           ))}
         </div>
-        <div className="muted">?????????? ????? ????? ? ?????????? ?????, ??????? ???????????? ?? ??????? ????? ?????.</div>
+        <div className="muted">Управляет размером карточек и плотностью сетки на экране Live.</div>
       </div>
     </div>
   );
