@@ -1,13 +1,10 @@
 # Mobile
 
-В каталоге `mobile` теперь живут два независимых клиента:
+В каталоге `mobile` находятся два независимых клиента.
 
-- `react-native` — прежний клиент на `Expo / React Native`
-- `react-capacitor` — новый мобильный клиент на `React + Vite + Capacitor`
+## `react-native`
 
-## React Native
-
-Исходники старого клиента сохранены без удаления и без смешивания с новой версией.
+Сохранённый мобильный клиент на `Expo / React Native`.
 
 Запуск:
 
@@ -17,11 +14,11 @@ npm install
 npm run start
 ```
 
-## React + Capacitor
+## `react-capacitor`
 
-Новый клиент собран как отдельная копия текущего `frontend` и предназначен для упаковки в Android/iOS-приложение.
+Новый отдельный мобильный клиент на `React + Vite + Capacitor`.
 
-Запуск web-версии:
+Запуск web-режима:
 
 ```bash
 cd mobile/react-capacitor
@@ -33,7 +30,6 @@ npm run dev
 
 ```bash
 cd mobile/react-capacitor
-npm install
 npm run build:android
 npx cap open android
 ```
@@ -42,9 +38,8 @@ npx cap open android
 
 ```bash
 cd mobile/react-capacitor
-npm install
 npm run build:ios
 npx cap open ios
 ```
 
-Для полноценной iOS-сборки нужен `macOS + Xcode`.
+Для реальной iOS-сборки нужен `macOS + Xcode`.
