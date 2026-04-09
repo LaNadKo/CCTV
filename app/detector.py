@@ -386,16 +386,7 @@ class DetectionManager:
         self._gallery = gallery
 
     async def _get_face_app(self):
-        if self._face_app is not None:
-            return self._face_app
-        import torch
-        from facenet_pytorch import MTCNN, InceptionResnetV1
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        mtcnn = MTCNN(keep_all=True, device=device)
-        embedder = InceptionResnetV1(pretrained="vggface2").eval().to(device)
-        self._face_app = (mtcnn, embedder, device)
-        return self._face_app
+        return None
 
     def _draw_faces(self, frame, faces_info: List[Tuple[Tuple[int, int, int, int], str, bool]]):
         for (x1, y1, x2, y2), label, recognized in faces_info:
@@ -404,53 +395,19 @@ class DetectionManager:
             cv2.putText(frame, label, (x1, max(y1 - 5, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
 
     async def _process_faces(self, camera_id: int, frame, face_app):
-        mtcnn, embedder, device = face_app
-        # convert BGR to RGB
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        import torch
-
-        # detect
-        boxes, probs = await asyncio.to_thread(mtcnn.detect, img_rgb)
-        if boxes is None or len(boxes) == 0:
-            return
-        # extract aligned faces
-        faces = []
-        for box in boxes:
-            x1, y1, x2, y2 = [int(b) for b in box]
-            crop = img_rgb[max(y1,0):max(y2,0), max(x1,0):max(x2,0)]
-            if crop.size == 0:
-                continue
-            faces.append(cv2.resize(crop, (160, 160)))
-        if not faces:
-            return
-        batch = np.stack(faces).astype(np.float32) / 255.0
-        batch = torch.from_numpy(batch).permute(0,3,1,2).to(device)
-        with torch.no_grad():
-            embs = embedder(batch).cpu().numpy()
-
-        gallery = list(self._gallery)
-        faces_info: List[Tuple[Tuple[int, int, int, int], str, bool]] = []
-        annotated = frame.copy()
-        for emb, box in zip(embs, boxes):
-            best_id = None
-            best_sim = -1.0
-            for pid, g_emb in gallery:
-                if emb.shape != g_emb.shape:
-                    continue
-                sim = float(np.dot(emb, g_emb) / (np.linalg.norm(emb) * np.linalg.norm(g_emb) + 1e-6))
-                if sim > best_sim:
-                    best_sim = sim
-                    best_id = pid
-            x1, y1, x2, y2 = [int(b) for b in box]
-            if best_id is not None and best_sim >= self.face_threshold:
-                await self._create_face_event(camera_id, best_id, best_sim, recognized=True, frame_with_boxes=None)
-                faces_info.append(((x1, y1, x2, y2), f"id {best_id} ({best_sim:.2f})", True))
+        faces_info, _ = await vision.annotate_and_match(frame, list(self._gallery), self.face_threshold)
+        if not faces_info:
+            return []
+        result: List[Tuple[Tuple[int, int, int, int], str, bool]] = []
+        for box, label, recognized, person_id, sim, emb in faces_info:
+            if recognized:
+                await self._create_face_event(camera_id, person_id, sim, recognized=True, frame_with_boxes=None)
             else:
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(annotated, "Unknown", (x1, max(y1 - 5, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
-                await self._create_face_event(camera_id, None, best_sim if best_sim > 0 else None, recognized=False, frame_with_boxes=annotated)
-                faces_info.append(((x1, y1, x2, y2), "Unknown", False))
-        return faces_info
+                if self._should_skip_unknown(camera_id, emb):
+                    continue
+                await self._create_face_event(camera_id, None, sim if sim and sim > 0 else None, recognized=False, frame_with_boxes=frame.copy())
+            result.append((box, label, recognized))
+        return result
 
     def _should_skip_unknown(self, camera_id: int, emb: np.ndarray, ttl: float = 10.0, sim_thr: float = 0.6) -> bool:
         cache = self._unknown_cache.setdefault(camera_id, [])

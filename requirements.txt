@@ -9,8 +9,9 @@ passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
 alembic==1.14.0
 pyotp==2.9.0
-numpy>=2.0.0
-opencv-python-headless>=4.10.0
+numpy>=1.24,<2
+opencv-python-headless>=4.8,<4.13
+onnxruntime>=1.15.1,<1.16
 pillow==10.3.0
 bcrypt==4.0.1
 reportlab>=4.0

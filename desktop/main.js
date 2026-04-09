@@ -27,6 +27,29 @@ if (!gotSingleInstanceLock) {
 
 const stateFile = path.join(app.getPath("userData"), "window-state.json");
 
+function resolveIconPath() {
+  const candidates = isDev
+    ? [
+        path.join(__dirname, "build", "icon.png"),
+        path.join(__dirname, "..", "frontend", "public", "icons", "icon-192x192.png"),
+        path.join(__dirname, "..", "frontend", "public", "favicon.png")
+      ]
+    : [
+        path.join(process.resourcesPath, "frontend", "icons", "icon-192x192.png"),
+        path.join(process.resourcesPath, "frontend", "favicon.png"),
+        path.join(__dirname, "build", "icon.png")
+      ];
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {}
+  }
+  return undefined;
+}
+
 function loadWindowState() {
   try {
     return JSON.parse(fs.readFileSync(stateFile, "utf-8"));
@@ -61,7 +84,7 @@ const MIME = {
   ".webmanifest": "application/manifest+json",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
+  ".ttf": "font/ttf"
 };
 
 const UTF8_MIME_EXTENSIONS = new Set([".html", ".js", ".css", ".json", ".svg", ".webmanifest"]);
@@ -75,7 +98,9 @@ function startLocalServer(frontendDir) {
 
     localServer = http.createServer((req, res) => {
       const parsed = url.parse(req.url);
-      let filePath = path.join(frontendDir, parsed.pathname === "/" ? "index.html" : parsed.pathname);
+      const requestPath = decodeURIComponent(parsed.pathname || "/");
+      const normalizedPath = requestPath.replace(/^\/+/, "");
+      let filePath = path.join(frontendDir, normalizedPath || "index.html");
       if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         filePath = path.join(frontendDir, "index.html");
       }
@@ -113,7 +138,7 @@ function startLocalServer(frontendDir) {
           "Content-Type": responseType,
           "Cache-Control": "no-store, no-cache, must-revalidate",
           Pragma: "no-cache",
-          Expires: "0",
+          Expires: "0"
         });
         res.end(data);
       } catch {
@@ -146,14 +171,14 @@ async function createWindow() {
     minWidth: 400,
     minHeight: 600,
     title: "CCTV Console",
-    icon: path.join(__dirname, "build", "icon.png"),
+    icon: resolveIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false,
+      nodeIntegration: false
     },
     show: false,
-    backgroundColor: "#0b1021",
+    backgroundColor: "#0b1021"
   });
 
   try {
@@ -168,8 +193,15 @@ async function createWindow() {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     const frontendDir = path.join(process.resourcesPath, "frontend");
-    const port = await startLocalServer(frontendDir);
-    mainWindow.loadURL(`http://127.0.0.1:${port}`);
+    const indexPath = path.join(frontendDir, "index.html");
+    if (!fs.existsSync(indexPath)) {
+      mainWindow.loadURL(
+        `data:text/plain;charset=utf-8,${encodeURIComponent(`Frontend bundle is incomplete: ${frontendDir}`)}`
+      );
+    } else {
+      const port = await startLocalServer(frontendDir);
+      mainWindow.loadURL(`http://127.0.0.1:${port}`);
+    }
   }
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
@@ -195,7 +227,7 @@ async function createWindow() {
       submenu: [
         {
           label: "Настройки сервера",
-          click: () => mainWindow?.webContents.executeJavaScript("document.querySelector('details summary')?.click()"),
+          click: () => mainWindow?.webContents.executeJavaScript("document.querySelector('details summary')?.click()")
         },
         { type: "separator" },
         { label: "Перезагрузить", role: "reload" },
@@ -206,10 +238,10 @@ async function createWindow() {
           click: () => {
             isQuitting = true;
             app.quit();
-          },
-        },
-      ],
-    },
+          }
+        }
+      ]
+    }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
@@ -219,8 +251,20 @@ async function createWindow() {
 function ensureTray() {
   if (tray) return tray;
 
-  const iconPath = path.join(__dirname, "build", "icon.png");
-  tray = new Tray(iconPath);
+  const iconPath = resolveIconPath();
+  if (!iconPath) {
+    console.warn("Tray icon not found. Starting without tray support.");
+    return null;
+  }
+
+  try {
+    tray = new Tray(iconPath);
+  } catch (error) {
+    console.error("Failed to create tray icon", error);
+    tray = null;
+    return null;
+  }
+
   tray.setToolTip("CCTV Console");
   tray.on("double-click", async () => {
     await createWindow();
@@ -233,7 +277,7 @@ function ensureTray() {
           label: "Открыть",
           click: async () => {
             await createWindow();
-          },
+          }
         },
         {
           label: mainWindow && mainWindow.isVisible() ? "Скрыть в трей" : "Показать окно",
@@ -247,7 +291,7 @@ function ensureTray() {
             } else {
               showMainWindow();
             }
-          },
+          }
         },
         { type: "separator" },
         {
@@ -255,8 +299,8 @@ function ensureTray() {
           click: () => {
             isQuitting = true;
             app.quit();
-          },
-        },
+          }
+        }
       ])
     );
   };

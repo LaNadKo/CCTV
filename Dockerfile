@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir --timeout=120 -r requirements.txt
 COPY alembic.ini .
 COPY migrations/ migrations/
 COPY app/ app/
+COPY cctv_ai/ cctv_ai/
 COPY docker-entrypoint.sh .
 RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 

@@ -306,14 +306,28 @@ async def add_embedding_from_photo(
     image = cv2.imdecode(image, cv2.IMREAD_COLOR)
     if image is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image")
+    fallback_exc: HTTPException | None = None
     try:
         emb = _extract_best_face_embedding(image)
     except HTTPException as exc:
-        if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE and "torch" in str(exc.detail).lower():
+        emb = None
+        fallback_exc = exc
+    except Exception as exc:
+        emb = None
+        fallback_exc = HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Local face extraction unavailable: {exc}",
+        )
+
+    if emb is None and camera_id is not None:
+        try:
             emb = await _extract_best_face_embedding_via_processor(session, image, camera_id)
-        else:
-            raise
+        except HTTPException as exc:
+            fallback_exc = exc
+
     if emb is None:
+        if fallback_exc is not None and fallback_exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise fallback_exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found")
     existing = await _existing_embeddings(session, person.person_id)
     ok, status_name, max_sim = _should_add_embedding(emb, existing)

@@ -7,20 +7,13 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Installing dependencies...
-set TORCH_INDEX=https://download.pytorch.org/whl/cpu
+set GPU_PACKAGES=
 where nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
-    echo Detected NVIDIA GPU. Installing CUDA-enabled PyTorch...
-    set TORCH_INDEX=https://download.pytorch.org/whl/cu124
+    echo Detected NVIDIA GPU. Installing CUDA runtimes for ONNX/MMDeploy...
+    set GPU_PACKAGES=onnxruntime-gpu==1.15.1 mmdeploy-runtime-gpu==1.3.1 nvidia-cuda-runtime-cu11==11.8.89 nvidia-cublas-cu11==11.11.3.6 nvidia-cudnn-cu11==8.9.5.29 nvidia-cuda-nvrtc-cu11==11.8.89 nvidia-cufft-cu11==10.9.0.58 nvidia-curand-cu11==10.3.0.86
 ) else (
-    echo NVIDIA GPU not detected. Installing CPU-only PyTorch...
-)
-
-pip install --upgrade --force-reinstall torch torchvision --index-url %TORCH_INDEX% --quiet
-if errorlevel 1 (
-    echo ERROR: Failed to install PyTorch from %TORCH_INDEX%
-    pause
-    exit /b 1
+    echo NVIDIA GPU not detected. Building CPU-only runtime...
 )
 
 pip install -r requirements.txt --quiet
@@ -28,6 +21,21 @@ if errorlevel 1 (
     echo ERROR: Failed to install dependencies
     pause
     exit /b 1
+)
+if defined GPU_PACKAGES (
+    echo [1.5/3] Installing GPU runtimes...
+    pip install %GPU_PACKAGES% --quiet
+    if errorlevel 1 (
+        echo ERROR: Failed to install GPU runtimes
+        pause
+        exit /b 1
+    )
+    python prepare_gpu_runtime.py
+    if errorlevel 1 (
+        echo ERROR: Failed to prepare MMDeploy GPU runtime
+        pause
+        exit /b 1
+    )
 )
 
 echo [2/3] Building with PyInstaller...

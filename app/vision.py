@@ -1,61 +1,84 @@
 import asyncio
 import threading
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 import cv2
+import numpy as np
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app import models
+
 try:
     from PIL import Image, ImageDraw, ImageFont
+
     _PIL_AVAILABLE = True
 except Exception:
     _PIL_AVAILABLE = False
 
-# simple ru->lat transliteration fallback (correct utf-8 characters)
 _RU_LAT_MAP = {
-    "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D", "Е": "E", "Ё": "E", "Ж": "Zh", "З": "Z", "И": "I",
-    "Й": "Y", "К": "K", "Л": "L", "М": "M", "Н": "N", "О": "O", "П": "P", "Р": "R", "С": "S", "Т": "T",
-    "У": "U", "Ф": "F", "Х": "Kh", "Ц": "Ts", "Ч": "Ch", "Ш": "Sh", "Щ": "Shch", "Ы": "Y", "Э": "E",
-    "Ю": "Yu", "Я": "Ya",
+    "Рђ": "A",
+    "Р‘": "B",
+    "Р’": "V",
+    "Р“": "G",
+    "Р”": "D",
+    "Р•": "E",
+    "РЃ": "E",
+    "Р–": "Zh",
+    "Р—": "Z",
+    "Р": "I",
+    "Р™": "Y",
+    "Рљ": "K",
+    "Р›": "L",
+    "Рњ": "M",
+    "Рќ": "N",
+    "Рћ": "O",
+    "Рџ": "P",
+    "Р ": "R",
+    "РЎ": "S",
+    "Рў": "T",
+    "РЈ": "U",
+    "Р¤": "F",
+    "РҐ": "Kh",
+    "Р¦": "Ts",
+    "Р§": "Ch",
+    "РЁ": "Sh",
+    "Р©": "Shch",
+    "Р«": "Y",
+    "Р­": "E",
+    "Р®": "Yu",
+    "РЇ": "Ya",
 }
-_RU_LAT_MAP.update({k.lower(): v.lower() for k, v in list(_RU_LAT_MAP.items())})
+_RU_LAT_MAP.update({key.lower(): value.lower() for key, value in list(_RU_LAT_MAP.items())})
+
+_SIM_MARGIN = 0.05
+_FONT_CACHE = None
+_model_lock = threading.Lock()
+_FACE_RUNTIME = None
+
+
+def _face_runtime():
+    global _FACE_RUNTIME
+    if _FACE_RUNTIME is None:
+        from cctv_ai.face_onnx import (
+            detect_faces_rgb,
+            extract_best_face_embedding_bgr,
+            normalize_vec,
+            preprocess_frame,
+        )
+
+        _FACE_RUNTIME = {
+            "detect_faces_rgb": detect_faces_rgb,
+            "extract_best_face_embedding_bgr": extract_best_face_embedding_bgr,
+            "normalize_vec": normalize_vec,
+            "preprocess_frame": preprocess_frame,
+        }
+    return _FACE_RUNTIME
 
 
 def _translit(text: str) -> str:
     return "".join(_RU_LAT_MAP.get(ch, ch) for ch in text)
-
-
-def draw_labels(frame_bgr, labels):
-    """Draw labels with Cyrillic support via PIL.
-    labels: list of (x1, y1, text, color_rgb)
-    """
-    if not labels:
-        return frame_bgr
-    if _PIL_AVAILABLE:
-        pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(pil_img)
-        font = _pick_font(16)
-        for x1, y1, text, color_rgb in labels:
-            try:
-                draw.text((x1, max(y1 - 22, 0)), text, fill=tuple(color_rgb), font=font or ImageFont.load_default())
-            except Exception:
-                safe_text = _translit(text)
-                draw.text((x1, max(y1 - 22, 0)), safe_text, fill=tuple(color_rgb), font=font or ImageFont.load_default())
-        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    for x1, y1, text, color_rgb in labels:
-        safe_text = _translit(text)
-        cv2.putText(frame_bgr, safe_text, (x1, max(y1 - 5, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    (color_rgb[2], color_rgb[1], color_rgb[0]), 2, cv2.LINE_AA)
-    return frame_bgr
-
-
-def _normalize_vec(vec):
-    import numpy as _np
-    norm = _np.linalg.norm(vec)
-    if norm == 0:
-        return vec
-    return vec / norm
-
-_FONT_CACHE = None
 
 
 def _pick_font(size: int = 16):
@@ -80,201 +103,143 @@ def _pick_font(size: int = 16):
     except Exception:
         _FONT_CACHE = None
     return _FONT_CACHE
-import numpy as np
-try:
-    import torch
-    from facenet_pytorch import MTCNN, InceptionResnetV1
-    _TORCH_AVAILABLE = True
-except ImportError:
-    _TORCH_AVAILABLE = False
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app import models
-
-import logging
-
-log = logging.getLogger("app.face")
-
-_mtcnn = None
-_embedder = None
-_device: str = "cpu"
-_model_lock = threading.Lock()
-
-_SIM_MARGIN = 0.05
-_FACE_PROB_MIN = 0.85
-_MIN_FACE_RATIO = 0.12
 
 
-def _ensure_models():
-    global _mtcnn, _embedder, _device
-    if not _TORCH_AVAILABLE:
-        raise RuntimeError("torch/facenet not installed — face detection unavailable")
-    if _mtcnn is not None and _embedder is not None:
-        return _mtcnn, _embedder, _device
-    _device = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info("[VISION] Initializing models on device=%s", _device)
-    if _device == "cuda":
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-    _mtcnn = MTCNN(
-        image_size=160,
-        margin=0,
-        min_face_size=20,
-        thresholds=[0.5, 0.6, 0.6],
-        factor=0.709,
-        post_process=True,
-        keep_all=True,
-        device=_device,
-    )
-    _embedder = InceptionResnetV1(pretrained="vggface2").eval().to(_device)
-    return _mtcnn, _embedder, _device
+def draw_labels(frame_bgr, labels):
+    if not labels:
+        return frame_bgr
+    if _PIL_AVAILABLE:
+        pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+        font = _pick_font(16)
+        for x1, y1, text, color_rgb in labels:
+            try:
+                draw.text((x1, max(y1 - 22, 0)), text, fill=tuple(color_rgb), font=font or ImageFont.load_default())
+            except Exception:
+                safe_text = _translit(text)
+                draw.text((x1, max(y1 - 22, 0)), safe_text, fill=tuple(color_rgb), font=font or ImageFont.load_default())
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    for x1, y1, text, color_rgb in labels:
+        safe_text = _translit(text)
+        cv2.putText(
+            frame_bgr,
+            safe_text,
+            (x1, max(y1 - 5, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (color_rgb[2], color_rgb[1], color_rgb[0]),
+            2,
+            cv2.LINE_AA,
+        )
+    return frame_bgr
 
 
-def _person_label(p: models.Person) -> str:
-    parts = [p.last_name, p.first_name, p.middle_name]
-    label = " ".join([x for x in parts if x]) or f"ID {p.person_id}"
-    return label
-
-
-def _preprocess(frame_bgr: np.ndarray) -> np.ndarray:
-    """Reduce overexposure: CLAHE on L channel in LAB."""
-    lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l2 = clahe.apply(l)
-    lab = cv2.merge((l2, a, b))
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+def _person_label(person: models.Person) -> str:
+    parts = [person.last_name, person.first_name, person.middle_name]
+    return " ".join([part for part in parts if part]) or f"ID {person.person_id}"
 
 
 async def load_gallery(session: AsyncSession) -> List[Tuple[int, np.ndarray, str]]:
+    normalize_vec = _face_runtime()["normalize_vec"]
     gallery: List[Tuple[int, np.ndarray, str]] = []
-    # prefer multi-embedding table
     res = await session.execute(
-        select(models.PersonEmbedding, models.Person)
-        .join(models.Person, models.PersonEmbedding.person_id == models.Person.person_id)
+        select(models.PersonEmbedding, models.Person).join(
+            models.Person, models.PersonEmbedding.person_id == models.Person.person_id
+        )
     )
-    rows = res.all()
-    for emb_row, p in rows:
+    for emb_row, person in res.all():
         try:
             emb = np.frombuffer(emb_row.embedding, dtype=np.float32)
             if emb.size == 0:
                 continue
-            emb = _normalize_vec(emb)
-            gallery.append((p.person_id, emb, _person_label(p)))
+            gallery.append((person.person_id, normalize_vec(emb), _person_label(person)))
         except Exception:
             continue
-    log.info("gallery.loaded total=%d", len(gallery))
     return gallery
+
+
+def extract_best_face_embedding(image_bgr: np.ndarray) -> np.ndarray | None:
+    extract_best_face_embedding_bgr = _face_runtime()["extract_best_face_embedding_bgr"]
+    return extract_best_face_embedding_bgr(image_bgr, prob_min=0.46, min_face_ratio=0.028)
 
 
 def _detect_and_embed(frame_bgr: np.ndarray):
     with _model_lock:
-        return _detect_and_embed_inner(frame_bgr)
+        runtime = _face_runtime()
+        prepared = runtime["preprocess_frame"](frame_bgr)
+        img_rgb = cv2.cvtColor(prepared, cv2.COLOR_BGR2RGB)
+        faces = runtime["detect_faces_rgb"](
+            img_rgb,
+            prob_min=0.46,
+            min_face_ratio=0.028,
+            det_size=(1024, 1024),
+            build_variants=True,
+            max_num=0,
+        )
+        if not faces:
+            return [], []
+        embeddings = [np.asarray(face["embedding"], dtype=np.float32) for face in faces]
+        boxes = [
+            tuple(int(round(v)) for v in face["box"])
+            for face in faces
+        ]
+        return embeddings, boxes
 
 
-def _detect_and_embed_inner(frame_bgr: np.ndarray):
-    mtcnn, embedder, device = _ensure_models()
-    frame_bgr = _preprocess(frame_bgr)
-    img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    boxes, probs = mtcnn.detect(img_rgb)
-    if boxes is None or len(boxes) == 0:
-        return [], []
-    h, w, _ = img_rgb.shape
-    min_size = max(h, w) * _MIN_FACE_RATIO
-    filtered = []
-    for box, prob in zip(boxes, probs):
-        if prob is not None and prob < _FACE_PROB_MIN:
-            continue
-        x1, y1, x2, y2 = [float(b) for b in box]
-        if (x2 - x1) < min_size or (y2 - y1) < min_size:
-            continue
-        filtered.append((box, prob))
-    if not filtered:
-        return [], []
-    # simple NMS to drop overlapping duplicates
-    kept = []
-    filtered.sort(key=lambda x: x[1] or 0, reverse=True)
-    def iou(a, b):
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
-        inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
-        inter = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
-        area_a = (ax2 - ax1) * (ay2 - ay1)
-        area_b = (bx2 - bx1) * (by2 - by1)
-        union = area_a + area_b - inter
-        return inter / union if union > 0 else 0
-    for box, prob in filtered:
-        if any(iou(box, k[0]) > 0.5 for k in kept):
-            continue
-        kept.append((box, prob))
-
-    boxes_kept = [k[0] for k in kept]
-    # aligned face crops from MTCNN (pre-whitened with post_process=True)
-    face_tensors = mtcnn.extract(img_rgb, boxes_kept, None)
-    if face_tensors is None:
-        return [], []
-    if isinstance(face_tensors, torch.Tensor):
-        faces = face_tensors
-    else:
-        faces = torch.stack([t for t in face_tensors if t is not None]) if len(face_tensors) else None
-    if faces is None or faces.nelement() == 0:
-        return [], []
-    if faces.dim() == 3:
-        faces = faces.unsqueeze(0)
-    faces = faces.to(device)
-    with torch.no_grad():
-        embs = embedder(faces).cpu().numpy()
-    embs = np.stack([_normalize_vec(e) for e in embs])
-    int_boxes = [(int(x1), int(y1), int(x2), int(y2)) for x1, y1, x2, y2 in boxes_kept]
-    return embs, int_boxes
-
-
-def _match_faces(embs: List[np.ndarray], boxes: List[Tuple[int, int, int, int]], gallery: List[Tuple[int, np.ndarray, str]], threshold: float):
+def _match_faces(
+    embeddings: List[np.ndarray],
+    boxes: List[Tuple[int, int, int, int]],
+    gallery: List[Tuple[int, np.ndarray, str]],
+    threshold: float,
+):
     results = []
-    for emb, box in zip(embs, boxes):
-        # group best similarity per person (multi-embedding: pick best)
+    for emb, box in zip(embeddings, boxes):
         person_best: dict[int, tuple[float, str]] = {}
-        for pid, g_emb, label in gallery:
-            if emb.shape != g_emb.shape:
+        for person_id, gallery_embedding, label in gallery:
+            if emb.shape != gallery_embedding.shape:
                 continue
-            sim = float(np.dot(emb, g_emb))  # both L2-normalized
-            prev = person_best.get(pid)
+            sim = float(np.dot(emb, gallery_embedding))
+            prev = person_best.get(person_id)
             if prev is None or sim > prev[0]:
-                person_best[pid] = (sim, label)
+                person_best[person_id] = (sim, label)
 
         best_id = None
         best_sim = -1.0
         best_label = None
         second_best = -1.0
-        for pid, (sim, label) in person_best.items():
+        for person_id, (sim, label) in person_best.items():
             if sim > best_sim:
                 second_best = best_sim
                 best_sim = sim
-                best_id = pid
+                best_id = person_id
                 best_label = label
             elif sim > second_best:
                 second_best = sim
 
         margin_ok = best_sim - second_best >= _SIM_MARGIN
         recognized = best_id is not None and best_sim >= threshold and margin_ok
-        results.append({
-            "box": box,
-            "person_id": best_id if recognized else None,
-            "confidence": best_sim if best_sim > 0 else None,
-            "recognized": recognized,
-            "label": best_label if recognized else "Unknown",
-        })
+        results.append(
+            {
+                "box": box,
+                "person_id": best_id if recognized else None,
+                "confidence": best_sim if best_sim > 0 else None,
+                "recognized": recognized,
+                "label": best_label if recognized else "Unknown",
+            }
+        )
     return results
 
 
-async def annotate_and_match(frame_bgr: np.ndarray, gallery: List[Tuple[int, np.ndarray, str]], threshold: float):
-    # используем исходный кадр, чтобы совпадать с пайплайном энролла
-    embs, boxes = await asyncio.to_thread(_detect_and_embed, frame_bgr)
-    if len(embs) == 0:
+async def annotate_and_match(
+    frame_bgr: np.ndarray,
+    gallery: List[Tuple[int, np.ndarray, str]],
+    threshold: float,
+):
+    embeddings, boxes = await asyncio.to_thread(_detect_and_embed, frame_bgr)
+    if len(embeddings) == 0:
         return [], frame_bgr
-    matches = _match_faces(embs, boxes, gallery, threshold)
+
+    matches = _match_faces(embeddings, boxes, gallery, threshold)
     annotated = frame_bgr.copy()
     faces_info = []
     if _PIL_AVAILABLE:
@@ -284,25 +249,36 @@ async def annotate_and_match(frame_bgr: np.ndarray, gallery: List[Tuple[int, np.
     else:
         pil_img = None
 
-    for idx, m in enumerate(matches):
-        x1, y1, x2, y2 = m["box"]
-        recognized = m["recognized"]
-        label_text = m["label"] or "Unknown"
-        if recognized and m["confidence"] is not None:
-            label_text = f"{label_text} ({m['confidence']:.2f})"
+    for idx, match in enumerate(matches):
+        x1, y1, x2, y2 = match["box"]
+        recognized = bool(match["recognized"])
+        label_text = match["label"] or "Unknown"
+        if recognized and match["confidence"] is not None:
+            label_text = f"{label_text} ({match['confidence']:.2f})"
         color = (0, 200, 0) if recognized else (200, 0, 0)
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (color[2], color[1], color[0]), 2)  # BGR
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (color[2], color[1], color[0]), 2)
         if pil_img:
             try:
                 draw.text((x1, max(y1 - 22, 0)), label_text, fill=tuple(color), font=font or ImageFont.load_default())
             except Exception:
-                safe_label = _translit(label_text)
-                draw.text((x1, max(y1 - 22, 0)), safe_label, fill=tuple(color), font=font or ImageFont.load_default())
+                draw.text(
+                    (x1, max(y1 - 22, 0)),
+                    _translit(label_text),
+                    fill=tuple(color),
+                    font=font or ImageFont.load_default(),
+                )
         else:
-            # fallback ascii for OpenCV
-            safe_label = _translit(label_text)
-            cv2.putText(annotated, safe_label, (x1, max(y1 - 5, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (color[2], color[1], color[0]), 2, cv2.LINE_AA)
-        faces_info.append((m["box"], label_text, recognized, m["person_id"], m["confidence"], embs[idx]))
+            cv2.putText(
+                annotated,
+                _translit(label_text),
+                (x1, max(y1 - 5, 0)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (color[2], color[1], color[0]),
+                2,
+                cv2.LINE_AA,
+            )
+        faces_info.append((match["box"], label_text, recognized, match["person_id"], match["confidence"], embeddings[idx]))
 
     if pil_img:
         annotated = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)

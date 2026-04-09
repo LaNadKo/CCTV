@@ -1034,6 +1034,9 @@ class ProcessorApp(ctk.CTk):
 
         def run() -> None:
             try:
+                from processor.runtime import configure_headless_logging
+
+                configure_headless_logging()
                 root_logger = logging.getLogger()
                 root_logger.setLevel(logging.INFO)
                 if self._gui_log_handler:

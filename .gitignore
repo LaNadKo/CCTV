@@ -5,6 +5,10 @@ __pycache__/
 .env
 venv/
 .venv/
+.venv-backend-clean/
+.venv-processor311/
+.tmp-ort115/
+tmp/
 
 # Node
 node_modules/
@@ -55,6 +59,9 @@ mobile/android/
 mobile/ios/
 mobile/dist/
 mobile/.expo/
+mobile/react-capacitor/node_modules/
+mobile/react-capacitor/dist/
+mobile/react-capacitor/android/app/build/
 
 # Desktop build artifacts
 desktop/node_modules/

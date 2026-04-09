@@ -85,8 +85,10 @@ class CameraWorker:
             fallback=1,
         )
         self._target_scan_interval = self._frame_divisor_to_interval(self._face_scan_divisor)
-        self._last_event: dict[int | None, float] = {}
+        self._last_event: dict[object, float] = {}
         self._event_dedup_seconds = 10.0
+        self._unknown_event_dedup_seconds = 0.8
+        self._unknown_event_cache: list[tuple[np.ndarray, float]] = []
         self._overlay_ttl = max(self._target_scan_interval + 1.0, 3.0)
         self._record_event_tail_seconds = 10.0
         self._live_publish_interval = self._frame_divisor_to_interval(self._overlay_frame_divisor)
@@ -104,6 +106,7 @@ class CameraWorker:
         self._identity_state: dict[str, dict[str, object]] = {}
         self._body_tracks: dict[int, dict[str, object]] = {}
         self._next_body_track_id = 1
+        self._recognized_track_hold_seconds = 4.5
         self._body_support_cache: list[dict] | None = None
         self._body_support_ts = 0.0
         self._body_support_interval = max(0.08, min(0.6, self._target_scan_interval * 0.8))
@@ -116,7 +119,7 @@ class CameraWorker:
         self._capture_thread: threading.Thread | None = None
         self._scan_lock = threading.Lock()
         self._scan_inflight = False
-        self._scan_max_side = 960
+        self._scan_max_side = 1536
 
         self._frame_lock = threading.Lock()
         self._latest_raw_jpeg: bytes | None = None
@@ -436,8 +439,19 @@ class CameraWorker:
                     person_id = self._recover_recent_identity(box, sim, now)
                 recognized = person_id is not None
                 label = self._label_for_person(person_id) if recognized else "Неизвестно"
-                if not self._is_live_face(frame, box, bodies, now, strict_unknown=not recognized):
+                liveness = self._evaluate_face_liveness(
+                    frame,
+                    box,
+                    bodies,
+                    now,
+                    track_id=track_id,
+                    recognized=recognized,
+                )
+                if not bool(liveness.get("candidate")):
                     logger.debug("Camera %s: suppressed non-live/spoof-like face %s", self.camera_id, box)
+                    continue
+                overlay_items.append((box, label, recognized))
+                if not bool(liveness.get("confirmed")):
                     continue
                 if recognized:
                     self._remember_identity(box, person_id, sim, now)
@@ -450,9 +464,9 @@ class CameraWorker:
                         recent_motion = bool(
                             track_state
                             and int(track_state.get("hits", 0)) >= 2
-                            and self._track_has_pose_support(track_state, strict=True)
+                            and self._track_has_pose_support(track_state, strict=False)
                         )
-                    if not recent_motion and bodies and self._face_supported_by_pose(box, bodies, strict=True):
+                    if not recent_motion and bodies and self._face_supported_by_pose(box, bodies, strict=False):
                         recent_motion = True
                     if not recent_motion:
                         logger.debug(
@@ -461,12 +475,18 @@ class CameraWorker:
                             box,
                         )
                         continue
-                overlay_items.append((box, label, recognized))
+                    if self._should_skip_unknown_embedding(face["embedding"]):
+                        continue
                 event_type = "face_recognized" if recognized else "face_unknown"
 
-                dedup_key = person_id
+                if recognized:
+                    dedup_key = ("person", person_id)
+                    dedup_window = self._event_dedup_seconds
+                else:
+                    dedup_key = ("unknown-track", track_id) if track_id is not None else ("unknown-face", self._face_key(box))
+                    dedup_window = self._unknown_event_dedup_seconds
                 last_ts = self._last_event.get(dedup_key, 0)
-                if now - last_ts < self._event_dedup_seconds:
+                if now - last_ts < dedup_window:
                     continue
                 self._last_event[dedup_key] = now
                 self._last_activity_ts = now
@@ -622,7 +642,7 @@ class CameraWorker:
             from processor.body_detector import detect_bodies
 
             body_frame, scale_x, scale_y = self._prepare_body_frame(frame)
-            detected = detect_bodies(body_frame, conf=0.28)
+            detected = detect_bodies(body_frame, conf=0.28, camera_key=self.camera_id)
             bodies = []
             for body in detected:
                 payload = {
@@ -645,6 +665,12 @@ class CameraWorker:
                 keypoint_conf = body.get("keypoint_conf")
                 if isinstance(keypoint_conf, list):
                     payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
+                track_id = body.get("track_id")
+                if track_id is not None:
+                    try:
+                        payload["track_id"] = int(track_id)
+                    except (TypeError, ValueError):
+                        pass
                 self._apply_body_pose_metadata(payload, frame.shape[1], frame.shape[0])
                 bodies.append(payload)
         except Exception:
@@ -747,6 +773,54 @@ class CameraWorker:
             return max(iou_score, (iou_score * 0.72) + (anchor_score * 0.28))
         return max(iou_score, anchor_score * 0.88)
 
+    def _track_has_recent_identity(self, state: dict[str, object], now: float) -> bool:
+        if not state.get("recognized"):
+            return False
+        last_identity_seen = float(state.get("last_identity_seen", 0.0) or 0.0)
+        if last_identity_seen <= 0.0:
+            return False
+        return (now - last_identity_seen) <= self._recognized_track_hold_seconds
+
+    def _track_match_score(self, body: dict[str, object], state: dict[str, object], now: float) -> float:
+        base_score = self._body_track_match_score(body, state)
+        if not self._track_has_recent_identity(state, now):
+            return base_score
+
+        body_box = body.get("tracking_box")
+        if not isinstance(body_box, tuple):
+            body_box = body.get("box")
+        state_box = state.get("tracking_box")
+        if not isinstance(state_box, tuple):
+            state_box = state.get("box")
+        if not isinstance(body_box, tuple) or not isinstance(state_box, tuple):
+            return 0.0
+
+        iou_score = self._box_iou(body_box, state_box)
+        body_anchor = self._body_anchor(body)
+        state_anchor = self._body_anchor(state)
+        anchor_score = 0.0
+        if body_anchor and state_anchor:
+            dist = abs(body_anchor[0] - state_anchor[0]) + abs(body_anchor[1] - state_anchor[1])
+            max_side = max(
+                body_box[2] - body_box[0],
+                body_box[3] - body_box[1],
+                state_box[2] - state_box[0],
+                state_box[3] - state_box[1],
+                1,
+            )
+            max_dist = max(28.0, max_side * 0.55)
+            anchor_score = 1.0 - min(1.0, dist / max_dist)
+
+        # Recognized tracks should stay attached to the same body.
+        if iou_score < 0.08 and anchor_score < 0.5:
+            return 0.0
+
+        locked_score = max(base_score, (iou_score * 0.6) + (anchor_score * 0.4) + 0.14)
+        return min(1.0, locked_score)
+
+    def _track_match_threshold(self, state: dict[str, object], now: float) -> float:
+        return 0.3 if self._track_has_recent_identity(state, now) else 0.16
+
     def _box_iou(self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
         ax1, ay1, ax2, ay2 = box_a
         bx1, by1, bx2, by2 = box_b
@@ -760,10 +834,14 @@ class CameraWorker:
         return inter / float(area_a + area_b - inter + 1e-6)
 
     def _update_body_tracks(self, bodies: list[dict], now: float) -> list[dict]:
+        if bodies and all(isinstance(body.get("track_id"), int) for body in bodies):
+            return self._update_external_body_tracks(bodies, now)
+
         stale_track_ids = [
             track_id
             for track_id, state in self._body_tracks.items()
-            if now - float(state.get("last_seen", 0.0)) > 3.5
+            if now - float(state.get("last_seen", 0.0))
+            > (5.0 if self._track_has_recent_identity(state, now) else 3.5)
         ]
         for track_id in stale_track_ids:
             self._body_tracks.pop(track_id, None)
@@ -776,15 +854,17 @@ class CameraWorker:
                 tracking_box = box
             best_track_id: int | None = None
             best_score = 0.0
+            best_threshold = 0.16
             for track_id in list(unmatched_track_ids):
                 state = self._body_tracks.get(track_id)
                 if not state:
                     continue
-                score = self._body_track_match_score(body, state)
+                score = self._track_match_score(body, state, now)
                 if score > best_score:
                     best_score = score
                     best_track_id = track_id
-            if best_track_id is not None and best_score >= 0.16:
+                    best_threshold = self._track_match_threshold(state, now)
+            if best_track_id is not None and best_score >= best_threshold:
                 state = self._body_tracks[best_track_id]
                 state["box"] = box
                 state["tracking_box"] = tracking_box
@@ -814,9 +894,56 @@ class CameraWorker:
                 "person_id": None,
                 "label": None,
                 "recognized": False,
+                "last_identity_seen": 0.0,
             }
 
         self._dedupe_body_tracks()
+        return [dict(state) for state in self._body_tracks.values()]
+
+    def _update_external_body_tracks(self, bodies: list[dict], now: float) -> list[dict]:
+        seen_track_ids: set[int] = set()
+        for body in bodies:
+            ext_track_id = body.get("track_id")
+            if not isinstance(ext_track_id, int):
+                continue
+            seen_track_ids.add(ext_track_id)
+            box = tuple(int(round(v)) for v in body["box"])
+            tracking_box = body.get("tracking_box")
+            if not isinstance(tracking_box, tuple):
+                tracking_box = box
+
+            state = self._body_tracks.get(ext_track_id)
+            if state is None:
+                state = {
+                    "track_id": ext_track_id,
+                    "person_id": None,
+                    "label": None,
+                    "recognized": False,
+                    "last_identity_seen": 0.0,
+                    "hits": 0,
+                }
+                self._body_tracks[ext_track_id] = state
+
+            state["box"] = box
+            state["tracking_box"] = tracking_box
+            state["keypoints"] = body.get("keypoints")
+            state["keypoint_conf"] = body.get("keypoint_conf")
+            state["head_points"] = body.get("head_points")
+            state["head_box"] = body.get("head_box")
+            state["head_only"] = bool(body.get("head_only"))
+            state["last_seen"] = now
+            state["hits"] = int(state.get("hits", 0)) + 1
+
+        stale_track_ids = [
+            track_id
+            for track_id, state in self._body_tracks.items()
+            if track_id not in seen_track_ids
+            and now - float(state.get("last_seen", 0.0))
+            > (5.0 if self._track_has_recent_identity(state, now) else 3.5)
+        ]
+        for track_id in stale_track_ids:
+            self._body_tracks.pop(track_id, None)
+
         return [dict(state) for state in self._body_tracks.values()]
 
     def _dedupe_body_tracks(self) -> None:
@@ -849,10 +976,20 @@ class CameraWorker:
                 overlap = self._box_iou(box, other_box)
                 if not same_person and overlap < 0.55:
                     continue
-                keep_first = (
-                    int(state.get("hits", 0)) >= int(other.get("hits", 0))
-                    and float(state.get("last_seen", 0.0)) >= float(other.get("last_seen", 0.0)) - 0.2
-                )
+                state_recognized = bool(state.get("recognized"))
+                other_recognized = bool(other.get("recognized"))
+                if state_recognized != other_recognized:
+                    keep_first = state_recognized
+                elif same_person:
+                    keep_first = (
+                        float(state.get("last_identity_seen", 0.0))
+                        >= float(other.get("last_identity_seen", 0.0))
+                    )
+                else:
+                    keep_first = (
+                        int(state.get("hits", 0)) >= int(other.get("hits", 0))
+                        and float(state.get("last_seen", 0.0)) >= float(other.get("last_seen", 0.0)) - 0.2
+                    )
                 to_remove.add(other_id if keep_first else track_id)
                 if not keep_first:
                     break
@@ -879,9 +1016,10 @@ class CameraWorker:
             if not isinstance(body_box, tuple) or track_id is None:
                 continue
             head_only = bool(state.get("head_only"))
+            recognized_bias = 0.08 if bool(state.get("recognized")) else 0.0
             pose_score = self._face_pose_support_score(face_box, state, strict=head_only)
             if pose_score > 0.0:
-                score = 0.62 + (pose_score * 0.38)
+                score = 0.62 + (pose_score * 0.38) + recognized_bias
                 if score > best_score:
                     best_score = score
                     best_track_id = int(track_id)
@@ -902,7 +1040,7 @@ class CameraWorker:
             center_score = 1.0 - min(1.0, abs(face_cx - body_cx) / max(body_width * (0.48 if head_only else 0.35), 1.0))
             target_ratio = 0.46 if head_only else 0.24
             scale_score = 1.0 - min(1.0, abs(width_ratio - target_ratio) / max(target_ratio, 0.12))
-            score = (center_score * 0.7) + (scale_score * 0.3)
+            score = (center_score * 0.7) + (scale_score * 0.3) + recognized_bias
             if score > best_score:
                 best_score = score
                 best_track_id = int(track_id)
@@ -985,6 +1123,37 @@ class CameraWorker:
         cx = x1 + width / 2
         cy = y1 + height / 2
         return f"{round(cx / 40)}:{round(cy / 40)}:{round(width / 40)}:{round(height / 40)}"
+
+    def _face_state_key(self, box: tuple[int, int, int, int], track_id: int | None = None) -> str:
+        if track_id is not None:
+            return f"track:{track_id}"
+        return self._face_key(box)
+
+    def _should_skip_unknown_embedding(
+        self,
+        embedding: np.ndarray,
+        ttl: float | None = None,
+        sim_thr: float | None = None,
+    ) -> bool:
+        ttl = self._unknown_event_dedup_seconds if ttl is None else ttl
+        sim_thr = max(settings.face_match_threshold + 0.08, 0.64) if sim_thr is None else sim_thr
+        probe = np.asarray(embedding, dtype=np.float32)
+        norm = float(np.linalg.norm(probe))
+        if norm <= 1e-6:
+            return False
+        probe = probe / norm
+        now = time.time()
+        self._unknown_event_cache = [
+            (cached, ts)
+            for cached, ts in self._unknown_event_cache
+            if now - ts < ttl
+        ]
+        for cached, _ in self._unknown_event_cache:
+            sim = float(np.dot(probe, cached))
+            if sim >= sim_thr:
+                return True
+        self._unknown_event_cache.append((probe, now))
+        return False
 
     def _crop_face(self, frame: np.ndarray, box: tuple[int, int, int, int], pad_ratio: float = 0.15) -> np.ndarray | None:
         x1, y1, x2, y2 = box
@@ -1254,28 +1423,31 @@ class CameraWorker:
             return best_person_id
         return None
 
-    def _is_live_face(
+    def _evaluate_face_liveness(
         self,
         frame: np.ndarray,
         box: tuple[int, int, int, int],
         bodies: list[dict] | None,
         now: float,
-        strict_unknown: bool = False,
-    ) -> bool:
+        track_id: int | None = None,
+        recognized: bool = False,
+    ) -> dict[str, object]:
         from processor.antispoof import lbp_texture_score, micro_movement_check
 
         self._prune_liveness_state(now)
         self._prune_identity_state(now)
         crop = self._crop_face(frame, box)
         if crop is None:
-            return False
+            return {"candidate": False, "confirmed": False, "stable_hits": 0}
 
         x1, y1, x2, y2 = box
         frame_area = max(frame.shape[0] * frame.shape[1], 1)
         face_area_ratio = ((x2 - x1) * (y2 - y1)) / frame_area
         large_face = face_area_ratio >= settings.antispoof_small_face_ratio
         texture_score = lbp_texture_score(crop) if min(crop.shape[:2]) >= 32 else 0.0
-        if bodies is None:
+        pose_supported = False
+        strict_pose_supported = False
+        if not bodies:
             body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 0.6, 0.03)
             strict_body_supported = face_area_ratio >= max(settings.antispoof_small_face_ratio * 1.05, 0.055)
         else:
@@ -1283,15 +1455,13 @@ class CameraWorker:
             strict_pose_supported = self._face_supported_by_pose(box, bodies, strict=True)
             body_supported = pose_supported or self._face_supported_by_body(box, bodies) or face_area_ratio >= 0.2
             strict_body_supported = strict_pose_supported or self._face_strictly_supported_by_body(box, bodies) or face_area_ratio >= 0.22
-        if not body_supported:
-            return False
 
         gray = cv2.cvtColor(cv2.resize(crop, (96, 96)), cv2.COLOR_BGR2GRAY)
         context = self._crop_context(frame, box)
         context_gray = None
         if context is not None:
             context_gray = cv2.cvtColor(cv2.resize(context, (128, 128)), cv2.COLOR_BGR2GRAY)
-        key = self._face_key(box)
+        key = self._face_state_key(box, track_id=track_id)
         prev = self._liveness_state.get(key)
 
         face_motion_ok = False
@@ -1326,7 +1496,7 @@ class CameraWorker:
                 curr_cx = (x1 + x2) / 2
                 curr_cy = (y1 + y2) / 2
                 shift = abs(curr_cx - prev_cx) + abs(curr_cy - prev_cy)
-                shift_motion_ok = shift >= max(8.0, max(x2 - x1, y2 - y1) * 0.07)
+                shift_motion_ok = shift >= max(6.0, max(x2 - x1, y2 - y1) * 0.045)
 
         self._liveness_state[key] = {
             "gray": gray,
@@ -1337,26 +1507,69 @@ class CameraWorker:
         }
 
         movement_ok = face_motion_ok or context_motion_ok or shift_motion_ok
+        candidate_body_supported = body_supported
+        base_texture_threshold = settings.antispoof_min_texture_score
+        if recognized:
+            candidate_texture_threshold = base_texture_threshold * (0.85 if large_face else 1.0)
+        else:
+            candidate_texture_threshold = base_texture_threshold * (0.72 if large_face else 0.82)
+        candidate_ok = candidate_body_supported and (
+            texture_score >= candidate_texture_threshold
+            or stable_hits >= 2
+            or face_area_ratio >= max(settings.antispoof_small_face_ratio * 1.05, 0.05)
+        )
 
-        if strict_unknown:
-            if not strict_body_supported:
-                return False
-            if texture_score < settings.antispoof_min_texture_score * 1.15:
-                return False
-            if bodies is not None and self._face_supported_by_pose(box, bodies, strict=True):
-                if face_area_ratio >= 0.045 and stable_hits >= 2:
-                    return True
-            if face_area_ratio < max(settings.antispoof_small_face_ratio * 1.15, 0.05):
-                return stable_hits >= 2 and (face_motion_ok or shift_motion_ok)
-            return stable_hits >= 2 and (face_motion_ok or shift_motion_ok or (context_motion_ok and face_area_ratio >= 0.075))
+        if not candidate_ok:
+            return {
+                "candidate": False,
+                "confirmed": False,
+                "stable_hits": stable_hits,
+                "movement_ok": movement_ok,
+                "texture_score": texture_score,
+            }
+
+        if not recognized:
+            live_motion_ok = face_motion_ok or shift_motion_ok
+            weak_body_support = body_supported or pose_supported
+            strong_body_support = strict_body_supported or strict_pose_supported
+            texture_ok = texture_score >= settings.antispoof_min_texture_score
+            large_unknown_face = face_area_ratio >= max(settings.antispoof_small_face_ratio * 1.2, 0.06)
+
+            confirmed = False
+            if strong_body_support:
+                confirmed = stable_hits >= 2 and (live_motion_ok or texture_score >= settings.antispoof_min_texture_score * 1.05)
+            elif weak_body_support:
+                confirmed = stable_hits >= 2 and live_motion_ok
+                if not confirmed and large_unknown_face:
+                    confirmed = stable_hits >= 3 and face_motion_ok and texture_ok
+            else:
+                confirmed = stable_hits >= 3 and face_motion_ok and texture_score >= settings.antispoof_min_texture_score * 1.05
+
+            if not confirmed and face_area_ratio < max(settings.antispoof_small_face_ratio * 1.1, 0.05):
+                confirmed = stable_hits >= 3 and live_motion_ok and texture_ok
+
+            return {
+                "candidate": True,
+                "confirmed": confirmed,
+                "stable_hits": stable_hits,
+            }
 
         if not large_face:
             if texture_score < settings.antispoof_min_texture_score:
-                return False
-            return movement_ok and stable_hits >= 2
+                return {"candidate": True, "confirmed": False, "stable_hits": stable_hits}
+            return {
+                "candidate": True,
+                "confirmed": movement_ok and stable_hits >= 2,
+                "stable_hits": stable_hits,
+            }
         if texture_score < settings.antispoof_min_texture_score * 0.75:
-            return False
-        return movement_ok
+            return {"candidate": True, "confirmed": False, "stable_hits": stable_hits}
+        strong_pose_support = bodies is not None and self._face_supported_by_pose(box, bodies, strict=True)
+        return {
+            "candidate": True,
+            "confirmed": movement_ok or (strong_pose_support and stable_hits >= 2),
+            "stable_hits": stable_hits,
+        }
 
     def _snapshot_bytes_from_box(self, frame: np.ndarray, box: tuple[int, int, int, int]) -> bytes:
         x1, y1, x2, y2 = box

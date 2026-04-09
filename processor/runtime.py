@@ -235,17 +235,30 @@ def ensure_connected(config: dict[str, Any]) -> dict[str, Any]:
 
 def configure_headless_logging() -> None:
     root_logger = logging.getLogger()
-    if root_logger.handlers:
-        return
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-    file_handler.setFormatter(formatter)
     root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
+    log_path = str(LOG_FILE.resolve())
+
+    has_file_handler = any(
+        isinstance(handler, logging.FileHandler)
+        and str(Path(getattr(handler, "baseFilename", "")).resolve()) == log_path
+        for handler in root_logger.handlers
+    )
+    if not has_file_handler:
+        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
     if not getattr(sys, "frozen", False):
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
-        root_logger.addHandler(stream_handler)
+        has_stream_handler = any(
+            isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+            for handler in root_logger.handlers
+        )
+        if not has_stream_handler:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            root_logger.addHandler(stream_handler)
 
 
 def run_headless() -> None:

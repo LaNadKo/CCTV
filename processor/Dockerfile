@@ -5,8 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . ./processor/
 
 CMD ["python", "-m", "processor.main"]

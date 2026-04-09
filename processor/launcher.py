@@ -50,9 +50,14 @@ def save_config(cfg):
 
 def detect_gpu():
     try:
-        import torch
-        if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0)
+        import pynvml
+
+        pynvml.nvmlInit()
+        name = pynvml.nvmlDeviceGetName(pynvml.nvmlDeviceGetHandleByIndex(0))
+        pynvml.nvmlShutdown()
+        if isinstance(name, bytes):
+            return name.decode()
+        return name
     except Exception:
         pass
     return None
@@ -205,7 +210,10 @@ class RunFrame(ttk.Frame):
 
         def run():
             try:
-                # Redirect all logging to the GUI
+                # Persist logs to processor.log and mirror them into the GUI.
+                from processor.runtime import configure_headless_logging
+
+                configure_headless_logging()
                 root_logger = logging.getLogger()
                 root_logger.setLevel(logging.INFO)
                 tk_handler = _TkLogHandler(self, self._append_log)
