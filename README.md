@@ -92,6 +92,12 @@
 cp .env.example .env
 ```
 
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 2. Поднять базовый стек:
 
 ```bash
@@ -110,11 +116,18 @@ rtsp://127.0.0.1:8554
 
 ### Вариант 2. Готовый shell-скрипт
 
-Linux-сценарий для серверной части:
+Shell-скрипт для серверной части. Поднимает тот же стек, что и Вариант 1: `db + backend + mediamtx`.
 
 ```bash
 ./scripts/start-server.sh
 ```
+
+Требования:
+
+- Linux;
+- или Windows с `Git Bash` / `WSL`.
+
+На чистом Windows без POSIX shell используйте прямой запуск `docker compose` из Варианта 1.
 
 Полезные команды:
 
@@ -208,9 +221,34 @@ npm install
 npm run build
 ```
 
-Для первой Windows-сборки может потребоваться `Developer Mode` или запуск терминала от администратора из-за `electron-builder` и `winCodeSign`.
+На Windows команда `npm run build` может упираться в `electron-builder` / `winCodeSign`, если не включён `Developer Mode` или нет прав на создание symlink в кеше `electron-builder`.
+
+Рабочий обход для portable-сборки на Windows:
+
+```bat
+cd desktop
+npx electron-builder --win portable --config.win.signAndEditExecutable=false
+```
+
+Артефакты:
+
+- `desktop/release/CCTV Console 1.0.0.exe` — portable `.exe`;
+- `desktop/release/win-unpacked/` — folder-based portable.
 
 ### Processor
+
+Portable GUI + CLI:
+
+```bat
+py -3.11 -m venv .venv-processor311
+.\.venv-processor311\Scripts\python.exe -m pip install -r processor\requirements.txt pyinstaller
+.\.venv-processor311\Scripts\python.exe processor\build_exe.py
+```
+
+Артефакты:
+
+- `processor/dist/CCTV-Processor/` — folder-based portable GUI;
+- `processor/dist/CCTV-Processor-CLI.exe` — CLI executable.
 
 Полная Windows-сборка:
 
