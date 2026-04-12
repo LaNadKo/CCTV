@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "name": "cctv-demo-room",
+  "units": "cm",
+  "coordinate_system": {
+    "origin": "bottom-left corner when viewing the room plan",
+    "x_axis": "left to right",
+    "y_axis": "bottom to top",
+    "z_axis": "floor to ceiling"
+  },
+  "room": {
+    "width_cm": 600.0,
+    "depth_cm": 355.0,
+    "height_cm": 330.0
+  },
+  "nodes": [
+    {
+      "node_id": "cctv-rf-node-01",
+      "ip": "192.168.88.101",
+      "mac": "94:A9:90:D2:04:2C",
+      "physical_label": "1",
+      "position_label": "top-left corner",
+      "x_cm": 0.0,
+      "y_cm": 355.0,
+      "z_cm": 109.0
+    },
+    {
+      "node_id": "cctv-rf-node-02",
+      "ip": "192.168.88.102",
+      "mac": "94:A9:90:D2:00:78",
+      "physical_label": "2",
+      "position_label": "bottom-left corner",
+      "x_cm": 0.0,
+      "y_cm": 0.0,
+      "z_cm": 43.0
+    },
+    {
+      "node_id": "cctv-rf-node-03",
+      "ip": "192.168.88.103",
+      "mac": "A4:CB:8F:D4:88:10",
+      "physical_label": "3",
+      "position_label": "bottom long-wall midpoint",
+      "x_cm": 300.0,
+      "y_cm": 0.0,
+      "z_cm": 43.0
+    },
+    {
+      "node_id": "cctv-rf-node-04",
+      "ip": "192.168.88.104",
+      "mac": "94:A9:90:D2:06:30",
+      "physical_label": "4",
+      "position_label": "bottom-right corner",
+      "x_cm": 600.0,
+      "y_cm": 0.0,
+      "z_cm": 83.0
+    },
+    {
+      "node_id": "cctv-rf-node-05",
+      "ip": "192.168.88.105",
+      "mac": "94:A9:90:D1:FB:64",
+      "physical_label": "5",
+      "position_label": "top-right corner",
+      "x_cm": 600.0,
+      "y_cm": 355.0,
+      "z_cm": 39.0
+    },
+    {
+      "node_id": "cctv-rf-node-06",
+      "ip": "192.168.88.106",
+      "mac": "94:A9:90:D2:0B:14",
+      "physical_label": "6",
+      "position_label": "top long-wall midpoint",
+      "x_cm": 300.0,
+      "y_cm": 355.0,
+      "z_cm": 83.0
+    }
+  ],
+  "objects": []
+}

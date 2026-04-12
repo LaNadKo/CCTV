@@ -78,6 +78,8 @@ def default_config() -> dict[str, Any]:
         "face_scan_divisor": 8,
         "overlay_frame_divisor": 1,
         "face_scan_interval": 0.35,
+        "track_observation_interval": 0.2,
+        "track_observation_include_unknown": True,
         "theme_primary_color": "#49C8E8",
         "theme_secondary_color": "#4C6FFF",
         "recording_segment_seconds": 300,
@@ -126,6 +128,8 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "FACE_SCAN_DIVISOR": ("face_scan_divisor", "int"),
         "OVERLAY_FRAME_DIVISOR": ("overlay_frame_divisor", "int"),
         "FACE_SCAN_INTERVAL": ("face_scan_interval", "float"),
+        "TRACK_OBSERVATION_INTERVAL": ("track_observation_interval", "float"),
+        "TRACK_OBSERVATION_INCLUDE_UNKNOWN": ("track_observation_include_unknown", "str"),
         "RECORDING_SEGMENT_SECONDS": ("recording_segment_seconds", "int"),
         "RECORDINGS_DIR": ("recordings_dir", "str"),
         "SNAPSHOTS_DIR": ("snapshots_dir", "str"),
@@ -155,6 +159,8 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
     os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))
     os.environ["FACE_SCAN_INTERVAL"] = str(normalized.get("face_scan_interval", 0.35))
+    os.environ["TRACK_OBSERVATION_INTERVAL"] = str(config.get("track_observation_interval", 0.2))
+    os.environ["TRACK_OBSERVATION_INCLUDE_UNKNOWN"] = str(config.get("track_observation_include_unknown", True))
     os.environ["RECORDING_SEGMENT_SECONDS"] = str(config.get("recording_segment_seconds", 300))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))

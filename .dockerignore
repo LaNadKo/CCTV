@@ -2,6 +2,10 @@
 .env
 .claude/
 frontend/
+!frontend/
+frontend/*
+!frontend/dist/
+!frontend/dist/**
 processor/
 nginx/
 data/

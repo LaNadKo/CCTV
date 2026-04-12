@@ -47,6 +47,10 @@ else
     echo "GPU:    not detected (CPU mode)"
     GPU_PACKAGES=()
 fi
+CPU_PACKAGES=(
+    "onnxruntime==1.15.1"
+    "mmdeploy-runtime==1.3.1"
+)
 echo ""
 
 # ── Create virtual environment ────────────────────────────
@@ -62,10 +66,13 @@ echo "[2/3] Installing dependencies..."
 pip install -r "$SCRIPT_DIR/requirements.txt" -q
 if [ ${#GPU_PACKAGES[@]} -gt 0 ]; then
     echo "[3/3] Installing GPU runtimes..."
+    pip uninstall -y onnxruntime mmdeploy-runtime >/dev/null 2>&1 || true
     pip install "${GPU_PACKAGES[@]}" -q
     "$VENV_DIR/bin/python" "$SCRIPT_DIR/prepare_gpu_runtime.py"
 else
-    echo "[3/3] GPU runtimes skipped"
+    echo "[3/3] Installing CPU runtimes..."
+    pip uninstall -y onnxruntime-gpu mmdeploy-runtime-gpu >/dev/null 2>&1 || true
+    pip install "${CPU_PACKAGES[@]}" -q
 fi
 
 echo ""

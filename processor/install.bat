@@ -20,6 +20,7 @@ echo Python: %PY_VERSION%
 
 :: ── Check GPU ──
 set GPU_PACKAGES=
+set CPU_PACKAGES=onnxruntime==1.15.1 mmdeploy-runtime==1.3.1
 where nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
     for /f "tokens=*" %%g in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set GPU_NAME=%%g
@@ -44,10 +45,13 @@ echo [2/3] Installing dependencies...
 pip install -r "%~dp0requirements.txt" -q
 if defined GPU_PACKAGES (
     echo [3/3] Installing GPU runtimes...
+    pip uninstall -y onnxruntime mmdeploy-runtime >nul 2>&1
     pip install %GPU_PACKAGES% -q
     python "%~dp0prepare_gpu_runtime.py"
 ) else (
-    echo [3/3] GPU runtimes skipped
+    echo [3/3] Installing CPU runtimes...
+    pip uninstall -y onnxruntime-gpu mmdeploy-runtime-gpu >nul 2>&1
+    pip install %CPU_PACKAGES% -q
 )
 
 echo.

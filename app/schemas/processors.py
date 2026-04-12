@@ -1,7 +1,9 @@
 """Processor-related Pydantic schemas."""
 from __future__ import annotations
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.schemas.tracking import CameraTrackBox
 
 
 class ProcessorRegister(BaseModel):
@@ -115,6 +117,10 @@ class ProcessorEventIn(BaseModel):
     person_id: int | None = None
     confidence: float | None = None
     track_id: int | None = None
+    bbox: CameraTrackBox | None = None
+    bbox_kind: str | None = None
+    frame_width: int | None = Field(default=None, ge=1)
+    frame_height: int | None = Field(default=None, ge=1)
     snapshot_b64: str | None = None
     event_ts: datetime | None = None
 

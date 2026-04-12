@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -100,6 +100,7 @@ class CameraWorker:
         self._last_faces_ts = 0.0
         self._last_body_info: list[dict[str, object]] = []
         self._last_body_ts = 0.0
+        self._last_track_observation_ts = 0.0
         self._last_activity_ts = 0.0
         self._last_motion_ts = 0.0
         self._liveness_state: dict[str, dict[str, object]] = {}
@@ -214,6 +215,7 @@ class CameraWorker:
         target_person_id = self.assignment.get("tracking_target_person_id")
         best_box: tuple[int, int, int, int] | None = None
         best_score = float("-inf")
+        current_time = time.monotonic()
         for state in body_tracks:
             box = state.get("tracking_box")
             if not isinstance(box, tuple):
@@ -230,6 +232,11 @@ class CameraWorker:
             pose_support = self._track_has_pose_support(state, strict=not recognized)
             if not recognized and not pose_support and target_person_id is None:
                 continue
+            if not recognized and target_person_id is None:
+                if bool(state.get("head_only")):
+                    continue
+                if not self._track_has_live_motion(state, current_time):
+                    continue
             x1, y1, x2, y2 = box
             box_w = max(x2 - x1, 1)
             box_h = max(y2 - y1, 1)
@@ -239,7 +246,7 @@ class CameraWorker:
             center_dx = abs(center_x - (frame_w / 2)) / max(frame_w / 2, 1)
             center_dy = abs(center_y - (frame_h / 2)) / max(frame_h / 2, 1)
             center_score = 1.0 - min(1.0, (center_dx * 0.65) + (center_dy * 0.35))
-            freshness = max(0.0, 1.0 - ((time.time() - float(state.get("last_seen", 0.0))) / 2.5))
+            freshness = max(0.0, 1.0 - ((current_time - float(state.get("last_seen", 0.0))) / 2.5))
             score = (hits * 0.8) + (center_score * 4.5) + (area_ratio * 5.0) + (freshness * 2.0)
             if pose_support:
                 score += 1.2
@@ -456,7 +463,13 @@ class CameraWorker:
                 if recognized:
                     self._remember_identity(box, person_id, sim, now)
                     if track_id is not None:
-                        self._remember_track_identity(track_id, person_id, label, now)
+                        self._remember_track_identity(
+                            track_id,
+                            person_id,
+                            label,
+                            now,
+                            confidence=self._similarity_to_confidence(sim, True),
+                        )
                 if not recognized:
                     recent_motion = (time.time() - self._last_motion_ts) <= settings.unknown_face_requires_motion_seconds
                     if not recent_motion and track_id is not None:
@@ -502,17 +515,29 @@ class CameraWorker:
                     if snapshot:
                         snapshot_b64 = base64.b64encode(snapshot).decode("ascii")
 
+                event_box, bbox_kind = self._event_room_box(box, track_id, frame.shape)
                 payload = {
                     "event_type": event_type,
                     "camera_id": self.camera_id,
                     "person_id": person_id,
                     "confidence": self._similarity_to_confidence(sim, recognized),
+                    "track_id": int(track_id) if track_id is not None else None,
+                    "bbox": {
+                        "x1": event_box[0],
+                        "y1": event_box[1],
+                        "x2": event_box[2],
+                        "y2": event_box[3],
+                    },
+                    "bbox_kind": bbox_kind,
+                    "frame_width": int(frame.shape[1]),
+                    "frame_height": int(frame.shape[0]),
                     "snapshot_b64": snapshot_b64,
-                    "event_ts": datetime.now().isoformat(),
+                    "event_ts": datetime.now(timezone.utc).isoformat(),
                 }
                 self._dispatch_event(payload, local_snapshot=snapshot if snapshot_b64 else None)
 
             self._apply_tracking(body_tracks, frame.shape)
+            self._publish_track_observations(body_tracks, frame.shape, now)
             body_overlay_items = self._build_body_overlay_items(body_tracks, now)
             if overlay_items:
                 self._last_faces_info = overlay_items
@@ -604,6 +629,34 @@ class CameraWorker:
             max(box_a[3], box_b[3]),
         )
 
+    def _event_room_box(
+        self,
+        face_box: tuple[int, int, int, int],
+        track_id: int | None,
+        frame_shape: tuple[int, ...],
+    ) -> tuple[tuple[int, int, int, int], str]:
+        frame_h, frame_w = frame_shape[:2]
+        if track_id is not None:
+            state = self._body_tracks.get(track_id)
+            if state:
+                body_box = state.get("tracking_box")
+                if not isinstance(body_box, tuple):
+                    body_box = state.get("box")
+                if isinstance(body_box, tuple):
+                    return self._clip_box(body_box, frame_w, frame_h), "body_track"
+
+        x1, y1, x2, y2 = [float(value) for value in face_box]
+        face_w = max(x2 - x1, 1.0)
+        face_h = max(y2 - y1, 1.0)
+        center_x = (x1 + x2) / 2.0
+        estimated = (
+            center_x - face_w * 1.25,
+            max(0.0, y1 - face_h * 0.45),
+            center_x + face_w * 1.25,
+            min(float(frame_h), y2 + face_h * 5.2),
+        )
+        return self._clip_box(estimated, frame_w, frame_h), "face_body_estimate"
+
     def _head_box_from_points(
         self,
         points: list[tuple[float, float]],
@@ -665,10 +718,10 @@ class CameraWorker:
                 keypoint_conf = body.get("keypoint_conf")
                 if isinstance(keypoint_conf, list):
                     payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
-                track_id = body.get("track_id")
-                if track_id is not None:
+                detector_track_id = body.get("track_id")
+                if detector_track_id is not None:
                     try:
-                        payload["track_id"] = int(track_id)
+                        payload["detector_track_id"] = int(detector_track_id)
                     except (TypeError, ValueError):
                         pass
                 self._apply_body_pose_metadata(payload, frame.shape[1], frame.shape[0])
@@ -769,9 +822,35 @@ class CameraWorker:
             max_side = max(body_box[2] - body_box[0], body_box[3] - body_box[1], state_box[2] - state_box[0], state_box[3] - state_box[1], 1)
             max_dist = max(32.0, max_side * 0.9)
             anchor_score = 1.0 - min(1.0, dist / max_dist)
+        if iou_score < 0.08 and anchor_score < 0.38:
+            return 0.0
         if iou_score >= 0.18:
             return max(iou_score, (iou_score * 0.72) + (anchor_score * 0.28))
         return max(iou_score, anchor_score * 0.88)
+
+    def _update_body_motion_state(self, state: dict[str, object], body: dict[str, object], now: float) -> None:
+        previous_anchor = self._body_anchor(state)
+        current_anchor = self._body_anchor(body)
+        body_box = body.get("tracking_box")
+        if not isinstance(body_box, tuple):
+            body_box = body.get("box")
+        if previous_anchor is None or current_anchor is None or not isinstance(body_box, tuple):
+            return
+        shift = abs(current_anchor[0] - previous_anchor[0]) + abs(current_anchor[1] - previous_anchor[1])
+        box_side = max(body_box[2] - body_box[0], body_box[3] - body_box[1], 1)
+        threshold = max(8.0, box_side * 0.035)
+        if shift >= threshold:
+            state["motion_hits"] = int(state.get("motion_hits", 0) or 0) + 1
+            state["static_hits"] = 0
+            state["last_body_motion_seen"] = now
+        else:
+            state["static_hits"] = int(state.get("static_hits", 0) or 0) + 1
+
+    def _track_has_live_motion(self, state: dict[str, object], now: float) -> bool:
+        last_motion = float(state.get("last_body_motion_seen", 0.0) or 0.0)
+        if last_motion > 0.0 and (now - last_motion) <= 2.5:
+            return True
+        return int(state.get("motion_hits", 0) or 0) >= 2 and int(state.get("static_hits", 0) or 0) <= 8
 
     def _track_has_recent_identity(self, state: dict[str, object], now: float) -> bool:
         if not state.get("recognized"):
@@ -819,7 +898,7 @@ class CameraWorker:
         return min(1.0, locked_score)
 
     def _track_match_threshold(self, state: dict[str, object], now: float) -> float:
-        return 0.3 if self._track_has_recent_identity(state, now) else 0.16
+        return 0.36 if self._track_has_recent_identity(state, now) else 0.24
 
     def _box_iou(self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
         ax1, ay1, ax2, ay2 = box_a
@@ -866,6 +945,7 @@ class CameraWorker:
                     best_threshold = self._track_match_threshold(state, now)
             if best_track_id is not None and best_score >= best_threshold:
                 state = self._body_tracks[best_track_id]
+                self._update_body_motion_state(state, body, now)
                 state["box"] = box
                 state["tracking_box"] = tracking_box
                 state["keypoints"] = body.get("keypoints")
@@ -895,6 +975,9 @@ class CameraWorker:
                 "label": None,
                 "recognized": False,
                 "last_identity_seen": 0.0,
+                "motion_hits": 0,
+                "static_hits": 0,
+                "last_body_motion_seen": 0.0,
             }
 
         self._dedupe_body_tracks()
@@ -1046,7 +1129,14 @@ class CameraWorker:
                 best_track_id = int(track_id)
         return best_track_id
 
-    def _remember_track_identity(self, track_id: int, person_id: int | None, label: str, now: float) -> None:
+    def _remember_track_identity(
+        self,
+        track_id: int,
+        person_id: int | None,
+        label: str,
+        now: float,
+        confidence: float | None = None,
+    ) -> None:
         if person_id is None:
             return
         state = self._body_tracks.get(track_id)
@@ -1056,6 +1146,8 @@ class CameraWorker:
         state["label"] = label
         state["recognized"] = True
         state["last_identity_seen"] = now
+        if confidence is not None:
+            state["identity_confidence"] = confidence
 
     def _recover_track_identity(self, track_id: int, sim: float | None, now: float) -> int | None:
         state = self._body_tracks.get(track_id)
@@ -1091,6 +1183,62 @@ class CameraWorker:
                 }
             )
         return items
+
+    def _publish_track_observations(self, body_tracks: list[dict], frame_shape: tuple[int, ...], now: float) -> None:
+        if not settings.track_observation_enabled:
+            return
+        interval = max(0.1, float(settings.track_observation_interval))
+        if (now - self._last_track_observation_ts) < interval:
+            return
+        self._last_track_observation_ts = now
+        frame_h, frame_w = frame_shape[:2]
+        for state in body_tracks:
+            if int(state.get("hits", 0) or 0) < 2:
+                continue
+            person_id = state.get("person_id")
+            if person_id is None and not settings.track_observation_include_unknown:
+                continue
+            if person_id is None:
+                if bool(state.get("head_only")):
+                    continue
+                if not self._track_has_live_motion(state, now) and int(state.get("hits", 0) or 0) < 6:
+                    continue
+            track_id = state.get("track_id")
+            if track_id is None:
+                continue
+            box = state.get("tracking_box")
+            if not isinstance(box, tuple):
+                box = state.get("box")
+            if not isinstance(box, tuple):
+                continue
+            x1, y1, x2, y2 = [int(round(value)) for value in box]
+            payload = {
+                "camera_id": self.camera_id,
+                "track_id": int(track_id),
+                "person_id": int(person_id) if person_id is not None else None,
+                "person_label": str(state.get("label")) if state.get("label") else None,
+                "confidence": state.get("identity_confidence"),
+                "bbox": {
+                    "x1": max(0, min(x1, frame_w)),
+                    "y1": max(0, min(y1, frame_h)),
+                    "x2": max(0, min(x2, frame_w)),
+                    "y2": max(0, min(y2, frame_h)),
+                },
+                "frame_width": int(frame_w),
+                "frame_height": int(frame_h),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            keypoints = state.get("keypoints")
+            if isinstance(keypoints, list):
+                payload["keypoints"] = [
+                    [float(point[0]), float(point[1])]
+                    for point in keypoints
+                    if isinstance(point, (list, tuple)) and len(point) >= 2
+                ]
+            keypoint_conf = state.get("keypoint_conf")
+            if isinstance(keypoint_conf, list):
+                payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
+            self._dispatch_track_observation(payload)
 
     def _body_label_position(
         self,
@@ -1843,6 +1991,15 @@ class CameraWorker:
                 else None
             ),
         )
+
+    def _dispatch_track_observation(self, observation: dict) -> None:
+        if self._event_loop is None or self.processor_id is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            self.client.push_track_observation(self.processor_id, observation),
+            self._event_loop,
+        )
+        self._dispatch_future(future, "push track observation")
 
     def _push_recording(self, recording: dict) -> dict | None:
         if self._event_loop is None or self.processor_id is None:

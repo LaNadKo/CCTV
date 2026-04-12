@@ -11,6 +11,46 @@ HERE = Path(__file__).resolve().parent
 ASSETS_DIR = HERE / "assets"
 
 
+def _has_nvidia_gpu() -> bool:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _allow_cpu_build() -> bool:
+    return os.environ.get("ALLOW_CPU_PROCESSOR_BUILD", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _prepare_gpu_runtime() -> None:
+    try:
+        import onnxruntime as ort
+
+        providers = set(ort.get_available_providers())
+        if "CUDAExecutionProvider" not in providers:
+            if _has_nvidia_gpu() and not _allow_cpu_build():
+                raise RuntimeError(
+                    "NVIDIA GPU detected, but CUDAExecutionProvider is not available. "
+                    "Install GPU runtime packages first or set ALLOW_CPU_PROCESSOR_BUILD=1 "
+                    "to intentionally build a CPU-only processor."
+                )
+            print("Skipping GPU runtime preparation; CUDAExecutionProvider not available")
+            return
+        from prepare_gpu_runtime import main as prepare_main
+
+        prepare_main()
+    except Exception as exc:
+        if _has_nvidia_gpu() and not _allow_cpu_build():
+            raise
+        print(f"GPU runtime preparation skipped: {exc}")
+
+
 def _run(cmd: list[str]) -> None:
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, cwd=str(HERE.parent), check=True)
@@ -159,6 +199,7 @@ def _cli_cmd() -> list[str]:
 
 
 def build() -> None:
+    _prepare_gpu_runtime()
     _run(_gui_cmd())
     skip_cli = os.environ.get("SKIP_PROCESSOR_CLI", "").strip().lower() in {"1", "true", "yes"}
     if not skip_cli:

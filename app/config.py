@@ -33,6 +33,98 @@ class Settings(BaseSettings):
         default="processor-secret-key-2026",
         validation_alias="PROCESSOR_API_KEY",
     )
+    rf_room_layout_path: str = Field(
+        default="config/rf_room_layout.json",
+        validation_alias="RF_ROOM_LAYOUT_PATH",
+    )
+    rf_history_path: str = Field(
+        default="data/rf_samples.jsonl",
+        validation_alias="RF_HISTORY_PATH",
+    )
+    ruview_bridge_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_BRIDGE_ENABLED",
+    )
+    ruview_udp_bind: str = Field(
+        default="0.0.0.0",
+        validation_alias="RUVIEW_UDP_BIND",
+    )
+    ruview_udp_port: int = Field(
+        default=5005,
+        validation_alias="RUVIEW_UDP_PORT",
+    )
+    ruview_stale_after_seconds: float = Field(
+        default=10.0,
+        validation_alias="RUVIEW_STALE_AFTER_SECONDS",
+    )
+    ruview_calibration_path: str = Field(
+        default="data/ruview_calibration_samples.jsonl",
+        validation_alias="RUVIEW_CALIBRATION_PATH",
+    )
+    camera_room_calibration_path: str = Field(
+        default="data/camera_room_calibrations.json",
+        validation_alias="CAMERA_ROOM_CALIBRATION_PATH",
+    )
+    camera_supervision_enabled: bool = Field(
+        default=True,
+        validation_alias="CAMERA_SUPERVISION_ENABLED",
+    )
+    camera_supervision_min_interval_seconds: float = Field(
+        default=1.0,
+        validation_alias="CAMERA_SUPERVISION_MIN_INTERVAL_SECONDS",
+    )
+    camera_supervision_min_confidence: float = Field(
+        default=0.0,
+        validation_alias="CAMERA_SUPERVISION_MIN_CONFIDENCE",
+    )
+    camera_supervision_require_manual_calibration: bool = Field(
+        default=True,
+        validation_alias="CAMERA_SUPERVISION_REQUIRE_MANUAL_CALIBRATION",
+    )
+    ruview_stimulator_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_STIMULATOR_ENABLED",
+    )
+    ruview_stimulator_interval_seconds: float = Field(
+        default=0.25,
+        validation_alias="RUVIEW_STIMULATOR_INTERVAL_SECONDS",
+    )
+    ruview_stimulator_timeout_seconds: float = Field(
+        default=0.35,
+        validation_alias="RUVIEW_STIMULATOR_TIMEOUT_SECONDS",
+    )
+    active_tracking_camera_fresh_seconds: float = Field(
+        default=5.0,
+        validation_alias="ACTIVE_TRACKING_CAMERA_FRESH_SECONDS",
+    )
+    active_tracking_camera_merge_seconds: float = Field(
+        default=2.5,
+        validation_alias="ACTIVE_TRACKING_CAMERA_MERGE_SECONDS",
+    )
+    active_tracking_camera_merge_radius_cm: float = Field(
+        default=130.0,
+        validation_alias="ACTIVE_TRACKING_CAMERA_MERGE_RADIUS_CM",
+    )
+    active_tracking_camera_merge_min_score: float = Field(
+        default=0.18,
+        validation_alias="ACTIVE_TRACKING_CAMERA_MERGE_MIN_SCORE",
+    )
+    active_tracking_rf_min_confidence: float = Field(
+        default=0.55,
+        validation_alias="ACTIVE_TRACKING_RF_MIN_CONFIDENCE",
+    )
+    active_tracking_rf_assignment_radius_cm: float = Field(
+        default=180.0,
+        validation_alias="ACTIVE_TRACKING_RF_ASSIGNMENT_RADIUS_CM",
+    )
+    active_tracking_room_hold_seconds: float = Field(
+        default=45.0,
+        validation_alias="ACTIVE_TRACKING_ROOM_HOLD_SECONDS",
+    )
+    active_tracking_expire_seconds: float = Field(
+        default=75.0,
+        validation_alias="ACTIVE_TRACKING_EXPIRE_SECONDS",
+    )
 
     @field_validator("debug", mode="before")
     @classmethod
