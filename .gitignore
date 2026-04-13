@@ -82,5 +82,10 @@ build/
 dist/
 *.spec
 
+# Required desktop build resources
+!desktop/build/
+!desktop/build/icon.ico
+!desktop/build/icon.png
+
 # Claude
 .claude/
