@@ -30,7 +30,7 @@ frontend/ios/
 data/
 recordings/
 recordings_cache/
-snapshots/*.jpg
+snapshots/
 *.db
 docs/
 schem/
@@ -74,6 +74,7 @@ processor/dist/
 processor/build/
 processor/installer_output/
 processor/*.spec
+yolov8n-pose.pt
 yolov8n.pt
 
 # PyInstaller root artifacts

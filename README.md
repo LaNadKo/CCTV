@@ -26,7 +26,7 @@
 | `mobile/react-capacitor/` | новый отдельный мобильный клиент на React + Capacitor |
 | `nginx/` | конфигурация reverse proxy |
 | `scripts/` | shell-скрипты для запуска и обслуживания серверной части |
-| `recordings/`, `snapshots/` | локальные данные архива и снимков |
+| `recordings/`, `snapshots/` | локальные runtime-данные архива и снимков, которые создаются при запуске |
 
 ## Технологии
 
@@ -40,7 +40,8 @@
 - Vite
 - Electron
 - OpenCV
-- PyTorch
+- ONNX Runtime
+- MMDeploy Runtime
 - MediaMTX
 - Docker Compose
 - Capacitor
@@ -300,6 +301,5 @@ bash <(curl -Ls https://raw.githubusercontent.com/LaNadKo/CCTV/main/install.sh)
 
 ## Примечания
 
-- Файл [CCTV-Processor.spec](CCTV-Processor.spec) остаётся в корне как legacy-артефакт сборки.
-- Модель [yolov8n-pose.pt](yolov8n-pose.pt) используется `Processor` для body/pose detection.
-- Файл [yolov8n.pt](yolov8n.pt) остаётся в репозитории, но не является основным runtime-артефактом текущего пайплайна.
+- Runtime-конфиги и медиа-папки (`.env`, `recordings/`, `recordings_cache/`, `snapshots/`, `processor_config.json`) не хранятся в Git и создаются локально.
+- Текущий face/body runtime использует `ONNX Runtime + MMDeploy Runtime`; legacy-артефакты PyInstaller/YOLO в корне проекта не требуются.
