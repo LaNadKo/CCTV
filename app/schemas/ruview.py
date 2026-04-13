@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -221,3 +221,14 @@ class RuViewZoneEstimate(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     active_nodes: list[int] = Field(default_factory=list)
     message: str | None = None
+
+
+class RuViewUpstreamStatus(BaseModel):
+    enabled: bool
+    reachable: bool
+    base_url: str | None = None
+    health: dict[str, Any] | None = None
+    stream_status: dict[str, Any] | None = None
+    pose_current: dict[str, Any] | None = None
+    pose_stats: dict[str, Any] | None = None
+    error: str | None = None

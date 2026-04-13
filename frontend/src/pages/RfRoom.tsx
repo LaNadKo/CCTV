@@ -11,6 +11,7 @@ import {
   getRuViewCalibration,
   getRuViewEstimate,
   getRuViewStatus,
+  getRuViewUpstream,
   saveCameraRoomCalibration,
   startRuViewBridge,
   updateRfRoom,
@@ -21,6 +22,7 @@ import {
   type CameraRoomPoint,
   type RuViewBridgeStatus,
   type RuViewCalibrationHistory,
+  type RuViewUpstreamStatus,
   type RuViewZoneEstimate,
   type RfBaselineSummary,
   type RfNodeRuntime,
@@ -1489,6 +1491,14 @@ function formatAgeMs(age?: number | null): string {
   return `${(age / 1000).toFixed(age < 10000 ? 1 : 0)} s`;
 }
 
+function readMetric(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key];
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return "n/a";
+}
+
 function nodeLabelFromLink(link: RuViewLink, side: "rx" | "tx"): string {
   if (side === "rx") return link.rx_physical_label ?? `#${link.rx_node_id}`;
   return link.tx_physical_label ?? (link.tx_node_id ? `#${link.tx_node_id}` : link.tx_mac ?? "unknown");
@@ -1496,6 +1506,7 @@ function nodeLabelFromLink(link: RuViewLink, side: "rx" | "tx"): string {
 
 function RuViewBridgePanel({
   status,
+  upstream,
   calibration,
   estimate,
   liveEnabled,
@@ -1503,6 +1514,7 @@ function RuViewBridgePanel({
   onToggleLive,
 }: {
   status: RuViewBridgeStatus | null;
+  upstream: RuViewUpstreamStatus | null;
   calibration: RuViewCalibrationHistory | null;
   estimate: RuViewZoneEstimate | null;
   liveEnabled: boolean;
@@ -1535,6 +1547,12 @@ function RuViewBridgePanel({
       : null;
   const linkByDirection = new Map(activePairwiseLinks.map((link) => [`${link.rx_node_id}-${link.tx_node_id}`, link]));
   const stimulatorTone = !status?.stimulator_enabled ? "off" : status.stimulator_running ? "good" : "warn";
+  const upstreamPersons =
+    typeof upstream?.pose_current?.total_persons === "number"
+      ? upstream.pose_current.total_persons
+      : Array.isArray(upstream?.pose_current?.persons)
+        ? upstream.pose_current.persons.length
+        : null;
   const livePoint =
     estimate?.ready && estimate.estimated_x_cm != null && estimate.estimated_y_cm != null
       ? {
@@ -1559,6 +1577,9 @@ function RuViewBridgePanel({
           </span>
           <span className={`rf-status rf-status--${status?.listening ? "good" : "off"}`}>
             {status?.listening ? "listening" : "stopped"}
+          </span>
+          <span className={`rf-status rf-status--${upstream?.reachable ? "good" : "off"}`}>
+            {upstream?.reachable ? "RuView upstream" : "upstream off"}
           </span>
           <button className="btn secondary" type="button" onClick={onToggleLive}>
             {liveEnabled ? "Pause live" : "Resume live"}
@@ -1588,6 +1609,10 @@ function RuViewBridgePanel({
           <strong>
             {activeNodes.length} nodes, {activePairwiseLinks.length} RF links / {formatHz(totalRate + totalLinkRate || null)}
           </strong>
+        </div>
+        <div>
+          <span>Official RuView</span>
+          <strong>{upstream?.reachable ? `${upstreamPersons ?? "n/a"} pose / ${readMetric(upstream.stream_status, "source")}` : "offline"}</strong>
         </div>
       </div>
 
@@ -1650,9 +1675,23 @@ function RuViewBridgePanel({
               : "n/a"}
           </strong>
         </div>
+        <div>
+          <span>RuView API fps</span>
+          <strong>{readMetric(upstream?.stream_status, "fps")}</strong>
+        </div>
+        <div>
+          <span>RuView detections</span>
+          <strong>{readMetric(upstream?.pose_stats, "total_detections")}</strong>
+        </div>
       </div>
 
       {estimate?.message && <div className="summary-card__hint">{estimate.message}</div>}
+      {upstream?.base_url && (
+        <div className="summary-card__hint">
+          Official RuView sidecar: {upstream.base_url}. UI: http://127.0.0.1:3100/ui/index.html
+        </div>
+      )}
+      {upstream?.error && <div className="rf-node-card__error">{upstream.error}</div>}
 
       {status?.last_error && <div className="rf-node-card__error">{status.last_error}</div>}
       {status?.last_stimulus_error && <div className="rf-node-card__error">{status.last_stimulus_error}</div>}
@@ -1887,6 +1926,7 @@ const RfRoomPage: React.FC = () => {
   const [layoutDraft, setLayoutDraft] = useState<RfRoomLayout | null>(null);
   const [baseline, setBaseline] = useState<RfBaselineSummary | null>(null);
   const [ruviewStatus, setRuviewStatus] = useState<RuViewBridgeStatus | null>(null);
+  const [ruviewUpstream, setRuviewUpstream] = useState<RuViewUpstreamStatus | null>(null);
   const [ruviewCalibration, setRuviewCalibration] = useState<RuViewCalibrationHistory | null>(null);
   const [ruviewEstimate, setRuviewEstimate] = useState<RuViewZoneEstimate | null>(null);
   const [activeTracking, setActiveTracking] = useState<ActiveTrackingSnapshot | null>(null);
@@ -1907,13 +1947,15 @@ const RfRoomPage: React.FC = () => {
 
   const loadRuView = useCallback(async () => {
     if (!token) return;
-    const [status, history, estimate, tracking] = await Promise.all([
+    const [status, upstream, history, estimate, tracking] = await Promise.all([
       getRuViewStatus(token),
+      getRuViewUpstream(token),
       getRuViewCalibration(token, 50),
       getRuViewEstimate(token, 200),
       getActiveTracking(token, 200),
     ]);
     setRuviewStatus(status);
+    setRuviewUpstream(upstream);
     setRuviewCalibration(history);
     setRuviewEstimate(estimate);
     setActiveTracking(tracking);
@@ -2163,6 +2205,15 @@ const RfRoomPage: React.FC = () => {
           </div>
         </div>
         <div className="summary-card">
+          <div className="summary-card__label">RuView upstream</div>
+          <div className="summary-card__value">{ruviewUpstream?.reachable ? "online" : "offline"}</div>
+          <div className="summary-card__hint">
+            {ruviewUpstream?.reachable
+              ? `${readMetric(ruviewUpstream.stream_status, "source")} / ${readMetric(ruviewUpstream.stream_status, "fps")} fps`
+              : "sidecar on 3100 is not reachable"}
+          </div>
+        </div>
+        <div className="summary-card">
           <div className="summary-card__label">Active tracks</div>
           <div className="summary-card__value">{activeTracking?.active_count ?? 0}</div>
           <div className="summary-card__hint">
@@ -2180,6 +2231,7 @@ const RfRoomPage: React.FC = () => {
           <ScannerView layout={layoutDraft ?? snapshot.layout} estimate={ruviewEstimate} activeTracking={activeTracking} />
           <RuViewBridgePanel
             status={ruviewStatus}
+            upstream={ruviewUpstream}
             calibration={ruviewCalibration}
             estimate={ruviewEstimate}
             liveEnabled={liveRuView}

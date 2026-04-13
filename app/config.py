@@ -61,6 +61,18 @@ class Settings(BaseSettings):
         default="data/ruview_calibration_samples.jsonl",
         validation_alias="RUVIEW_CALIBRATION_PATH",
     )
+    ruview_upstream_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_UPSTREAM_ENABLED",
+    )
+    ruview_upstream_urls: str = Field(
+        default="http://ruview-sensing:3000,http://host.docker.internal:3100,http://127.0.0.1:3100",
+        validation_alias="RUVIEW_UPSTREAM_URLS",
+    )
+    ruview_upstream_timeout_seconds: float = Field(
+        default=1.0,
+        validation_alias="RUVIEW_UPSTREAM_TIMEOUT_SECONDS",
+    )
     camera_room_calibration_path: str = Field(
         default="data/camera_room_calibrations.json",
         validation_alias="CAMERA_ROOM_CALIBRATION_PATH",

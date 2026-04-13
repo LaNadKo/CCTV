@@ -10,6 +10,7 @@ venv/
 .tmp-ort115/
 tmp/
 output/
+external/
 
 # Node
 node_modules/
