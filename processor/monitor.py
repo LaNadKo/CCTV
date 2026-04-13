@@ -83,15 +83,6 @@ class SystemMonitor:
             return
         except Exception:
             pass
-        # Fallback: try torch
-        try:
-            import torch
-            if torch.cuda.is_available():
-                m.gpu_name = torch.cuda.get_device_name(0)
-                m.gpu_mem_used_mb = round(torch.cuda.memory_allocated(0) / (1024 ** 2), 1)
-                m.gpu_mem_total_mb = round(torch.cuda.get_device_properties(0).total_mem / (1024 ** 2), 1)
-        except Exception:
-            pass
 
     def _collect_network(self, m: Metrics):
         if not self._psutil:
@@ -156,23 +147,9 @@ def get_system_info() -> dict:
             gpu_name = gpu_name.decode()
         info["gpu"] = gpu_name
         pynvml.nvmlShutdown()
+        info["inference_device"] = "cuda"
     except Exception:
         pass
-    torch_available = False
-    try:
-        import torch
-        torch_available = True
-        info["torch"] = torch.__version__
-        if torch.cuda.is_available():
-            info["gpu"] = torch.cuda.get_device_name(0)
-            info["cuda"] = torch.version.cuda
-            info["inference_device"] = "cuda"
-        else:
-            info["inference_device"] = "cpu"
-    except ImportError:
-        pass
-    if not torch_available:
-        info["inference_device"] = "cpu"
     if "inference_device" not in info:
         info["inference_device"] = "cpu"
     try:

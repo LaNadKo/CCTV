@@ -1,39 +1,24 @@
-from typing import List, Optional
+from typing import List
 from pathlib import Path
 
-import numpy as np
 import cv2
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
-
-# Lazy imports — torch/facenet may not be installed on lightweight backend
-try:
-    import torch
-    from facenet_pytorch import MTCNN, InceptionResnetV1
-    _TORCH_AVAILABLE = True
-except ImportError:
-    _TORCH_AVAILABLE = False
+import numpy as np
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
+from app.permissions import check_permission, user_camera_permission
 from app.schemas.face import FaceEmbedding, FaceEnrollResponse, FaceLoginRequest, FaceLoginResponse
 from app.security import create_access_token, decrypt_secret, verify_totp
-from app.permissions import user_camera_permission, check_permission
+from app.vision import extract_best_face_embedding as _extract_best_face_embedding
 
 router = APIRouter(prefix="/auth/face", tags=["auth-face"])
 
-_mtcnn = None
-_embedder = None
-_device: str = "cpu"
-
 
 def _read_image_file(path: Path) -> np.ndarray | None:
-    """
-    Read image from disk using bytes+imdecode to avoid Unicode path issues on Windows.
-    Returns BGR image or None if cannot read.
-    """
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -42,58 +27,6 @@ def _read_image_file(path: Path) -> np.ndarray | None:
     if arr.size == 0:
         return None
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-
-def _preprocess_frame(frame_bgr: np.ndarray) -> np.ndarray:
-    # слегка поднять контраст/яркость в темноте (CLAHE по L-каналу)
-    lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l2 = clahe.apply(l)
-    lab = cv2.merge((l2, a, b))
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-
-def _face_models():
-    global _mtcnn, _embedder, _device
-    if not _TORCH_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Face recognition unavailable: torch not installed on this server"
-        )
-    if _mtcnn is not None and _embedder is not None:
-        return _mtcnn, _embedder, _device
-    _device = "cuda" if torch.cuda.is_available() else "cpu"
-    _mtcnn = MTCNN(keep_all=True, device=_device, thresholds=[0.5, 0.6, 0.6])
-    _embedder = InceptionResnetV1(pretrained="vggface2").eval().to(_device)
-    return _mtcnn, _embedder, _device
-
-
-def _extract_best_face_embedding(image_bgr: np.ndarray) -> np.ndarray | None:
-    """Extract embedding from the largest face using MTCNN aligned extraction.
-
-    Uses mtcnn.extract() for face alignment — same pipeline as vision.py
-    detection, so that enrolled and detected embeddings are comparable.
-    """
-    image_bgr = _preprocess_frame(image_bgr)
-    mtcnn, embedder, device = _face_models()
-    img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    boxes, probs = mtcnn.detect(img_rgb)
-    if boxes is None or len(boxes) == 0:
-        return None
-    # take the largest box
-    areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in boxes]
-    best_idx = int(np.argmax(areas))
-    best_box = [boxes[best_idx]]
-    # Use MTCNN aligned extraction (same as vision.py detection pipeline)
-    face_tensors = mtcnn.extract(img_rgb, best_box, None)
-    if face_tensors is None or len(face_tensors) == 0 or face_tensors[0] is None:
-        return None
-    face = face_tensors[0].permute(1, 2, 0).numpy()  # HWC RGB
-    tensor = torch.from_numpy(face.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
-    with torch.no_grad():
-        emb = embedder(tensor).cpu().numpy()[0]
-    return _normalize(emb.astype(np.float32))
 
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
@@ -203,7 +136,6 @@ async def enroll_person_from_recording(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    # fetch recording and camera to check permissions
     res = await session.execute(
         select(models.RecordingFile, models.VideoStream.camera_id)
         .join(models.VideoStream, models.VideoStream.video_stream_id == models.RecordingFile.video_stream_id)
@@ -217,8 +149,7 @@ async def enroll_person_from_recording(
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
-    path = recording.file_path
-    cap = cv2.VideoCapture(path)
+    cap = cv2.VideoCapture(recording.file_path)
     if not cap.isOpened():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Cannot open video")
     try:
@@ -268,25 +199,15 @@ async def enroll_person_from_snapshot(
     image = _read_image_file(snapshot_path)
     if image is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot read snapshot")
-    emb = None
-    local_error: HTTPException | None = None
-    try:
-        emb = _extract_best_face_embedding(image)
-    except HTTPException as exc:
-        local_error = exc
-        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
-            raise
+
+    emb = _extract_best_face_embedding(image)
     if emb is None:
         from app.routers.persons import _extract_best_face_embedding_via_processor
 
-        try:
-            emb = await _extract_best_face_embedding_via_processor(session, image, event.camera_id)
-        except HTTPException:
-            if local_error is not None:
-                raise local_error
-            raise
+        emb = await _extract_best_face_embedding_via_processor(session, image, event.camera_id)
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found in snapshot")
+
     person = await _create_person_with_embedding(
         session,
         emb,
@@ -304,8 +225,7 @@ async def face_login(
     payload: FaceLoginRequest,
     session: AsyncSession = Depends(get_session),
 ) -> FaceLoginResponse:
-    probe = np.array(payload.embedding, dtype=np.float32)
-    probe = _normalize(probe)
+    probe = _normalize(np.array(payload.embedding, dtype=np.float32))
 
     result = await session.execute(select(models.UserFaceTemplate))
     templates: List[models.UserFaceTemplate] = result.scalars().all()
@@ -319,14 +239,14 @@ async def face_login(
         if tpl.distance_metric == "cosine":
             stored = _normalize(stored)
             score = _cosine_similarity(probe, stored)
-            thr = tpl.threshold if tpl.threshold is not None else 0.4
-            ok = score >= thr
+            threshold = tpl.threshold if tpl.threshold is not None else 0.4
+            ok = score >= threshold
             cmp_score = score
         else:
             score = _l2_distance(probe, stored)
-            thr = tpl.threshold if tpl.threshold is not None else 1.0
-            ok = score <= thr
-            cmp_score = -score  # lower is better
+            threshold = tpl.threshold if tpl.threshold is not None else 1.0
+            ok = score <= threshold
+            cmp_score = -score
         if ok and (best_score is None or cmp_score > best_score):
             best_score = cmp_score
             best_tpl = tpl
@@ -334,12 +254,10 @@ async def face_login(
     if best_tpl is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Face not recognized")
 
-    # Check user exists and face login enabled
     user = await session.get(models.User, best_tpl.user_id)
     if user is None or not user.face_login_enabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Face login disabled for user")
 
-    # TOTP check if enabled
     totp_method = await session.execute(
         select(models.UserMfaMethod).where(
             models.UserMfaMethod.user_id == user.user_id,

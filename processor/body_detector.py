@@ -1,127 +1,137 @@
-"""YOLO pose detection with person boxes and keypoints."""
+"""Body detection and tracking based on MMDeploy RTMDet + RTMPose."""
 from __future__ import annotations
+
 import logging
+import os
 import threading
+import urllib.request
+import zipfile
+from pathlib import Path
+
 import numpy as np
 
+from cctv_ai.runtime_env import prepare_mmdeploy_cuda_env
+
 logger = logging.getLogger(__name__)
-_model = None
+
+_RTMPOSE_CPU_URL = "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmpose-cpu.zip"
+
+_tracker = None
+_states: dict[str, object] = {}
 _device = "cpu"
 _model_lock = threading.RLock()
-_force_cpu_runtime = False
 
 
-def _box_iou(box_a: list[float], box_b: list[float]) -> float:
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    inter_x1 = max(ax1, bx1)
-    inter_y1 = max(ay1, by1)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-    inter = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
-    area_a = max(1.0, (ax2 - ax1) * (ay2 - ay1))
-    area_b = max(1.0, (bx2 - bx1) * (by2 - by1))
-    return inter / (area_a + area_b - inter + 1e-6)
+def _runtime_dir() -> Path:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "CCTV Processor" / "models" / "mmpose" / "rtmpose-cpu" / "rtmpose-ort"
+    return Path(".models") / "mmpose" / "rtmpose-cpu" / "rtmpose-ort"
 
 
-def _load_model():
-    global _model, _device
-    target_device = _want_device()
-    if _model is None or _device != target_device:
-        from ultralytics import YOLO
-        _device = target_device
-        _model = YOLO("yolov8n-pose.pt")
-        try:
-            _model.fuse()
-        except Exception:
-            logger.debug("YOLO pose model fuse skipped", exc_info=True)
-    return _model
+def _ensure_model_pack() -> Path:
+    target_dir = _runtime_dir()
+    det_dir = target_dir / "rtmdet-nano"
+    pose_dir = target_dir / "rtmpose-m"
+    if det_dir.exists() and pose_dir.exists():
+        return target_dir
+
+    archive_path = target_dir.parent / "rtmpose-cpu.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    if not archive_path.exists():
+        logger.info("Downloading MMDeploy RTMPose SDK to %s", archive_path)
+        urllib.request.urlretrieve(_RTMPOSE_CPU_URL, archive_path)
+
+    extract_root = target_dir.parent
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        archive.extractall(extract_root)
+    return target_dir
 
 
 def _want_device() -> str:
-    if _force_cpu_runtime:
-        return "cpu"
-    try:
-        import torch
-
-        return "cuda:0" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        return "cpu"
+    if prepare_mmdeploy_cuda_env() is not None:
+        return "cuda"
+    return "cpu"
 
 
-def _reset_model(target_device: str | None = None) -> None:
-    global _model, _device
-    _model = None
-    if target_device:
-        _device = target_device
+def _load_tracker():
+    global _tracker, _device
+    target_dir = _ensure_model_pack()
+    det_model = target_dir / "rtmdet-nano"
+    pose_model = target_dir / "rtmpose-m"
+    preferred_device = _want_device()
+    if preferred_device == "cuda":
+        prepare_mmdeploy_cuda_env()
+    if _tracker is None or _device != preferred_device:
+        import mmdeploy_runtime as mmdeploy
+
+        try:
+            _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), preferred_device)
+            _device = preferred_device
+        except Exception:
+            if preferred_device != "cpu":
+                logger.warning("Falling back to CPU MMDeploy runtime", exc_info=True)
+                _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), "cpu")
+                _device = "cpu"
+            else:
+                raise
+    return _tracker
 
 
-def _is_cuda_runtime_error(exc: BaseException) -> bool:
-    text = str(exc).lower()
-    return "cuda error" in text or "device-side assert" in text or "misaligned address" in text
+def _state_key(camera_key: object | None) -> str:
+    if camera_key is None:
+        return "default"
+    return str(camera_key)
 
 
-def _switch_runtime_to_cpu(reason: BaseException | str) -> None:
-    global _force_cpu_runtime
-    if _force_cpu_runtime:
-        return
-    _force_cpu_runtime = True
-    logger.warning("Body inference switched to CPU fallback after CUDA failure: %s", reason)
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
-    _reset_model(target_device="cpu")
+def _get_state(camera_key: object | None):
+    tracker = _load_tracker()
+    key = _state_key(camera_key)
+    state = _states.get(key)
+    if state is None:
+        state = tracker.create_state(det_interval=1, det_min_bbox_size=32, keypoint_sigmas=[])
+        _states[key] = state
+    return tracker, state
 
 
-def detect_bodies(frame_bgr: np.ndarray, conf: float = 0.5) -> list[dict]:
-    try:
-        return _detect_bodies_impl(frame_bgr, conf=conf)
-    except RuntimeError as exc:
-        if _device.startswith("cuda") and _is_cuda_runtime_error(exc):
-            _switch_runtime_to_cpu(exc)
-            return _detect_bodies_impl(frame_bgr, conf=conf)
-        raise
-
-
-def _detect_bodies_impl(frame_bgr: np.ndarray, conf: float = 0.5) -> list[dict]:
+def prewarm_model() -> str:
     with _model_lock:
-        model = _load_model()
-        results = model.predict(
-            frame_bgr,
-            verbose=False,
-            conf=conf,
-            device=_device,
-            imgsz=512,
-            max_det=6,
-            classes=[0],
-            half=_device.startswith("cuda"),
+        _load_tracker()
+        return _device
+
+
+def detect_bodies(frame_bgr: np.ndarray, conf: float = 0.5, camera_key: object | None = None) -> list[dict]:
+    with _model_lock:
+        tracker, state = _get_state(camera_key)
+        keypoints_arr, boxes_arr, track_ids_arr = tracker(state, frame_bgr, -1)
+
+    detections: list[dict] = []
+    if keypoints_arr is None or boxes_arr is None:
+        return detections
+
+    keypoints_arr = np.asarray(keypoints_arr)
+    boxes_arr = np.asarray(boxes_arr)
+    track_ids_arr = np.asarray(track_ids_arr) if track_ids_arr is not None else np.zeros((len(boxes_arr),), dtype=np.int32)
+
+    for idx, box in enumerate(boxes_arr):
+        if idx >= len(keypoints_arr):
+            break
+        keypoints = np.asarray(keypoints_arr[idx], dtype=np.float32)
+        if keypoints.ndim != 2 or keypoints.shape[1] < 3:
+            continue
+        keypoint_xy = keypoints[:, :2]
+        keypoint_conf = keypoints[:, 2]
+        mean_conf = float(np.mean(keypoint_conf[:17])) if keypoint_conf.size else 0.0
+        if mean_conf < max(conf * 0.4, 0.08):
+            continue
+        detections.append(
+            {
+                "box": [float(v) for v in box[:4]],
+                "confidence": mean_conf,
+                "keypoints": keypoint_xy.tolist(),
+                "keypoint_conf": keypoint_conf.tolist(),
+                "track_id": int(track_ids_arr[idx]) if idx < len(track_ids_arr) else idx,
+            }
         )
-        detections = []
-        for r in results:
-            keypoints_xy = r.keypoints.xy.cpu().numpy() if r.keypoints is not None and r.keypoints.xy is not None else None
-            keypoints_conf = r.keypoints.conf.cpu().numpy() if r.keypoints is not None and r.keypoints.conf is not None else None
-            for idx, box in enumerate(r.boxes):
-                cls = int(box.cls[0])
-                if cls != 0:  # 0 = person
-                    continue
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                payload = {
-                    "box": [float(x1), float(y1), float(x2), float(y2)],
-                    "confidence": float(box.conf[0]),
-                }
-                if keypoints_xy is not None and idx < len(keypoints_xy):
-                    payload["keypoints"] = keypoints_xy[idx].tolist()
-                if keypoints_conf is not None and idx < len(keypoints_conf):
-                    payload["keypoint_conf"] = keypoints_conf[idx].tolist()
-                detections.append(payload)
-        detections.sort(key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
-        deduped: list[dict] = []
-        for candidate in detections:
-            if any(_box_iou(candidate["box"], existing["box"]) >= 0.55 for existing in deduped):
-                continue
-            deduped.append(candidate)
-        return deduped
+
+    return detections

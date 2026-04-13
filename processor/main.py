@@ -22,6 +22,7 @@ class ProcessorService:
         self.processor_id: int | None = None
         self.workers: dict[int, CameraWorker] = {}
         self._running = False
+        self._prewarm_task: asyncio.Task | None = None
         self._monitor = SystemMonitor()
         self._system_info = get_system_info()
         self._advertised_ip = detect_advertised_ip(settings.advertised_ip, backend_url=settings.backend_url)
@@ -55,14 +56,34 @@ class ProcessorService:
             )
             self.processor_id = result["processor_id"]
             logger.info("Registered as processor %s (id=%d)", settings.processor_name, self.processor_id)
+        self._prewarm_task = asyncio.create_task(asyncio.to_thread(self._prewarm_models))
         await asyncio.gather(self._heartbeat_loop(), self._assignment_loop())
 
     async def stop(self):
         self._running = False
+        if self._prewarm_task and not self._prewarm_task.done():
+            self._prewarm_task.cancel()
         for w in self.workers.values():
             w.stop()
         self._media_server.stop()
         await self.client.close()
+
+    def _prewarm_models(self) -> None:
+        face_device = "unavailable"
+        body_device = "unavailable"
+        try:
+            from processor.vision import prewarm_models
+
+            face_device = prewarm_models()
+        except Exception:
+            logger.exception("Face model prewarm failed")
+        try:
+            from processor.body_detector import prewarm_model
+
+            body_device = prewarm_model()
+        except Exception:
+            logger.exception("Body model prewarm failed")
+        logger.info("Model prewarm completed face=%s body=%s", face_device, body_device)
 
     async def _heartbeat_loop(self):
         while self._running:

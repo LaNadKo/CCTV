@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     processor_id: int | None = Field(default=None, validation_alias="PROCESSOR_ID")
     processor_name: str = Field(default="processor-1", validation_alias="PROCESSOR_NAME")
     advertised_ip: str | None = Field(default=None, validation_alias="PROCESSOR_ADVERTISED_IP")
-    poll_interval: int = Field(default=10, validation_alias="POLL_INTERVAL")
+    poll_interval: int = Field(default=3, validation_alias="POLL_INTERVAL")
     heartbeat_interval: int = Field(default=30, validation_alias="HEARTBEAT_INTERVAL")
     max_workers: int = Field(default=4, validation_alias="MAX_WORKERS")
     motion_threshold: float = Field(default=25.0, validation_alias="MOTION_THRESHOLD")

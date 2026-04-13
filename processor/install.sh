@@ -32,11 +32,20 @@ echo "Python: $PYTHON ($PY_VERSION)"
 if command -v nvidia-smi &>/dev/null; then
     GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
     echo "GPU:    $GPU"
-    TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+    GPU_PACKAGES=(
+        "onnxruntime-gpu==1.15.1"
+        "mmdeploy-runtime-gpu==1.3.1"
+        "nvidia-cuda-runtime-cu11==11.8.89"
+        "nvidia-cublas-cu11==11.11.3.6"
+        "nvidia-cudnn-cu11==8.9.5.29"
+        "nvidia-cuda-nvrtc-cu11==11.8.89"
+        "nvidia-cufft-cu11==10.9.0.58"
+        "nvidia-curand-cu11==10.3.0.86"
+    )
     echo "        → Installing CUDA-enabled PyTorch"
 else
     echo "GPU:    not detected (CPU mode)"
-    TORCH_INDEX="https://download.pytorch.org/whl/cpu"
+    GPU_PACKAGES=()
 fi
 echo ""
 
@@ -47,12 +56,17 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip -q
 
 # ── Install PyTorch ───────────────────────────────────────
-echo "[2/3] Installing PyTorch (this may take a few minutes)..."
-pip install torch torchvision --index-url "$TORCH_INDEX" -q
+echo "[2/3] Installing dependencies..."
 
 # ── Install remaining dependencies ────────────────────────
-echo "[3/3] Installing dependencies..."
 pip install -r "$SCRIPT_DIR/requirements.txt" -q
+if [ ${#GPU_PACKAGES[@]} -gt 0 ]; then
+    echo "[3/3] Installing GPU runtimes..."
+    pip install "${GPU_PACKAGES[@]}" -q
+    "$VENV_DIR/bin/python" "$SCRIPT_DIR/prepare_gpu_runtime.py"
+else
+    echo "[3/3] GPU runtimes skipped"
+fi
 
 echo ""
 echo "=== Installation complete ==="

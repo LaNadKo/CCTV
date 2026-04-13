@@ -1,10 +1,8 @@
 httpx>=0.25
-opencv-python-headless>=4.8
-torch>=2.0
-torchvision>=0.15
-facenet-pytorch>=2.5
-ultralytics>=8.0
-numpy>=1.24
+opencv-python-headless>=4.8,<4.13
+onnxruntime>=1.15.1,<1.16
+mmdeploy-runtime>=1.3.1
+numpy>=1.24,<2
 Pillow>=10.0
 scipy>=1.11
 filterpy>=1.4

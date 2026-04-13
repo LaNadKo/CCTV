@@ -695,7 +695,7 @@ const LivePage: React.FC = () => {
                     </div>
                   ) : (
                     <img
-                      src={`${API_URL}/cameras/${camera.camera_id}/stream?token=${encodeURIComponent(token)}&r=${streamRetryMap[camera.camera_id] || 0}`}
+                      src={`${API_URL}/cameras/${camera.camera_id}/stream?token=${encodeURIComponent(token)}&annotate=1&r=${streamRetryMap[camera.camera_id] || 0}`}
                       alt={camera.name}
                       loading="lazy"
                       decoding="async"

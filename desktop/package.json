@@ -27,24 +27,36 @@
       {
         "from": "../frontend/dist",
         "to": "frontend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerLanguages": ["ru", "en_US"]
+      "installerLanguages": [
+        "ru",
+        "en_US"
+      ]
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "build/icon.icns"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "build/icon.png"
     }
   },
