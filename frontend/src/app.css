@@ -2589,6 +2589,21 @@ select.input optgroup {
   stroke-linejoin: round;
 }
 
+.rf-scene-person--ruview_pose .rf-scene-person__bone {
+  stroke-width: 3.6;
+  stroke-dasharray: 8 5;
+  opacity: 0.86;
+}
+
+.rf-scene-person--ruview_pose .rf-scene-person__joint {
+  fill: var(--text-strong);
+  stroke: var(--surface);
+}
+
+.rf-scene-person--rf_position .rf-scene-person__head {
+  opacity: 0.72;
+}
+
 .scanner-view-card {
   display: grid;
   gap: 14px;

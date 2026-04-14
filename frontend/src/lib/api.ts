@@ -1500,6 +1500,40 @@ export type RuViewUpstreamStatus = {
   error?: string | null;
 };
 
+export type RuViewPoseBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type RuViewPoseKeypoint = {
+  name?: string | null;
+  x: number;
+  y: number;
+  z?: number | null;
+  confidence?: number | null;
+};
+
+export type RuViewPosePerson = {
+  stable_id: string;
+  ruview_id?: string | null;
+  confidence: number;
+  bbox?: RuViewPoseBox | null;
+  keypoints: RuViewPoseKeypoint[];
+  zone?: string | null;
+  last_seen_at: string;
+};
+
+export type RuViewPoseSnapshot = {
+  generated_at: string;
+  reachable: boolean;
+  source?: string | null;
+  total_persons: number;
+  persons: RuViewPosePerson[];
+  error?: string | null;
+};
+
 export type CameraTrackBox = {
   x1: number;
   y1: number;
@@ -1569,6 +1603,10 @@ export async function getRuViewEstimate(token: string, limit = 200) {
 
 export async function getRuViewUpstream(token: string) {
   return request<RuViewUpstreamStatus>("/ruview/upstream", "GET", token);
+}
+
+export async function getRuViewPose(token: string) {
+  return request<RuViewPoseSnapshot>("/ruview/pose", "GET", token);
 }
 
 export async function getActiveTracking(token: string, limit = 200) {

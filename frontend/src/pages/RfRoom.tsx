@@ -10,6 +10,7 @@ import {
   getRfSnapshot,
   getRuViewCalibration,
   getRuViewEstimate,
+  getRuViewPose,
   getRuViewStatus,
   getRuViewUpstream,
   saveCameraRoomCalibration,
@@ -22,6 +23,8 @@ import {
   type CameraRoomPoint,
   type RuViewBridgeStatus,
   type RuViewCalibrationHistory,
+  type RuViewPosePerson,
+  type RuViewPoseSnapshot,
   type RuViewUpstreamStatus,
   type RuViewZoneEstimate,
   type RfBaselineSummary,
@@ -110,6 +113,26 @@ const COCO_POSE_EDGES: [number, number][] = [
   [2, 4],
 ];
 
+const COCO_KEYPOINT_NAMES = [
+  "nose",
+  "left_eye",
+  "right_eye",
+  "left_ear",
+  "right_ear",
+  "left_shoulder",
+  "right_shoulder",
+  "left_elbow",
+  "right_elbow",
+  "left_wrist",
+  "right_wrist",
+  "left_hip",
+  "right_hip",
+  "left_knee",
+  "right_knee",
+  "left_ankle",
+  "right_ankle",
+];
+
 function nodeRuntimeById(snapshot: RfRoomSnapshot): Map<string, RfNodeRuntime> {
   return new Map(snapshot.nodes.map((node) => [node.config.node_id, node]));
 }
@@ -138,38 +161,217 @@ type RoomPersonEstimate = {
   displayId: string;
   activeNodes: number[];
   track: ActivePersonTrack | null;
+  ruviewPose: RuViewPosePerson | null;
 };
 
 type SceneSkeleton = {
   joints: Record<string, { x: number; y: number }>;
   bones: [string, string][];
-  source: "camera_pose" | "rf_position";
+  source: "camera_pose" | "ruview_pose" | "rf_position";
 };
+
+type PoseFrameBox = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+type PoseFramePoint = {
+  x: number;
+  y: number;
+  confidence: number;
+};
+
+function ruviewPoseCandidates(snapshot?: RuViewPoseSnapshot | null): RuViewPosePerson[] {
+  if (!snapshot?.reachable) return [];
+  return [...(snapshot.persons ?? [])]
+    .filter((person) => person.confidence >= 0.2 && (person.bbox || person.keypoints.length >= 4))
+    .sort((a, b) => b.confidence - a.confidence);
+}
+
+function ruviewPoseCenter(person: RuViewPosePerson): { x: number; y: number } | null {
+  if (person.bbox) {
+    return {
+      x: person.bbox.x + person.bbox.width / 2,
+      y: person.bbox.y + person.bbox.height / 2,
+    };
+  }
+  const visible = person.keypoints.filter((point) => (point.confidence ?? 1) >= 0.25);
+  if (visible.length === 0) return null;
+  return {
+    x: visible.reduce((sum, point) => sum + point.x, 0) / visible.length,
+    y: visible.reduce((sum, point) => sum + point.y, 0) / visible.length,
+  };
+}
+
+function trackBoxCenter(track: ActivePersonTrack): { x: number; y: number } | null {
+  const box = track.bbox;
+  if (!box || box.x2 <= box.x1 || box.y2 <= box.y1) return null;
+  return {
+    x: box.x1 + (box.x2 - box.x1) / 2,
+    y: box.y1 + (box.y2 - box.y1) / 2,
+  };
+}
+
+function assignRuViewPosesToTracks(
+  tracks: ActivePersonTrack[],
+  ruviewPose?: RuViewPoseSnapshot | null
+): Map<string, RuViewPosePerson> {
+  const poses = ruviewPoseCandidates(ruviewPose);
+  const assigned = new Map<string, RuViewPosePerson>();
+  const used = new Set<string>();
+
+  tracks.forEach((track) => {
+    const center = trackBoxCenter(track);
+    if (!center) return;
+    let bestPose: RuViewPosePerson | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const pose of poses) {
+      if (used.has(pose.stable_id)) continue;
+      const poseCenter = ruviewPoseCenter(pose);
+      if (!poseCenter) continue;
+      const distance = Math.hypot(center.x - poseCenter.x, center.y - poseCenter.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPose = pose;
+      }
+    }
+    if (bestPose && bestDistance <= 240) {
+      assigned.set(track.track_key, bestPose);
+      used.add(bestPose.stable_id);
+    }
+  });
+
+  tracks.forEach((track) => {
+    if (assigned.has(track.track_key)) return;
+    const nextPose = poses.find((pose) => !used.has(pose.stable_id));
+    if (!nextPose) return;
+    assigned.set(track.track_key, nextPose);
+    used.add(nextPose.stable_id);
+  });
+
+  return assigned;
+}
+
+function ruviewPoseFrameBox(person: RuViewPosePerson): PoseFrameBox | null {
+  const box = person.bbox;
+  if (!box || box.width <= 0 || box.height <= 0) return null;
+  return {
+    x1: box.x,
+    y1: box.y,
+    x2: box.x + box.width,
+    y2: box.y + box.height,
+  };
+}
+
+function ruviewPoseFramePoints(person: RuViewPosePerson): PoseFramePoint[] {
+  const points: PoseFramePoint[] = [];
+  person.keypoints.forEach((point, index) => {
+    const namedIndex = point.name ? COCO_KEYPOINT_NAMES.indexOf(point.name) : -1;
+    const targetIndex = namedIndex >= 0 ? namedIndex : index;
+    points[targetIndex] = {
+      x: point.x,
+      y: point.y,
+      confidence: point.confidence ?? person.confidence ?? 1,
+    };
+  });
+  return points;
+}
+
+function cameraPoseFrameBox(track: ActivePersonTrack): PoseFrameBox | null {
+  const box = track.bbox;
+  if (!box || box.x2 <= box.x1 || box.y2 <= box.y1) return null;
+  return {
+    x1: box.x1,
+    y1: box.y1,
+    x2: box.x2,
+    y2: box.y2,
+  };
+}
+
+function cameraPoseFramePoints(track: ActivePersonTrack): PoseFramePoint[] {
+  const confs = Array.isArray(track.keypoint_conf) ? track.keypoint_conf : [];
+  return (track.keypoints ?? []).map((point, index) => ({
+    x: Array.isArray(point) ? Number(point[0]) : 0,
+    y: Array.isArray(point) ? Number(point[1]) : 0,
+    confidence: typeof confs[index] === "number" ? confs[index] : 1,
+  }));
+}
 
 function roomPersonEstimates(
   room: RfRoomLayout["room"],
   estimate?: RuViewZoneEstimate | null,
-  activeTracking?: ActiveTrackingSnapshot | null
+  activeTracking?: ActiveTrackingSnapshot | null,
+  ruviewPose?: RuViewPoseSnapshot | null
 ): RoomPersonEstimate[] {
   const tracks = tracksWithRoomPosition(activeTracking);
   if (tracks.length > 0) {
+    const poseByTrack = assignRuViewPosesToTracks(tracks, ruviewPose);
     return tracks.map((track, index) => {
       const cameraConfidence = track.confidence == null ? null : track.confidence / 100;
       const rfConfidence = track.source === "fusion" || track.status === "rf" ? track.rf_confidence : null;
+      const pose = poseByTrack.get(track.track_key) ?? null;
       return {
         key: track.track_key,
         x: clamp(track.estimated_x_cm ?? 0, 0, room.width_cm),
         y: clamp(track.estimated_y_cm ?? 0, 0, room.depth_cm),
-        confidence: Math.round((rfConfidence ?? cameraConfidence ?? 0) * 100),
+        confidence: Math.round(Math.max(rfConfidence ?? 0, cameraConfidence ?? 0, pose?.confidence ?? 0) * 100),
         label: trackDisplayName(track),
         displayId: String(track.person_id ?? track.processor_track_id ?? index + 1),
         activeNodes: track.active_nodes ?? [],
         track,
+        ruviewPose: pose,
       };
     });
   }
-  void estimate;
-  return [];
+
+  const fallbackPersonLimit = clamp(Math.round(activeTracking?.active_count ?? estimate?.person_count_hint ?? 0), 0, 6);
+  const poses = ruviewPoseCandidates(ruviewPose).slice(0, fallbackPersonLimit);
+  if (poses.length === 0) {
+    if (estimate?.ready && estimate.estimated_x_cm != null && estimate.estimated_y_cm != null && estimate.confidence >= 0.55) {
+      return [
+        {
+          key: "ruview-rf-estimate",
+          x: clamp(estimate.estimated_x_cm, 0, room.width_cm),
+          y: clamp(estimate.estimated_y_cm, 0, room.depth_cm),
+          confidence: Math.round(estimate.confidence * 100),
+          label: "RF estimate",
+          displayId: "RF",
+          activeNodes: estimate.active_nodes ?? [],
+          track: null,
+          ruviewPose: null,
+        },
+      ];
+    }
+    return [];
+  }
+  const centers = poses.map(ruviewPoseCenter);
+  const maxFrameX = Math.max(
+    640,
+    ...poses.flatMap((pose) => [
+      pose.bbox ? pose.bbox.x + pose.bbox.width : 0,
+      ...pose.keypoints.map((point) => point.x),
+    ])
+  );
+  const baseX = estimate?.ready && estimate.estimated_x_cm != null ? estimate.estimated_x_cm : null;
+  const baseY = estimate?.ready && estimate.estimated_y_cm != null ? estimate.estimated_y_cm : null;
+  return poses.map((pose, index) => {
+    const center = centers[index];
+    const xFromPose = center ? (center.x / maxFrameX) * room.width_cm : room.width_cm / 2;
+    const xOffset = center ? (center.x / maxFrameX - 0.5) * Math.min(room.width_cm * 0.28, 150) : 0;
+    return {
+      key: `ruview-pose-${pose.stable_id}`,
+      x: clamp(baseX == null ? xFromPose : baseX + xOffset, 0, room.width_cm),
+      y: clamp(baseY ?? room.depth_cm / 2, 0, room.depth_cm),
+      confidence: Math.round(pose.confidence * 100),
+      label: `RuView ${pose.ruview_id ?? pose.stable_id}`,
+      displayId: `R${index + 1}`,
+      activeNodes: estimate?.active_nodes ?? [],
+      track: null,
+      ruviewPose: pose,
+    };
+  });
 }
 
 function isLive3DSceneObject(object: RfRoomObject): boolean {
@@ -182,18 +384,20 @@ function RfRoomMap({
   layout,
   estimate,
   activeTracking,
+  ruviewPose,
 }: {
   snapshot: RfRoomSnapshot;
   layout?: RfRoomLayout | null;
   estimate?: RuViewZoneEstimate | null;
   activeTracking?: ActiveTrackingSnapshot | null;
+  ruviewPose?: RuViewPoseSnapshot | null;
 }) {
   const viewLayout = layout ?? snapshot.layout;
   const { room } = viewLayout;
   const width = Math.max(room.width_cm, 1);
   const depth = Math.max(room.depth_cm, 1);
   const runtimeById = nodeRuntimeById(snapshot);
-  const personDots = roomPersonEstimates(room, estimate, activeTracking).map((person) => ({
+  const personDots = roomPersonEstimates(room, estimate, activeTracking, ruviewPose).map((person) => ({
     ...person,
     left: `${(person.x / width) * 100}%`,
     top: `${(1 - person.y / depth) * 100}%`,
@@ -312,11 +516,13 @@ function RfRoomScene3D({
   layout,
   estimate,
   activeTracking,
+  ruviewPose,
 }: {
   snapshot: RfRoomSnapshot;
   layout?: RfRoomLayout | null;
   estimate?: RuViewZoneEstimate | null;
   activeTracking?: ActiveTrackingSnapshot | null;
+  ruviewPose?: RuViewPoseSnapshot | null;
 }) {
   const viewLayout = layout ?? snapshot.layout;
   const { room } = viewLayout;
@@ -377,53 +583,69 @@ function RfRoomScene3D({
     const b = project(to);
     return <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="rf-scene__edge" />;
   };
-  const personEstimates = roomPersonEstimates(room, estimate, activeTracking);
+  const personEstimates = roomPersonEstimates(room, estimate, activeTracking, ruviewPose);
   const personBodyHeight = Math.min(Math.max(roomHeight * 0.42, 90), 165);
-  const buildPersonSkeleton = (personEstimate: RoomPersonEstimate): SceneSkeleton => {
+  const buildSkeletonFromPoseFrame = (
+    personEstimate: RoomPersonEstimate,
+    box: PoseFrameBox | null,
+    framePoints: PoseFramePoint[],
+    source: SceneSkeleton["source"]
+  ): SceneSkeleton | null => {
+    if (!box || box.x2 <= box.x1 || box.y2 <= box.y1 || framePoints.length < 5) return null;
     const lateral = { x: 1, y: 0 };
     const forward = { x: 0, y: 1 };
-    const cameraTrack = personEstimate.track;
-    const cameraKeypoints = cameraTrack?.keypoints;
-    const cameraBox = cameraTrack?.bbox;
-    if (
-      Array.isArray(cameraKeypoints) &&
-      cameraKeypoints.length >= 17 &&
-      cameraBox &&
-      cameraBox.x2 > cameraBox.x1 &&
-      cameraBox.y2 > cameraBox.y1
-    ) {
-      const joints: Record<string, { x: number; y: number }> = {};
-      const confs = Array.isArray(cameraTrack?.keypoint_conf) ? cameraTrack.keypoint_conf : [];
-      const boxWidth = Math.max(1, cameraBox.x2 - cameraBox.x1);
-      const boxHeight = Math.max(1, cameraBox.y2 - cameraBox.y1);
-      const centerX = cameraBox.x1 + boxWidth / 2;
-      const lowerBodyDepth: Record<number, number> = {
-        11: 0,
-        12: 0,
-        13: 26,
-        14: 26,
-        15: 42,
-        16: 42,
-      };
-      cameraKeypoints.forEach((point, index) => {
-        if (!Array.isArray(point) || point.length < 2) return;
-        const confidence = typeof confs[index] === "number" ? confs[index] : 1;
-        if (confidence < 0.28) return;
-        const sideOffset = clamp(((Number(point[0]) - centerX) / boxWidth) * 82, -58, 58);
-        const forwardOffset = lowerBodyDepth[index] ?? 0;
-        const z = clamp(((cameraBox.y2 - Number(point[1])) / boxHeight) * 178, 4, 184);
-        joints[`kp${index}`] = project({
-          x: personEstimate.x + lateral.x * sideOffset,
-          y: personEstimate.y + lateral.y * sideOffset + forward.y * forwardOffset,
-          z,
-        });
+    const joints: Record<string, { x: number; y: number }> = {};
+    const boxWidth = Math.max(1, box.x2 - box.x1);
+    const boxHeight = Math.max(1, box.y2 - box.y1);
+    const centerX = box.x1 + boxWidth / 2;
+    const lowerBodyDepth: Record<number, number> = {
+      11: 0,
+      12: 0,
+      13: 26,
+      14: 26,
+      15: 42,
+      16: 42,
+    };
+    framePoints.forEach((point, index) => {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+      if (point.confidence < 0.25) return;
+      const sideOffset = clamp(((point.x - centerX) / boxWidth) * 82, -58, 58);
+      const forwardOffset = lowerBodyDepth[index] ?? 0;
+      const z = clamp(((box.y2 - point.y) / boxHeight) * 178, 4, 184);
+      joints[`kp${index}`] = project({
+        x: personEstimate.x + lateral.x * sideOffset,
+        y: personEstimate.y + lateral.y * sideOffset + forward.y * forwardOffset,
+        z,
       });
-      const bones = COCO_POSE_EDGES.map(([from, to]) => [`kp${from}`, `kp${to}`] as [string, string]).filter(
-        ([from, to]) => joints[from] && joints[to]
+    });
+    const bones = COCO_POSE_EDGES.map(([from, to]) => [`kp${from}`, `kp${to}`] as [string, string]).filter(
+      ([from, to]) => joints[from] && joints[to]
+    );
+    if (bones.length >= 4) {
+      return { joints, bones, source };
+    }
+    return null;
+  };
+  const buildPersonSkeleton = (personEstimate: RoomPersonEstimate): SceneSkeleton => {
+    const cameraTrack = personEstimate.track;
+    if (cameraTrack) {
+      const cameraSkeleton = buildSkeletonFromPoseFrame(
+        personEstimate,
+        cameraPoseFrameBox(cameraTrack),
+        cameraPoseFramePoints(cameraTrack),
+        "camera_pose"
       );
-      if (bones.length >= 6) {
-        return { joints, bones, source: "camera_pose" as const };
-      }
+      if (cameraSkeleton) return cameraSkeleton;
+    }
+
+    if (personEstimate.ruviewPose) {
+      const ruviewSkeleton = buildSkeletonFromPoseFrame(
+        personEstimate,
+        ruviewPoseFrameBox(personEstimate.ruviewPose),
+        ruviewPoseFramePoints(personEstimate.ruviewPose),
+        "ruview_pose"
+      );
+      if (ruviewSkeleton) return ruviewSkeleton;
     }
 
     return { joints: {}, bones: [], source: "rf_position" as const };
@@ -434,8 +656,10 @@ function RfRoomScene3D({
     const head = project({ x: personEstimate.x, y: personEstimate.y, z: personBodyHeight + 24 });
     const activeNodes = viewLayout.nodes.filter((node) => personEstimate.activeNodes.includes(Number(node.physical_label)));
     const skeleton = buildPersonSkeleton(personEstimate);
+    const skeletonLabel =
+      skeleton.source === "camera_pose" ? "camera pose" : skeleton.source === "ruview_pose" ? "RuView pose" : "rf handoff";
     return (
-      <g key={personEstimate.key} className="rf-scene-person">
+      <g key={personEstimate.key} className={`rf-scene-person rf-scene-person--${skeleton.source}`}>
         {activeNodes.map((node) => {
           const nodeTop = project({ x: node.x_cm, y: node.y_cm, z: node.z_cm ?? 0 });
           return (
@@ -475,7 +699,7 @@ function RfRoomScene3D({
         ))}
         <circle cx={head.x} cy={head.y} r="12" className="rf-scene-person__head" />
         <text x={head.x + 18} y={head.y - 10} className="rf-scene-person__label">
-          {personEstimate.label} {personEstimate.confidence}% {skeleton.source === "camera_pose" ? "pose" : "rf handoff"}
+          {personEstimate.label} {personEstimate.confidence}% {skeletonLabel}
         </text>
       </g>
     );
@@ -614,15 +838,16 @@ type CloudPoint = Point3D & {
 function liveRoomPoint(
   room: RfRoomLayout["room"],
   estimate?: RuViewZoneEstimate | null,
-  activeTracking?: ActiveTrackingSnapshot | null
+  activeTracking?: ActiveTrackingSnapshot | null,
+  ruviewPose?: RuViewPoseSnapshot | null
 ) {
-  const activeRoomTrack = tracksWithRoomPosition(activeTracking)[0] ?? null;
-  if (activeRoomTrack?.estimated_x_cm != null && activeRoomTrack.estimated_y_cm != null) {
+  const livePerson = roomPersonEstimates(room, estimate, activeTracking, ruviewPose)[0] ?? null;
+  if (livePerson) {
     return {
-      x: clamp(activeRoomTrack.estimated_x_cm, 0, room.width_cm),
-      y: clamp(activeRoomTrack.estimated_y_cm, 0, room.depth_cm),
-      confidence: activeRoomTrack.rf_confidence ?? 0,
-      label: trackDisplayName(activeRoomTrack),
+      x: livePerson.x,
+      y: livePerson.y,
+      confidence: livePerson.confidence / 100,
+      label: livePerson.label,
     };
   }
   if (estimate?.ready && estimate.estimated_x_cm != null && estimate.estimated_y_cm != null) {
@@ -639,7 +864,8 @@ function liveRoomPoint(
 function buildScannerPointCloud(
   layout: RfRoomLayout,
   estimate?: RuViewZoneEstimate | null,
-  activeTracking?: ActiveTrackingSnapshot | null
+  activeTracking?: ActiveTrackingSnapshot | null,
+  ruviewPose?: RuViewPoseSnapshot | null
 ): CloudPoint[] {
   const points: CloudPoint[] = [];
   const { room } = layout;
@@ -694,7 +920,7 @@ function buildScannerPointCloud(
     add(node.x_cm, node.y_cm, 0, 0.36, 1.5, "node");
   });
 
-  const livePoint = liveRoomPoint(room, estimate, activeTracking);
+  const livePoint = liveRoomPoint(room, estimate, activeTracking, ruviewPose);
   if (livePoint) {
     for (let z = 0; z <= 175; z += 14) {
       const radius = z > 140 ? 16 : 9;
@@ -717,10 +943,12 @@ function ScannerView({
   layout,
   estimate,
   activeTracking,
+  ruviewPose,
 }: {
   layout: RfRoomLayout;
   estimate?: RuViewZoneEstimate | null;
   activeTracking?: ActiveTrackingSnapshot | null;
+  ruviewPose?: RuViewPoseSnapshot | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const keysRef = useRef<Set<string>>(new Set());
@@ -732,8 +960,11 @@ function ScannerView({
     yaw: Math.PI / 2,
     pitch: 0,
   });
-  const cloud = useMemo(() => buildScannerPointCloud(layout, estimate, activeTracking), [activeTracking, estimate, layout]);
-  const livePoint = liveRoomPoint(layout.room, estimate, activeTracking);
+  const cloud = useMemo(
+    () => buildScannerPointCloud(layout, estimate, activeTracking, ruviewPose),
+    [activeTracking, estimate, layout, ruviewPose]
+  );
+  const livePoint = liveRoomPoint(layout.room, estimate, activeTracking, ruviewPose);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1507,6 +1738,7 @@ function nodeLabelFromLink(link: RuViewLink, side: "rx" | "tx"): string {
 function RuViewBridgePanel({
   status,
   upstream,
+  pose,
   calibration,
   estimate,
   liveEnabled,
@@ -1515,6 +1747,7 @@ function RuViewBridgePanel({
 }: {
   status: RuViewBridgeStatus | null;
   upstream: RuViewUpstreamStatus | null;
+  pose: RuViewPoseSnapshot | null;
   calibration: RuViewCalibrationHistory | null;
   estimate: RuViewZoneEstimate | null;
   liveEnabled: boolean;
@@ -1548,7 +1781,9 @@ function RuViewBridgePanel({
   const linkByDirection = new Map(activePairwiseLinks.map((link) => [`${link.rx_node_id}-${link.tx_node_id}`, link]));
   const stimulatorTone = !status?.stimulator_enabled ? "off" : status.stimulator_running ? "good" : "warn";
   const upstreamPersons =
-    typeof upstream?.pose_current?.total_persons === "number"
+    typeof pose?.total_persons === "number"
+      ? pose.total_persons
+      : typeof upstream?.pose_current?.total_persons === "number"
       ? upstream.pose_current.total_persons
       : Array.isArray(upstream?.pose_current?.persons)
         ? upstream.pose_current.persons.length
@@ -1612,7 +1847,11 @@ function RuViewBridgePanel({
         </div>
         <div>
           <span>Official RuView</span>
-          <strong>{upstream?.reachable ? `${upstreamPersons ?? "n/a"} pose / ${readMetric(upstream.stream_status, "source")}` : "offline"}</strong>
+          <strong>
+            {pose?.reachable || upstream?.reachable
+              ? `${upstreamPersons ?? "n/a"} pose / ${pose?.source ?? readMetric(upstream?.stream_status, "source")}`
+              : "offline"}
+          </strong>
         </div>
       </div>
 
@@ -1938,6 +2177,7 @@ const RfRoomPage: React.FC = () => {
   const [ruviewUpstream, setRuviewUpstream] = useState<RuViewUpstreamStatus | null>(null);
   const [ruviewCalibration, setRuviewCalibration] = useState<RuViewCalibrationHistory | null>(null);
   const [ruviewEstimate, setRuviewEstimate] = useState<RuViewZoneEstimate | null>(null);
+  const [ruviewPose, setRuviewPose] = useState<RuViewPoseSnapshot | null>(null);
   const [activeTracking, setActiveTracking] = useState<ActiveTrackingSnapshot | null>(null);
   const [lastSample, setLastSample] = useState<RfSnapshotSample | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1956,17 +2196,19 @@ const RfRoomPage: React.FC = () => {
 
   const loadRuView = useCallback(async () => {
     if (!token) return;
-    const [status, upstream, history, estimate, tracking] = await Promise.all([
+    const [status, upstream, history, estimate, pose, tracking] = await Promise.all([
       getRuViewStatus(token),
       getRuViewUpstream(token),
       getRuViewCalibration(token, 50),
       getRuViewEstimate(token, 200),
+      getRuViewPose(token),
       getActiveTracking(token, 200),
     ]);
     setRuviewStatus(status);
     setRuviewUpstream(upstream);
     setRuviewCalibration(history);
     setRuviewEstimate(estimate);
+    setRuviewPose(pose);
     setActiveTracking(tracking);
   }, [token]);
 
@@ -1980,6 +2222,11 @@ const RfRoomPage: React.FC = () => {
     setRuviewStatus(status);
     setRuviewEstimate(estimate);
     setActiveTracking(tracking);
+  }, [token]);
+
+  const loadRuViewPoseLive = useCallback(async () => {
+    if (!token) return;
+    setRuviewPose(await getRuViewPose(token));
   }, [token]);
 
   const load = useCallback(
@@ -2121,6 +2368,29 @@ const RfRoomPage: React.FC = () => {
     };
   }, [liveRuView, loadRuViewLive, token]);
 
+  useEffect(() => {
+    if (!token || !liveRuView) return;
+    let disposed = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        await loadRuViewPoseLive();
+      } catch {
+        // Pose refresh is best-effort; the next successful tick replaces stale skeletons.
+      } finally {
+        inFlight = false;
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [liveRuView, loadRuViewPoseLive, token]);
+
   const toggleRuViewLive = useCallback(() => {
     setLiveRuView((current) => !current);
   }, []);
@@ -2224,9 +2494,11 @@ const RfRoomPage: React.FC = () => {
         </div>
         <div className="summary-card">
           <div className="summary-card__label">Active tracks</div>
-          <div className="summary-card__value">{activeTracking?.active_count ?? 0}</div>
+          <div className="summary-card__value">{activeTracking?.active_count ?? ruviewPose?.total_persons ?? 0}</div>
           <div className="summary-card__hint">
-            {activeTracking?.rf_count ? `${activeTracking.rf_count} continued by RuView` : "camera identity handoff layer"}
+            {ruviewPose?.reachable
+              ? `${ruviewPose.persons.length} RuView pose, ${activeTracking?.rf_count ?? 0} RF handoff`
+              : "camera identity handoff layer"}
           </div>
         </div>
       </div>
@@ -2235,12 +2507,30 @@ const RfRoomPage: React.FC = () => {
 
       {snapshot && (
         <>
-          <RfRoomMap snapshot={snapshot} layout={layoutDraft} estimate={ruviewEstimate} activeTracking={activeTracking} />
-          <RfRoomScene3D snapshot={snapshot} layout={layoutDraft} estimate={ruviewEstimate} activeTracking={activeTracking} />
-          <ScannerView layout={layoutDraft ?? snapshot.layout} estimate={ruviewEstimate} activeTracking={activeTracking} />
+          <RfRoomMap
+            snapshot={snapshot}
+            layout={layoutDraft}
+            estimate={ruviewEstimate}
+            activeTracking={activeTracking}
+            ruviewPose={ruviewPose}
+          />
+          <RfRoomScene3D
+            snapshot={snapshot}
+            layout={layoutDraft}
+            estimate={ruviewEstimate}
+            activeTracking={activeTracking}
+            ruviewPose={ruviewPose}
+          />
+          <ScannerView
+            layout={layoutDraft ?? snapshot.layout}
+            estimate={ruviewEstimate}
+            activeTracking={activeTracking}
+            ruviewPose={ruviewPose}
+          />
           <RuViewBridgePanel
             status={ruviewStatus}
             upstream={ruviewUpstream}
+            pose={ruviewPose}
             calibration={ruviewCalibration}
             estimate={ruviewEstimate}
             liveEnabled={liveRuView}
