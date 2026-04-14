@@ -129,6 +129,12 @@ class RuViewBridgeStatus(BaseModel):
     stimulus_count: int = Field(default=0, ge=0)
     last_stimulus_at: datetime | None = None
     last_stimulus_error: str | None = None
+    upstream_forward_enabled: bool = False
+    upstream_forward_host: str | None = None
+    upstream_forward_port: int | None = None
+    upstream_forward_count: int = Field(default=0, ge=0)
+    last_upstream_forward_at: datetime | None = None
+    last_upstream_forward_error: str | None = None
     started_at: datetime | None = None
     last_packet_at: datetime | None = None
     packet_count: int = Field(ge=0)

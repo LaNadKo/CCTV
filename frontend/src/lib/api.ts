@@ -1383,6 +1383,12 @@ export type RuViewBridgeStatus = {
   stimulus_count: number;
   last_stimulus_at?: string | null;
   last_stimulus_error?: string | null;
+  upstream_forward_enabled: boolean;
+  upstream_forward_host?: string | null;
+  upstream_forward_port?: number | null;
+  upstream_forward_count: number;
+  last_upstream_forward_at?: string | null;
+  last_upstream_forward_error?: string | null;
   started_at?: string | null;
   last_packet_at?: string | null;
   packet_count: number;
