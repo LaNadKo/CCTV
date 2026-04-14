@@ -2214,14 +2214,17 @@ const RfRoomPage: React.FC = () => {
 
   const loadRuViewLive = useCallback(async () => {
     if (!token) return;
-    const [status, estimate, tracking] = await Promise.all([
+    const [status, estimate] = await Promise.all([
       getRuViewStatus(token),
       getRuViewEstimate(token, 200),
-      getActiveTracking(token, 200),
     ]);
     setRuviewStatus(status);
     setRuviewEstimate(estimate);
-    setActiveTracking(tracking);
+  }, [token]);
+
+  const loadActiveTrackingLive = useCallback(async () => {
+    if (!token) return;
+    setActiveTracking(await getActiveTracking(token, 200));
   }, [token]);
 
   const loadRuViewPoseLive = useCallback(async () => {
@@ -2367,6 +2370,29 @@ const RfRoomPage: React.FC = () => {
       window.clearInterval(timer);
     };
   }, [liveRuView, loadRuViewLive, token]);
+
+  useEffect(() => {
+    if (!token || !liveRuView) return;
+    let disposed = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        await loadActiveTrackingLive();
+      } catch {
+        // Keep the last known track visible if a single live poll fails.
+      } finally {
+        inFlight = false;
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [liveRuView, loadActiveTrackingLive, token]);
 
   useEffect(() => {
     if (!token || !liveRuView) return;
