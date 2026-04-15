@@ -22,6 +22,7 @@ class CameraOut(BaseModel):
     location: Optional[str] = None
     ip_address: Optional[str] = None
     stream_url: Optional[str] = None
+    fps: Optional[int] = None
     permission: str
     detection_enabled: bool
     recording_mode: str

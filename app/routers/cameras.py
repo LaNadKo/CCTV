@@ -72,6 +72,21 @@ async def list_cameras(
         stmt = stmt.where(models.Camera.group_id == group_id)
     result = await session.execute(stmt)
     cameras = result.scalars().all()
+    camera_ids = [camera.camera_id for camera in cameras]
+    fps_by_camera: dict[int, int] = {}
+    if camera_ids:
+        stream_result = await session.execute(
+            select(models.VideoStream.camera_id, models.VideoStream.fps)
+            .where(
+                models.VideoStream.camera_id.in_(camera_ids),
+                models.VideoStream.enabled.is_(True),
+                models.VideoStream.fps.is_not(None),
+            )
+            .order_by(models.VideoStream.video_stream_id)
+        )
+        for camera_id, fps in stream_result.all():
+            if camera_id not in fps_by_camera and fps is not None:
+                fps_by_camera[int(camera_id)] = int(fps)
 
     permission = user_camera_permission_sync(current_user)
     if permission is None:
@@ -84,6 +99,7 @@ async def list_cameras(
             location=camera.location,
             ip_address=camera.ip_address,
             stream_url=primary_stream_url(camera.stream_url, camera.endpoints),
+            fps=fps_by_camera.get(camera.camera_id),
             permission=permission,
             detection_enabled=camera.detection_enabled,
             recording_mode=camera.recording_mode,

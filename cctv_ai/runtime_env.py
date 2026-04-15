@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -51,6 +53,44 @@ def _candidate_package_dirs(*parts: str) -> list[Path]:
     return _dedupe(candidates)
 
 
+def _module_dir(module_name: str) -> Path | None:
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except Exception:
+        return None
+    if spec is None:
+        return None
+    if spec.submodule_search_locations:
+        return Path(next(iter(spec.submodule_search_locations))).resolve()
+    if spec.origin is None:
+        return None
+    return Path(spec.origin).resolve().parent
+
+
+def _find_onnxruntime_capi_dir() -> Path | None:
+    module_dir = _module_dir("onnxruntime")
+    candidates: list[Path] = []
+    if module_dir is not None:
+        candidates.append(module_dir / "capi")
+    candidates.extend(_candidate_package_dirs("onnxruntime", "capi"))
+    for candidate in _dedupe(candidates):
+        if (candidate / "onnxruntime_providers_shared.dll").exists():
+            return candidate
+    return None
+
+
+def _find_mmdeploy_runtime_dir() -> Path | None:
+    module_dir = _module_dir("mmdeploy_runtime")
+    candidates: list[Path] = []
+    if module_dir is not None:
+        candidates.append(module_dir)
+    candidates.extend(_candidate_package_dirs("mmdeploy_runtime"))
+    for candidate in _dedupe(candidates):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _find_torch_lib_dir() -> Path | None:
     for candidate in _candidate_package_dirs("torch", "lib"):
         if candidate.is_dir():
@@ -80,8 +120,10 @@ def _valid_cuda_root(path: Path | None) -> Path | None:
 
 
 def _find_cuda_runtime_root() -> Path | None:
-    env_root = os.environ.get("CUDA_PATH")
-    if env_root:
+    for env_name in ("CCTV_CUDA_PATH", "CUDA_PATH", "CUDA_HOME"):
+        env_root = os.environ.get(env_name)
+        if not env_root:
+            continue
         valid = _valid_cuda_root(Path(env_root))
         if valid is not None:
             return valid
@@ -98,6 +140,18 @@ def _find_cuda_runtime_root() -> Path | None:
             ("runtime", "cuda_runtime"),
         ):
             valid = _valid_cuda_root(root.joinpath(*relative))
+            if valid is not None:
+                return valid
+
+    for env_name in ("ProgramFiles", "ProgramW6432"):
+        program_files = os.environ.get(env_name)
+        if not program_files:
+            continue
+        cuda_dir = Path(program_files) / "NVIDIA GPU Computing Toolkit" / "CUDA"
+        if not cuda_dir.is_dir():
+            continue
+        for candidate in sorted(cuda_dir.glob("v*"), reverse=True):
+            valid = _valid_cuda_root(candidate)
             if valid is not None:
                 return valid
     return None
@@ -125,23 +179,54 @@ def register_dll_dirs(paths: list[Path]) -> list[Path]:
 
 def prepare_onnxruntime_cuda_env() -> dict[str, Path | list[Path] | None]:
     torch_lib = _find_torch_lib_dir()
+    ort_capi = _find_onnxruntime_capi_dir()
     nvidia_bins = _iter_nvidia_bin_dirs()
     dll_dirs: list[Path] = []
+    if ort_capi is not None:
+        dll_dirs.append(ort_capi)
     dll_dirs.extend(nvidia_bins)
     if torch_lib is not None:
         dll_dirs.append(torch_lib)
     register_dll_dirs(dll_dirs)
     return {
         "torch_lib": torch_lib,
+        "onnxruntime_capi": ort_capi,
         "nvidia_bins": nvidia_bins,
     }
 
 
+def _copy_onnxruntime_provider_dlls() -> None:
+    ort_capi = _find_onnxruntime_capi_dir()
+    mmdeploy_dir = _find_mmdeploy_runtime_dir()
+    if ort_capi is None or mmdeploy_dir is None:
+        return
+    for dll_name in ("onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"):
+        src = ort_capi / dll_name
+        dst = mmdeploy_dir / dll_name
+        if not src.exists():
+            continue
+        try:
+            if not dst.exists() or src.stat().st_size != dst.stat().st_size:
+                shutil.copy2(src, dst)
+        except OSError:
+            logger.debug("Failed to stage %s for MMDeploy runtime", dll_name, exc_info=True)
+
+
 def prepare_mmdeploy_cuda_env() -> Path | None:
     cuda_root = _find_cuda_runtime_root()
+    ort_capi = _find_onnxruntime_capi_dir()
+    mmdeploy_dir = _find_mmdeploy_runtime_dir()
+    torch_lib = _find_torch_lib_dir()
     dll_dirs = _iter_nvidia_bin_dirs()
     if cuda_root is not None:
         os.environ["CUDA_PATH"] = str(cuda_root)
         dll_dirs.insert(0, cuda_root / "bin")
+    if ort_capi is not None:
+        dll_dirs.insert(0, ort_capi)
+    if mmdeploy_dir is not None:
+        dll_dirs.insert(0, mmdeploy_dir)
+    if torch_lib is not None:
+        dll_dirs.append(torch_lib)
+    _copy_onnxruntime_provider_dlls()
     register_dll_dirs(dll_dirs)
     return cuda_root
