@@ -229,6 +229,104 @@ export async function getCameras(token: string, groupId?: number | null) {
   return request<CameraSummary[]>(`/cameras${qs}`, "GET", token);
 }
 
+export type RuViewPoseBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type RuViewPoseKeypoint = {
+  name: string;
+  x: number;
+  y: number;
+  confidence?: number | null;
+  visible: boolean;
+};
+
+export type RuViewPosePerson = {
+  track_id: string;
+  source_id?: string | null;
+  confidence?: number | null;
+  bbox?: RuViewPoseBox | null;
+  keypoints: RuViewPoseKeypoint[];
+  age_ms?: number | null;
+};
+
+export type RuViewPoseSnapshot = {
+  reachable: boolean;
+  source_url?: string | null;
+  captured_at?: string | null;
+  latency_ms?: number | null;
+  persons: RuViewPosePerson[];
+  error?: string | null;
+};
+
+export type RuViewNodeStatus = {
+  node_id: number;
+  label: string;
+  source_ip?: string | null;
+  source_port?: number | null;
+  online: boolean;
+  last_seen?: string | null;
+  packet_count: number;
+  packet_rate_hz: number;
+  last_packet_type?: string | null;
+  last_sequence?: number | null;
+  last_rssi?: number | null;
+  channel?: number | null;
+  payload_bytes?: number | null;
+};
+
+export type RuViewBridgeStatus = {
+  enabled: boolean;
+  listening: boolean;
+  bind: string;
+  port: number;
+  started_at?: string | null;
+  last_packet_at?: string | null;
+  last_csi_packet_at?: string | null;
+  live_csi: boolean;
+  packet_count: number;
+  csi_packet_count: number;
+  vitals_packet_count: number;
+  health_packet_count: number;
+  unknown_packet_count: number;
+  upstream_forward_enabled: boolean;
+  upstream_forward_host?: string | null;
+  upstream_forward_port?: number | null;
+  upstream_forward_count: number;
+  last_error?: string | null;
+  last_upstream_error?: string | null;
+  nodes: RuViewNodeStatus[];
+};
+
+export type RuViewUpstreamStatus = {
+  enabled: boolean;
+  primary_url?: string | null;
+  endpoints: {
+    url: string;
+    reachable: boolean;
+    latency_ms?: number | null;
+    health?: Record<string, unknown> | null;
+    stream_status?: Record<string, unknown> | null;
+    pose_stats?: Record<string, unknown> | null;
+    error?: string | null;
+  }[];
+};
+
+export async function getRuViewPose(token: string) {
+  return request<RuViewPoseSnapshot>("/ruview/pose", "GET", token);
+}
+
+export async function getRuViewStatus(token: string) {
+  return request<RuViewBridgeStatus>("/ruview/status", "GET", token);
+}
+
+export async function getRuViewUpstream(token: string) {
+  return request<RuViewUpstreamStatus>("/ruview/upstream", "GET", token);
+}
+
 export async function getPending(token: string) {
   return request<
     {
