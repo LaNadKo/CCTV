@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         default=10.0,
         validation_alias="RUVIEW_STALE_AFTER_SECONDS",
     )
+    ruview_csi_min_interval_seconds: float = Field(
+        default=0.02,
+        validation_alias="RUVIEW_CSI_MIN_INTERVAL_SECONDS",
+    )
     ruview_require_live_csi_for_pose: bool = Field(
         default=True,
         validation_alias="RUVIEW_REQUIRE_LIVE_CSI_FOR_POSE",

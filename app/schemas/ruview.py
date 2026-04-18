@@ -35,6 +35,7 @@ class RuViewBridgeStatus(BaseModel):
     vitals_packet_count: int = 0
     health_packet_count: int = 0
     unknown_packet_count: int = 0
+    dropped_csi_packet_count: int = 0
     upstream_forward_enabled: bool = False
     upstream_forward_host: str | None = None
     upstream_forward_port: int | None = None

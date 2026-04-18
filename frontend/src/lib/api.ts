@@ -292,6 +292,7 @@ export type RuViewBridgeStatus = {
   vitals_packet_count: number;
   health_packet_count: number;
   unknown_packet_count: number;
+  dropped_csi_packet_count: number;
   upstream_forward_enabled: boolean;
   upstream_forward_host?: string | null;
   upstream_forward_port?: number | null;
