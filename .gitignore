@@ -82,6 +82,11 @@ build/
 dist/
 *.spec
 
+# Firmware build artifacts / vendored experiments
+firmware/**/.pio/
+external/
+output/
+
 # Required desktop build resources
 !desktop/build/
 !desktop/build/icon.ico
