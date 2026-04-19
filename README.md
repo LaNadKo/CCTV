@@ -143,6 +143,8 @@ docker compose --profile ruview up -d ruview-sensing
 Прошивка ESP32-S3 для live CSI находится в `firmware/esp32-rf-node`. Она использует ESP-NOW broadcast-sounding и отправляет в backend одновременно RuView ADR-018 CSI (`0xC5110001`) и диагностический RF-link (`0xC5110101`).
 Backend дополнительно ограничивает приём CSI параметром `RUVIEW_CSI_MIN_INTERVAL_SECONDS`, чтобы RuView/Live не перегружались при плотном радиопотоке.
 
+RuView sidecar must run with `CSI_SOURCE=esp32`; values like `udp://0.0.0.0:5005` are treated by the current upstream image as simulated mode. Backend also keeps `RUVIEW_ALLOW_UNCALIBRATED_POSE_OVERLAY=false` by default, so uncalibrated RuView pose data is not drawn over camera video as a real skeleton.
+
 ```powershell
 .\scripts\flash_ruview_node.ps1 -Port COM3 -NodeId 1 -NoProvision
 ```
