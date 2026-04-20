@@ -256,8 +256,11 @@ export type RuViewPosePerson = {
 export type RuViewPoseSnapshot = {
   reachable: boolean;
   source_url?: string | null;
+  source_kind?: string | null;
   captured_at?: string | null;
   latency_ms?: number | null;
+  camera_aligned: boolean;
+  overlay_allowed: boolean;
   persons: RuViewPosePerson[];
   error?: string | null;
 };
