@@ -107,6 +107,8 @@ class CameraWorker:
         self._body_tracks: dict[int, dict[str, object]] = {}
         self._next_body_track_id = 1
         self._recognized_track_hold_seconds = 4.5
+        self._calibration_active = False
+        self._calibration_next_sample_ts = 0.0
         self._body_support_cache: list[dict] | None = None
         self._body_support_ts = 0.0
         self._body_support_interval = max(0.08, min(0.6, self._target_scan_interval * 0.8))
@@ -514,6 +516,7 @@ class CameraWorker:
 
             self._apply_tracking(body_tracks, frame.shape)
             body_overlay_items = self._build_body_overlay_items(body_tracks, now)
+            self._dispatch_calibration_sample(frame, body_tracks, now)
             if overlay_items:
                 self._last_faces_info = overlay_items
                 self._last_faces_ts = now
@@ -868,6 +871,7 @@ class CameraWorker:
                 state = self._body_tracks[best_track_id]
                 state["box"] = box
                 state["tracking_box"] = tracking_box
+                state["confidence"] = body.get("confidence")
                 state["keypoints"] = body.get("keypoints")
                 state["keypoint_conf"] = body.get("keypoint_conf")
                 state["head_points"] = body.get("head_points")
@@ -884,6 +888,7 @@ class CameraWorker:
                 "track_id": track_id,
                 "box": box,
                 "tracking_box": tracking_box,
+                "confidence": body.get("confidence"),
                 "last_seen": now,
                 "hits": 1,
                 "keypoints": body.get("keypoints"),
@@ -926,6 +931,7 @@ class CameraWorker:
 
             state["box"] = box
             state["tracking_box"] = tracking_box
+            state["confidence"] = body.get("confidence")
             state["keypoints"] = body.get("keypoints")
             state["keypoint_conf"] = body.get("keypoint_conf")
             state["head_points"] = body.get("head_points")
@@ -1091,6 +1097,94 @@ class CameraWorker:
                 }
             )
         return items
+
+    @staticmethod
+    def _box_payload(box: object) -> list[float] | None:
+        if not isinstance(box, (list, tuple)) or len(box) < 4:
+            return None
+        try:
+            return [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _keypoints_payload(keypoints: object) -> list[list[float]] | None:
+        if not isinstance(keypoints, list):
+            return None
+        result: list[list[float]] = []
+        for point in keypoints:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                result.append([float(point[0]), float(point[1])])
+            except (TypeError, ValueError):
+                continue
+        return result if result else None
+
+    @staticmethod
+    def _keypoint_conf_payload(keypoint_conf: object) -> list[float] | None:
+        if not isinstance(keypoint_conf, list):
+            return None
+        result: list[float] = []
+        for value in keypoint_conf:
+            try:
+                result.append(float(value))
+            except (TypeError, ValueError):
+                result.append(0.0)
+        return result if result else None
+
+    def _body_track_calibration_payload(self, state: dict, now: float) -> dict[str, object] | None:
+        track_id = state.get("track_id")
+        if track_id is None:
+            return None
+        payload: dict[str, object] = {
+            "track_id": track_id,
+            "bbox": self._box_payload(state.get("box")),
+            "tracking_bbox": self._box_payload(state.get("tracking_box")),
+            "confidence": state.get("confidence"),
+            "person_id": state.get("person_id"),
+            "label": state.get("label"),
+            "recognized": bool(state.get("recognized")),
+            "keypoints": self._keypoints_payload(state.get("keypoints")),
+            "keypoint_conf": self._keypoint_conf_payload(state.get("keypoint_conf")),
+            "head_only": bool(state.get("head_only")),
+        }
+        last_seen = state.get("last_seen")
+        if isinstance(last_seen, (int, float)):
+            payload["age_ms"] = round(max(0.0, now - float(last_seen)) * 1000.0, 1)
+        return payload
+
+    def _dispatch_calibration_sample(self, frame: np.ndarray, body_tracks: list[dict], now: float) -> None:
+        if self._event_loop is None or self.processor_id is None:
+            return
+        interval = 0.2 if self._calibration_active else 2.0
+        if now < self._calibration_next_sample_ts:
+            return
+        self._calibration_next_sample_ts = now + interval
+
+        tracks = []
+        for state in body_tracks:
+            payload = self._body_track_calibration_payload(state, now)
+            if payload is not None:
+                tracks.append(payload)
+
+        sample = {
+            "camera_id": self.camera_id,
+            "frame_ts": datetime.now().isoformat(),
+            "frame_width": int(frame.shape[1]),
+            "frame_height": int(frame.shape[0]),
+            "tracks": tracks,
+        }
+        future = asyncio.run_coroutine_threadsafe(
+            self.client.push_calibration_sample(self.processor_id, sample),
+            self._event_loop,
+        )
+
+        def _remember_status(result: dict) -> None:
+            self._calibration_active = bool(result.get("active"))
+            self._calibration_next_sample_ts = time.time() + (0.2 if self._calibration_active else 2.0)
+
+        self._dispatch_future(future, "push calibration sample", on_success=_remember_status)
 
     def _body_label_position(
         self,

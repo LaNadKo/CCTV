@@ -219,6 +219,24 @@ class RuViewBridge:
             node.payload_bytes = payload_bytes
             node.packet_times.append(packet_monotonic)
 
+        try:
+            from app.services.ruview_calibration import record_csi_packet
+
+            record_csi_packet(
+                packet_type=packet_type,
+                node_id=resolved_id,
+                source_ip=addr[0],
+                source_port=addr[1],
+                sequence=sequence,
+                rssi=rssi,
+                channel=channel,
+                payload_bytes=payload_bytes,
+                raw=data,
+                received_at=now,
+            )
+        except Exception:
+            logger.exception("Failed to write RuView calibration CSI sample")
+
         self._forward_to_upstream(data, packet_monotonic)
 
     def _accept_packet_locked(self, packet_type: str, node_id: int, now: float) -> bool:

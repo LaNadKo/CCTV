@@ -96,3 +96,25 @@ class RuViewPoseSnapshot(BaseModel):
     overlay_allowed: bool = False
     persons: list[RuViewPosePerson] = Field(default_factory=list)
     error: str | None = None
+
+
+class RuViewCalibrationStartIn(BaseModel):
+    label: str = "baseline"
+    scenario: str = "empty"
+    duration_seconds: float | None = None
+    notes: str | None = None
+
+
+class RuViewCalibrationStatus(BaseModel):
+    active: bool
+    session_id: str | None = None
+    label: str | None = None
+    scenario: str | None = None
+    notes: str | None = None
+    directory: str | None = None
+    started_at: datetime | None = None
+    stopped_at: datetime | None = None
+    duration_seconds: float | None = None
+    csi_samples: int = 0
+    camera_samples: int = 0
+    latest_tracks: int = 0

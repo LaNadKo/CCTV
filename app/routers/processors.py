@@ -28,6 +28,8 @@ from app.schemas.processors import (
     GenerateCodeOut,
     ProcessorConnect,
     ProcessorConnectOut,
+    ProcessorCalibrationSampleIn,
+    ProcessorCalibrationSampleOut,
     ProcessorEventIn,
     ProcessorEventOut,
     ProcessorHeartbeat,
@@ -40,6 +42,7 @@ from app.schemas.processors import (
     SystemMetrics,
 )
 from app.security import hash_api_key
+from app.services.ruview_calibration import record_camera_sample
 
 router = APIRouter(prefix="/processors", tags=["processors"])
 log = logging.getLogger("app.processors")
@@ -384,6 +387,23 @@ async def push_event(
         session.add(review)
     await session.commit()
     return ProcessorEventOut(event_id=evt.event_id)
+
+
+@router.post("/{processor_id}/calibration-samples", response_model=ProcessorCalibrationSampleOut)
+async def push_calibration_sample(
+    processor_id: int,
+    payload: ProcessorCalibrationSampleIn,
+    session: AsyncSession = Depends(get_session),
+    x_api_key: str = Header(...),
+) -> ProcessorCalibrationSampleOut:
+    scopes = await get_service_scopes(x_api_key, session)
+    if "processor:write" not in scopes and "*" not in scopes:
+        raise HTTPException(status_code=403, detail="Missing scope: processor:write")
+    proc = await session.get(models.Processor, processor_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Processor not found")
+    result = record_camera_sample(processor_id, payload.model_dump(mode="json"))
+    return ProcessorCalibrationSampleOut(**result)
 
 
 @router.post("/{processor_id}/recordings", response_model=ProcessorRecordingOut)
