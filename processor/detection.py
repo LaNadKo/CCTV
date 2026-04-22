@@ -1165,10 +1165,11 @@ class CameraWorker:
     def _dispatch_calibration_sample(self, frame: np.ndarray, body_tracks: list[dict], now: float) -> None:
         if self._event_loop is None or self.processor_id is None:
             return
+        schedule_now = time.monotonic()
         interval = 0.2 if self._calibration_active else 2.0
-        if now < self._calibration_next_sample_ts:
+        if schedule_now < self._calibration_next_sample_ts:
             return
-        self._calibration_next_sample_ts = now + interval
+        self._calibration_next_sample_ts = schedule_now + interval
 
         tracks = []
         for state in body_tracks:

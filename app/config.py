@@ -87,6 +87,18 @@ class Settings(BaseSettings):
         default=0.0,
         validation_alias="RUVIEW_UPSTREAM_FORWARD_MIN_INTERVAL_SECONDS",
     )
+    ruview_calibrator_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_CALIBRATOR_ENABLED",
+    )
+    ruview_calibrator_model_path: str = Field(
+        default="calibration_datasets/current_ruview_model/ridge_pose_model.npz",
+        validation_alias="RUVIEW_CALIBRATOR_MODEL_PATH",
+    )
+    ruview_calibrator_window_seconds: float = Field(
+        default=1.6,
+        validation_alias="RUVIEW_CALIBRATOR_WINDOW_SECONDS",
+    )
 
     @field_validator("debug", mode="before")
     @classmethod

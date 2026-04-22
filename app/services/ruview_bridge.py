@@ -36,6 +36,17 @@ class _NodeAggregate:
     packet_times: deque[float] = field(default_factory=lambda: deque(maxlen=240))
 
 
+@dataclass(frozen=True)
+class RecentCsiPacket:
+    received_at: datetime
+    node_id: int
+    sequence: int | None
+    rssi: int | None
+    channel: int | None
+    payload_bytes: int | None
+    raw: bytes
+
+
 class RuViewBridge:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -60,6 +71,7 @@ class RuViewBridge:
         self._nodes: dict[int, _NodeAggregate] = {}
         self._ip_node_ids: dict[str, int] = {}
         self._last_csi_accept_by_node: dict[int, float] = {}
+        self._recent_csi_packets: deque[RecentCsiPacket] = deque(maxlen=6000)
 
     def start(self) -> None:
         if not settings.ruview_bridge_enabled:
@@ -109,6 +121,17 @@ class RuViewBridge:
             self._nodes.clear()
             self._ip_node_ids.clear()
             self._last_csi_accept_by_node.clear()
+            self._recent_csi_packets.clear()
+
+    def recent_csi_packets(self, seconds: float) -> list[RecentCsiPacket]:
+        now = datetime.now(timezone.utc)
+        keep_after = max(0.0, float(seconds))
+        with self._lock:
+            return [
+                packet
+                for packet in self._recent_csi_packets
+                if (now - packet.received_at).total_seconds() <= keep_after
+            ]
 
     def status(self) -> RuViewBridgeStatus:
         now = datetime.now(timezone.utc)
@@ -197,6 +220,17 @@ class RuViewBridge:
             if packet_type == "csi":
                 self._csi_packet_count += 1
                 self._last_csi_packet_at = now
+                self._recent_csi_packets.append(
+                    RecentCsiPacket(
+                        received_at=now,
+                        node_id=resolved_id,
+                        sequence=sequence,
+                        rssi=rssi,
+                        channel=channel,
+                        payload_bytes=payload_bytes,
+                        raw=data,
+                    )
+                )
             elif packet_type == "vitals":
                 self._vitals_packet_count += 1
             elif packet_type == "health":
@@ -381,3 +415,7 @@ def get_ruview_bridge_status() -> RuViewBridgeStatus:
 def has_recent_ruview_csi() -> bool:
     status = _bridge.status()
     return status.live_csi
+
+
+def get_recent_ruview_csi_packets(seconds: float) -> list[RecentCsiPacket]:
+    return _bridge.recent_csi_packets(seconds)

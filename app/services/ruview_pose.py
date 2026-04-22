@@ -16,6 +16,7 @@ from app.schemas.ruview import (
     RuViewPoseSnapshot,
 )
 from app.services.ruview_bridge import has_recent_ruview_csi
+from app.services.ruview_rf_model import get_calibrated_pose_snapshot
 from app.services.ruview_upstream import candidate_base_urls
 
 _COCO_KEYPOINT_NAMES = [
@@ -309,6 +310,10 @@ async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
             overlay_allowed=False,
             error="Нет live CSI от ESP32, симуляция RuView скрыта",
         )
+
+    calibrated_snapshot = get_calibrated_pose_snapshot()
+    if calibrated_snapshot is not None:
+        return calibrated_snapshot
 
     timeout = httpx.Timeout(settings.ruview_upstream_timeout_seconds)
     last_error: str | None = None
