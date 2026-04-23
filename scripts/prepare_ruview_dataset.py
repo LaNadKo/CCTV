@@ -131,7 +131,13 @@ def _dataset_stats(csi_rows: list[dict[str, Any]], camera_rows: list[dict[str, A
     }
 
 
-def prepare_dataset(source: Path, output: Path, first_seconds: float) -> dict[str, Any]:
+def prepare_dataset(
+    source: Path,
+    output: Path,
+    first_seconds: float | None = None,
+    start_offset_seconds: float = 0.0,
+    duration_seconds: float | None = None,
+) -> dict[str, Any]:
     manifest_path = source / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"manifest.json not found in {source}")
@@ -139,7 +145,16 @@ def prepare_dataset(source: Path, output: Path, first_seconds: float) -> dict[st
     start_at = _parse_ts(manifest.get("started_at"))
     if start_at is None:
         raise ValueError("manifest.started_at is required")
-    stop_at = start_at + timedelta(seconds=first_seconds)
+    if first_seconds is not None:
+        start_offset_seconds = 0.0
+        duration_seconds = first_seconds
+    if duration_seconds is None:
+        duration_seconds = float(manifest.get("duration_seconds") or 0.0) - start_offset_seconds
+    if duration_seconds <= 0:
+        raise ValueError("duration must be positive")
+    source_start_at = start_at
+    start_at = source_start_at + timedelta(seconds=start_offset_seconds)
+    stop_at = start_at + timedelta(seconds=duration_seconds)
 
     output.mkdir(parents=True, exist_ok=True)
     csi_rows = _rows_in_window(source / "csi.jsonl", start_at, stop_at)
@@ -154,16 +169,17 @@ def prepare_dataset(source: Path, output: Path, first_seconds: float) -> dict[st
             "active": False,
             "source_session_id": manifest.get("session_id"),
             "session_id": output.name,
-            "label": f"{manifest.get('label') or output.name}-first-{int(first_seconds)}s",
+            "label": f"{manifest.get('label') or output.name}-offset-{int(start_offset_seconds)}s-duration-{int(duration_seconds)}s",
             "scenario": f"{manifest.get('scenario') or 'ruview-calibration'}-trimmed",
             "notes": (
-                f"Trimmed first {first_seconds:g}s from {manifest.get('session_id') or source.name}. "
+                f"Trimmed offset {start_offset_seconds:g}s duration {duration_seconds:g}s "
+                f"from {manifest.get('session_id') or source.name}. "
                 f"Source notes: {manifest.get('notes') or ''}"
             ).strip(),
             "directory": str(output).replace("\\", "/"),
             "started_at": start_at.isoformat(),
             "stopped_at": stop_at.isoformat(),
-            "duration_seconds": round(first_seconds, 3),
+            "duration_seconds": round(duration_seconds, 3),
             "csi_samples": stats["csi_samples"],
             "camera_samples": stats["camera_samples"],
             "latest_tracks": 0,
@@ -183,16 +199,30 @@ def prepare_dataset(source: Path, output: Path, first_seconds: float) -> dict[st
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a trimmed RuView calibration dataset.")
     parser.add_argument("source", type=Path, help="Source calibration session directory")
-    parser.add_argument("--first-seconds", type=float, default=600.0, help="Keep only first N seconds")
+    parser.add_argument("--first-seconds", type=float, default=None, help="Keep only first N seconds")
+    parser.add_argument("--start-offset-seconds", type=float, default=0.0, help="Start offset from session start")
+    parser.add_argument("--duration-seconds", type=float, help="Trim duration")
     parser.add_argument("--output", type=Path, help="Output dataset directory")
     args = parser.parse_args()
 
     source = args.source
     output = args.output
     if output is None:
-        suffix = f"first-{int(args.first_seconds // 60)}min" if args.first_seconds % 60 == 0 else f"first-{int(args.first_seconds)}s"
+        effective_duration = args.first_seconds if args.first_seconds is not None else args.duration_seconds
+        if effective_duration is None:
+            suffix = f"offset-{int(args.start_offset_seconds)}s"
+        elif args.start_offset_seconds == 0 and args.first_seconds is not None:
+            suffix = f"first-{int(effective_duration // 60)}min" if effective_duration % 60 == 0 else f"first-{int(effective_duration)}s"
+        else:
+            suffix = f"offset-{int(args.start_offset_seconds)}s-duration-{int(effective_duration)}s"
         output = source.with_name(f"{source.name}-{suffix}")
-    result = prepare_dataset(source, output, args.first_seconds)
+    result = prepare_dataset(
+        source,
+        output,
+        first_seconds=args.first_seconds,
+        start_offset_seconds=args.start_offset_seconds,
+        duration_seconds=args.duration_seconds,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

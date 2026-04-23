@@ -300,9 +300,34 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, frame_width: float, frame_h
     }
 
 
-def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: float, test_ratio: float) -> dict[str, Any]:
-    csi_rows = _load_csi_rows(dataset)
-    targets = _load_camera_targets(dataset)
+def train(
+    datasets: list[Path],
+    output: Path,
+    window_seconds: float,
+    bins: int,
+    alpha: float,
+    test_ratio: float,
+    fit_all_after_eval: bool,
+) -> dict[str, Any]:
+    if not datasets:
+        raise ValueError("At least one dataset directory is required")
+    csi_rows: list[CsiRow] = []
+    targets: list[CameraTarget] = []
+    dataset_stats: list[dict[str, Any]] = []
+    for dataset in datasets:
+        dataset_csi = _load_csi_rows(dataset)
+        dataset_targets = _load_camera_targets(dataset)
+        csi_rows.extend(dataset_csi)
+        targets.extend(dataset_targets)
+        dataset_stats.append(
+            {
+                "dataset": str(dataset),
+                "csi_rows": len(dataset_csi),
+                "camera_targets": len(dataset_targets),
+            }
+        )
+    csi_rows.sort(key=lambda item: item.ts)
+    targets.sort(key=lambda item: item.ts)
     if len(targets) < 20:
         raise ValueError(f"Too few camera targets: {len(targets)}")
     x, y, feature_names, sample_counts = _build_feature_matrix(csi_rows, targets, window_seconds, bins)
@@ -312,11 +337,17 @@ def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: 
     weights, mean, std = _fit_ridge(x_train, y_train, alpha=alpha)
     train_pred = _predict(x_train, weights, mean, std)
     test_pred = _predict(x_test, weights, mean, std)
+    saved_weights = weights
+    saved_mean = mean
+    saved_std = std
+    if fit_all_after_eval:
+        saved_weights, saved_mean, saved_std = _fit_ridge(x, y, alpha=alpha)
 
     frame_width = max(target.frame_width for target in targets)
     frame_height = max(target.frame_height for target in targets)
     report = {
-        "dataset": str(dataset),
+        "datasets": [str(dataset) for dataset in datasets],
+        "dataset_stats": dataset_stats,
         "output": str(output),
         "frame_width": frame_width,
         "frame_height": frame_height,
@@ -327,6 +358,8 @@ def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: 
         "target_count": int(x.shape[0]),
         "train_samples": int(x_train.shape[0]),
         "test_samples": int(x_test.shape[0]),
+        "saved_model_samples": int(x.shape[0] if fit_all_after_eval else x_train.shape[0]),
+        "saved_model_fit_all_after_eval": fit_all_after_eval,
         "csi_rows": len(csi_rows),
         "camera_targets": len(targets),
         "feature_keys": sorted({row.key for row in csi_rows}),
@@ -341,9 +374,9 @@ def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: 
     output.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output / "ridge_pose_model.npz",
-        weights=weights,
-        mean=mean,
-        std=std,
+        weights=saved_weights,
+        mean=saved_mean,
+        std=saved_std,
         feature_names=np.asarray(feature_names, dtype=object),
         report=json.dumps(report, ensure_ascii=False),
     )
@@ -353,22 +386,24 @@ def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a baseline CSI to camera-pose calibrator.")
-    parser.add_argument("dataset", type=Path, help="Prepared RuView calibration dataset directory")
+    parser.add_argument("datasets", nargs="+", type=Path, help="Prepared RuView calibration dataset directories")
     parser.add_argument("--output", type=Path, help="Output model directory")
     parser.add_argument("--window-seconds", type=float, default=0.8)
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--alpha", type=float, default=35.0)
     parser.add_argument("--test-ratio", type=float, default=0.2)
+    parser.add_argument("--no-fit-all-after-eval", action="store_true", help="Save split-trained weights instead of refitting on all samples after reporting metrics")
     args = parser.parse_args()
 
-    output = args.output or args.dataset / "model"
+    output = args.output or args.datasets[0] / "model"
     report = train(
-        dataset=args.dataset,
+        datasets=args.datasets,
         output=output,
         window_seconds=args.window_seconds,
         bins=args.bins,
         alpha=args.alpha,
         test_ratio=args.test_ratio,
+        fit_all_after_eval=not args.no_fit_all_after_eval,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
