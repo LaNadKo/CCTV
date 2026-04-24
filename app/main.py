@@ -1,8 +1,10 @@
 import logging
+import os
 import time
 from pathlib import Path
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,6 +108,36 @@ RECORDINGS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/recordings/static", StaticFiles(directory=str(RECORDINGS_STATIC_DIR)), name="recordings-static")
 app.mount("/snapshots", StaticFiles(directory=str(SNAPSHOTS_STATIC_DIR)), name="snapshots-static")
+
+FRONTEND_DIST_DIR = Path(os.getenv("FRONTEND_DIST_DIR", "frontend_dist")).resolve()
+FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
+
+
+def _frontend_file(path: Path) -> FileResponse:
+    headers = {}
+    if path.name in {"index.html", "sw.js"}:
+        headers["Cache-Control"] = "no-store, max-age=0"
+    return FileResponse(path, headers=headers)
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(request: Request, full_path: str):
+    if not FRONTEND_INDEX.exists():
+        raise HTTPException(status_code=404, detail="Frontend build is not available")
+
+    candidate = (FRONTEND_DIST_DIR / full_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST_DIR)
+    except ValueError:
+        raise HTTPException(status_code=404)
+
+    if full_path and candidate.is_file():
+        return _frontend_file(candidate)
+
+    accept = request.headers.get("accept", "")
+    if full_path and "text/html" not in accept:
+        raise HTTPException(status_code=404)
+    return _frontend_file(FRONTEND_INDEX)
 
 detector_manager = None
 

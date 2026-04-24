@@ -1,3 +1,13 @@
+FROM node:22-alpine AS frontend-build
+
+WORKDIR /frontend
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -13,6 +23,7 @@ COPY alembic.ini .
 COPY migrations/ migrations/
 COPY app/ app/
 COPY cctv_ai/ cctv_ai/
+COPY --from=frontend-build /frontend/dist frontend_dist/
 COPY docker-entrypoint.sh .
 RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 
