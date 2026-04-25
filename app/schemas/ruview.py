@@ -92,6 +92,8 @@ class RuViewPoseSnapshot(BaseModel):
     source_kind: str | None = None
     captured_at: datetime | None = None
     latency_ms: float | None = None
+    frame_width: float | None = None
+    frame_height: float | None = None
     camera_aligned: bool = False
     overlay_allowed: bool = False
     persons: list[RuViewPosePerson] = Field(default_factory=list)
