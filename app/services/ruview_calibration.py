@@ -34,6 +34,7 @@ class _Session:
 _lock = threading.RLock()
 _session: _Session | None = None
 _last_manifest: dict[str, Any] | None = None
+_latest_camera_samples: dict[int, dict[str, Any]] = {}
 
 
 def _slug(value: str) -> str:
@@ -210,6 +211,17 @@ def record_csi_packet(
 def record_camera_sample(processor_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         _maybe_auto_stop_locked()
+        try:
+            camera_id = int(payload.get("camera_id"))
+        except (TypeError, ValueError):
+            camera_id = 0
+        if camera_id > 0:
+            _latest_camera_samples[camera_id] = {
+                "received_monotonic": time.monotonic(),
+                "received_at": _utc_now(),
+                "processor_id": processor_id,
+                **payload,
+            }
         if _session is None:
             return {"active": False}
         tracks = payload.get("tracks")
@@ -230,3 +242,20 @@ def record_camera_sample(processor_id: int, payload: dict[str, Any]) -> dict[str
             "camera_samples": _session.camera_samples,
             "latest_tracks": _session.latest_tracks,
         }
+
+
+def get_latest_camera_sample(camera_id: int | None = None, max_age_seconds: float = 1.5) -> dict[str, Any] | None:
+    with _lock:
+        now = time.monotonic()
+        samples = []
+        for sample in _latest_camera_samples.values():
+            sample_age = now - float(sample.get("received_monotonic") or 0.0)
+            if sample_age > max_age_seconds:
+                continue
+            if camera_id is not None and int(sample.get("camera_id") or 0) != int(camera_id):
+                continue
+            samples.append((sample_age, sample))
+        if not samples:
+            return None
+        _, sample = min(samples, key=lambda item: item[0])
+        return dict(sample)
