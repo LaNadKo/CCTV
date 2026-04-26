@@ -73,7 +73,6 @@ _stabilized_updated_at: float = 0.0
 _stabilized_anchor_at: float = 0.0
 
 _SMOOTH_ALPHA = 0.18
-_ANCHORED_ALPHA = 0.55
 _STATIC_DEADBAND_PX = 14.0
 _MAX_RF_DELTA_PX = 42.0
 
@@ -232,19 +231,6 @@ def _person_center(person: RuViewPosePerson) -> tuple[float, float] | None:
     if not points:
         return None
     return sum(point.x for point in points) / len(points), sum(point.y for point in points) / len(points)
-
-
-def _person_bounds(person: RuViewPosePerson) -> RuViewPoseBox | None:
-    if person.bbox:
-        return person.bbox
-    points = [point for point in person.keypoints if point.visible]
-    if not points:
-        return None
-    min_x = min(point.x for point in points)
-    max_x = max(point.x for point in points)
-    min_y = min(point.y for point in points)
-    max_y = max(point.y for point in points)
-    return RuViewPoseBox(x=min_x, y=min_y, width=max(1.0, max_x - min_x), height=max(1.0, max_y - min_y))
 
 
 def _copy_person(person: RuViewPosePerson) -> RuViewPosePerson:
@@ -421,30 +407,10 @@ def _latest_camera_anchor(model: _Model) -> RuViewPosePerson | None:
 
 
 def _fit_person_to_anchor(raw: RuViewPosePerson, anchor: RuViewPosePerson) -> RuViewPosePerson:
-    raw_bounds = _person_bounds(raw)
-    if raw_bounds is None or anchor.bbox is None:
-        return _copy_person(anchor)
-    sx = anchor.bbox.width / max(raw_bounds.width, 1.0)
-    sy = anchor.bbox.height / max(raw_bounds.height, 1.0)
-
-    fitted = _copy_person(raw)
+    fitted = _copy_person(anchor)
     fitted.track_id = "rf-1"
     fitted.source_id = "ruview-rf-camera-anchored"
     fitted.confidence = max(raw.confidence or 0.0, anchor.confidence or 0.0)
-    fitted.bbox = RuViewPoseBox(**anchor.bbox.model_dump())
-    for point in fitted.keypoints:
-        point.x = anchor.bbox.x + (point.x - raw_bounds.x) * sx
-        point.y = anchor.bbox.y + (point.y - raw_bounds.y) * sy
-
-    anchor_points = {point.name: point for point in anchor.keypoints if point.visible}
-    merged: list[RuViewPoseKeypoint] = []
-    for point in fitted.keypoints:
-        anchor_point = anchor_points.get(point.name)
-        if anchor_point and (anchor_point.confidence is None or anchor_point.confidence >= 0.22):
-            merged.append(RuViewPoseKeypoint(**anchor_point.model_dump()))
-        else:
-            merged.append(point)
-    fitted.keypoints = merged
     return fitted
 
 
@@ -459,7 +425,7 @@ def _stabilize_pose(raw: RuViewPosePerson, model: _Model) -> tuple[RuViewPosePer
     with _pose_lock:
         if anchor is not None:
             target = _fit_person_to_anchor(raw, anchor)
-            stabilized = _blend_person(_stabilized_person, target, _ANCHORED_ALPHA)
+            stabilized = target
             stabilized = _clamp_person(stabilized, model.frame_width, model.frame_height)
             _stabilized_person = stabilized
             _stabilized_raw_center = raw_center
