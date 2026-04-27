@@ -16,6 +16,7 @@ from app.schemas.ruview import (
     RuViewPoseSnapshot,
 )
 from app.services.ruview_bridge import has_recent_ruview_csi
+from app.services.ruview_calibration import get_latest_camera_sample
 from app.services.ruview_rf_model import get_calibrated_pose_snapshot
 from app.services.ruview_upstream import candidate_base_urls
 
@@ -295,6 +296,126 @@ def _is_simulated_source(source: str) -> bool:
     return lowered == "simulated" or lowered.startswith("simulate")
 
 
+def _bbox_from_camera_track(raw: Any) -> RuViewPoseBox | None:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+        return None
+    x1 = _to_float(raw[0])
+    y1 = _to_float(raw[1])
+    x2 = _to_float(raw[2])
+    y2 = _to_float(raw[3])
+    if x1 is None or y1 is None or x2 is None or y2 is None:
+        return None
+    return RuViewPoseBox(
+        x=min(x1, x2),
+        y=min(y1, y2),
+        width=max(1.0, abs(x2 - x1)),
+        height=max(1.0, abs(y2 - y1)),
+    )
+
+
+def _keypoints_from_camera_track(track: dict[str, Any]) -> list[RuViewPoseKeypoint]:
+    raw_points = track.get("keypoints")
+    raw_conf = track.get("keypoint_conf")
+    if not isinstance(raw_points, list):
+        return []
+    confs = raw_conf if isinstance(raw_conf, list) else []
+    points: list[RuViewPoseKeypoint] = []
+    for index, raw in enumerate(raw_points[: len(_COCO_KEYPOINT_NAMES)]):
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        x = _to_float(raw[0])
+        y = _to_float(raw[1])
+        confidence = _to_float(confs[index]) if index < len(confs) else None
+        if x is None or y is None:
+            continue
+        points.append(
+            RuViewPoseKeypoint(
+                name=_COCO_KEYPOINT_NAMES[index],
+                x=x,
+                y=y,
+                confidence=confidence,
+                visible=confidence is None or confidence >= 0.12,
+            )
+        )
+    return points
+
+
+def _camera_person_from_track(track: dict[str, Any], index: int) -> RuViewPosePerson | None:
+    if bool(track.get("head_only")):
+        return None
+    try:
+        track_age_ms = float(track.get("age_ms") or 0.0)
+    except (TypeError, ValueError):
+        track_age_ms = 0.0
+    if track_age_ms > 1200.0:
+        return None
+
+    bbox = _bbox_from_camera_track(track.get("tracking_bbox") or track.get("bbox"))
+    keypoints = _keypoints_from_camera_track(track)
+    visible_points = [
+        point
+        for point in keypoints
+        if point.visible and (point.confidence is None or point.confidence >= 0.18)
+    ]
+    if len(visible_points) < 5:
+        return None
+
+    confidence = _to_float(track.get("confidence"))
+    raw_track_id = track.get("track_id")
+    return RuViewPosePerson(
+        track_id=f"rf-{index + 1}",
+        source_id=f"camera-body-track:{raw_track_id}" if raw_track_id is not None else "camera-body-track",
+        confidence=confidence,
+        bbox=bbox,
+        keypoints=keypoints,
+    )
+
+
+def _camera_body_pose_snapshot() -> RuViewPoseSnapshot | None:
+    sample = get_latest_camera_sample(
+        max_age_seconds=float(settings.ruview_camera_anchor_max_age_seconds),
+        require_tracks=True,
+    )
+    if not sample:
+        return None
+    tracks = sample.get("tracks")
+    if not isinstance(tracks, list):
+        return None
+    try:
+        frame_width = max(1.0, float(sample.get("frame_width") or 1920.0))
+        frame_height = max(1.0, float(sample.get("frame_height") or 1080.0))
+    except (TypeError, ValueError):
+        frame_width = 1920.0
+        frame_height = 1080.0
+
+    persons = []
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        person = _camera_person_from_track(track, len(persons))
+        if person is not None:
+            persons.append(person)
+    if not persons:
+        return None
+
+    captured_at = sample.get("received_at")
+    if not isinstance(captured_at, datetime):
+        captured_at = datetime.now(timezone.utc)
+    processor_id = sample.get("processor_id")
+    camera_id = sample.get("camera_id")
+    return RuViewPoseSnapshot(
+        reachable=True,
+        source_url=f"processor:{processor_id}/camera:{camera_id}",
+        source_kind="camera-body-track",
+        captured_at=captured_at,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        camera_aligned=True,
+        overlay_allowed=True,
+        persons=persons,
+    )
+
+
 async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
     if not settings.ruview_upstream_enabled:
         return RuViewPoseSnapshot(
@@ -303,7 +424,16 @@ async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
             overlay_allowed=False,
             error="RuView upstream disabled",
         )
-    if settings.ruview_require_live_csi_for_pose and not has_recent_ruview_csi():
+    camera_snapshot = _camera_body_pose_snapshot()
+    csi_live = has_recent_ruview_csi()
+    calibrated_snapshot: RuViewPoseSnapshot | None = None
+    if csi_live:
+        calibrated_snapshot = get_calibrated_pose_snapshot()
+        if calibrated_snapshot is not None and (calibrated_snapshot.overlay_allowed or camera_snapshot is None):
+            return calibrated_snapshot
+    if camera_snapshot is not None:
+        return camera_snapshot
+    if settings.ruview_require_live_csi_for_pose and not csi_live:
         return RuViewPoseSnapshot(
             reachable=False,
             camera_aligned=False,
@@ -311,7 +441,6 @@ async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
             error="Нет live CSI от ESP32, симуляция RuView скрыта",
         )
 
-    calibrated_snapshot = get_calibrated_pose_snapshot()
     if calibrated_snapshot is not None:
         return calibrated_snapshot
 

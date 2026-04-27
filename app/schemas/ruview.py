@@ -120,3 +120,10 @@ class RuViewCalibrationStatus(BaseModel):
     csi_samples: int = 0
     camera_samples: int = 0
     latest_tracks: int = 0
+    auto_training_enabled: bool = False
+    auto_training_active: bool = False
+    auto_training_session_id: str | None = None
+    auto_training_directory: str | None = None
+    auto_training_csi_samples: int = 0
+    auto_training_camera_samples: int = 0
+    auto_training_latest_tracks: int = 0
