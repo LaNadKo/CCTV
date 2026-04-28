@@ -1628,20 +1628,34 @@ select.input optgroup {
 
 .live-stream-stage {
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   border-radius: 16px;
   background: #020712;
 }
 
-.live-stream-card img {
-  display: block;
+.live-stream-media {
+  position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: contain;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: var(--stream-aspect, 1.7777778);
+  overflow: hidden;
   border-radius: 16px;
   background: var(--surface-muted);
   transition: transform 0.14s ease;
   will-change: transform;
+}
+
+.live-stream-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+  background: var(--surface-muted);
 }
 
 .ruview-pose-overlay {
@@ -1716,13 +1730,20 @@ select.input optgroup {
   border-radius: 0;
 }
 
-.live-stream-card:fullscreen img,
-.live-stream-card:-webkit-full-screen img,
+.live-stream-card:fullscreen .live-stream-media,
+.live-stream-card:-webkit-full-screen .live-stream-media {
+  width: min(100vw, calc(100vh * var(--stream-aspect-ratio, 1.7777778)));
+  height: min(100vh, calc(100vw / var(--stream-aspect-ratio, 1.7777778)));
+  border-radius: 0;
+}
+
+.live-stream-card:fullscreen .live-stream-media img,
+.live-stream-card:-webkit-full-screen .live-stream-media img,
 .live-stream-card:fullscreen .live-stream-empty,
 .live-stream-card:-webkit-full-screen .live-stream-empty {
-  width: 100vw;
-  height: 100vh;
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   aspect-ratio: auto;
   border: none;
   border-radius: 0;
@@ -1730,13 +1751,13 @@ select.input optgroup {
   background: #020712;
 }
 
-.live-stream-card:fullscreen .live-stream-stage img,
-.live-stream-card:-webkit-full-screen .live-stream-stage img {
+.live-stream-card:fullscreen .live-stream-media,
+.live-stream-card:-webkit-full-screen .live-stream-media {
   cursor: zoom-in;
 }
 
-.live-stream-card:fullscreen .live-stream-stage.is-zoomed img,
-.live-stream-card:-webkit-full-screen .live-stream-stage.is-zoomed img {
+.live-stream-card:fullscreen .live-stream-stage.is-zoomed .live-stream-media,
+.live-stream-card:-webkit-full-screen .live-stream-stage.is-zoomed .live-stream-media {
   cursor: move;
 }
 
