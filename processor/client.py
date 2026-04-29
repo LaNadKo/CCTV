@@ -69,11 +69,6 @@ class BackendClient:
         r.raise_for_status()
         return r.json()
 
-    async def push_calibration_sample(self, processor_id: int, sample: dict) -> dict:
-        r = await self._http.post(f"{self.base}/processors/{processor_id}/calibration-samples", json=sample)
-        r.raise_for_status()
-        return r.json()
-
     async def push_recording(self, processor_id: int, recording: dict) -> dict:
         r = await self._http.post(f"{self.base}/processors/{processor_id}/recordings", json=recording)
         r.raise_for_status()

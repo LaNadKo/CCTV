@@ -7,9 +7,6 @@ import {
   deleteCameraPreset,
   getAdminCamera,
   getCameras,
-  getRuViewPose,
-  getRuViewStatus,
-  getRuViewUpstream,
   gotoCameraPreset,
   listGroups,
   ptzContinuous,
@@ -21,11 +18,6 @@ import {
   type CameraPtzCapabilities,
   type CameraSummary,
   type GroupOut,
-  type RuViewBridgeStatus,
-  type RuViewPoseKeypoint,
-  type RuViewPosePerson,
-  type RuViewPoseSnapshot,
-  type RuViewUpstreamStatus,
 } from "../lib/api";
 import { loadUiSettings } from "../lib/uiSettings";
 
@@ -60,11 +52,6 @@ type LiveGridItem =
   | { slotIndex: number; camera: CameraSummary }
   | { slotIndex: number; placeholderId: string };
 type PtzMovePayload = { pan?: number; tilt?: number; zoom?: number; timeout_seconds?: number };
-type PoseSpace = {
-  mode: "normalized" | "percent" | "pixel";
-  width: number;
-  height: number;
-};
 type StreamMediaStyle = CSSProperties & {
   "--stream-aspect"?: string;
   "--stream-aspect-ratio"?: string;
@@ -76,29 +63,6 @@ const DEFAULT_ZOOM: ZoomState = {
   originY: 50,
 };
 const DEFAULT_STREAM_ASPECT_RATIO = 16 / 9;
-const RUVIEW_ONLINE_POLL_MS = 900;
-const RUVIEW_OFFLINE_POLL_MS = 1800;
-const MIN_POSE_CONFIDENCE = 0.05;
-const RUVIEW_SKELETON_LINKS: Array<[string, string]> = [
-  ["left_shoulder", "right_shoulder"],
-  ["left_shoulder", "left_elbow"],
-  ["left_elbow", "left_wrist"],
-  ["right_shoulder", "right_elbow"],
-  ["right_elbow", "right_wrist"],
-  ["left_shoulder", "left_hip"],
-  ["right_shoulder", "right_hip"],
-  ["left_hip", "right_hip"],
-  ["left_hip", "left_knee"],
-  ["left_knee", "left_ankle"],
-  ["right_hip", "right_knee"],
-  ["right_knee", "right_ankle"],
-  ["nose", "left_eye"],
-  ["nose", "right_eye"],
-  ["left_eye", "left_ear"],
-  ["right_eye", "right_ear"],
-  ["nose", "left_shoulder"],
-  ["nose", "right_shoulder"],
-];
 
 function readGridMode(): LiveGridMode {
   const stored = typeof window !== "undefined" ? localStorage.getItem(GRID_STORAGE_KEY) : null;
@@ -202,17 +166,8 @@ function getCameraPtzCapabilities(detail: CameraDetail | null): CameraPtzCapabil
   );
 }
 
-function visiblePosePoint(point?: RuViewPoseKeypoint | null) {
-  return Boolean(point?.visible && (point.confidence ?? 1) >= MIN_POSE_CONFIDENCE);
-}
-
-function streamMediaStyle(snapshot: RuViewPoseSnapshot | null, isFullscreenCamera: boolean, zoomState: ZoomState): StreamMediaStyle {
-  const frameWidth = Number(snapshot?.frame_width);
-  const frameHeight = Number(snapshot?.frame_height);
-  const ratio =
-    Number.isFinite(frameWidth) && Number.isFinite(frameHeight) && frameWidth > 0 && frameHeight > 0
-      ? frameWidth / frameHeight
-      : DEFAULT_STREAM_ASPECT_RATIO;
+function streamMediaStyle(isFullscreenCamera: boolean, zoomState: ZoomState): StreamMediaStyle {
+  const ratio = DEFAULT_STREAM_ASPECT_RATIO;
   const style: StreamMediaStyle = {
     "--stream-aspect": `${ratio}`,
     "--stream-aspect-ratio": `${ratio}`,
@@ -222,151 +177,6 @@ function streamMediaStyle(snapshot: RuViewPoseSnapshot | null, isFullscreenCamer
     style.transformOrigin = `${zoomState.originX}% ${zoomState.originY}%`;
   }
   return style;
-}
-
-function clampPercent(value: number) {
-  return Math.max(0, Math.min(100, value));
-}
-
-function inferPoseSpace(person: RuViewPosePerson, frameWidth?: number | null, frameHeight?: number | null): PoseSpace {
-  const xs = person.keypoints.map((point) => point.x).filter(Number.isFinite);
-  const ys = person.keypoints.map((point) => point.y).filter(Number.isFinite);
-  if (person.bbox) {
-    xs.push(person.bbox.x, person.bbox.x + person.bbox.width);
-    ys.push(person.bbox.y, person.bbox.y + person.bbox.height);
-  }
-  const maxX = Math.max(1, ...xs);
-  const maxY = Math.max(1, ...ys);
-  if (maxX <= 1.5 && maxY <= 1.5) {
-    return { mode: "normalized", width: 1, height: 1 };
-  }
-  if (maxX <= 100 && maxY <= 100) {
-    return { mode: "percent", width: 100, height: 100 };
-  }
-  const width = Number.isFinite(frameWidth ?? NaN) && (frameWidth ?? 0) > 0 ? Number(frameWidth) : 1920;
-  const height = Number.isFinite(frameHeight ?? NaN) && (frameHeight ?? 0) > 0 ? Number(frameHeight) : 1080;
-  return { mode: "pixel", width: Math.max(width, maxX), height: Math.max(height, maxY) };
-}
-
-function poseX(value: number, space: PoseSpace) {
-  if (space.mode === "normalized") return clampPercent(value * 100);
-  if (space.mode === "percent") return clampPercent(value);
-  return clampPercent((value / space.width) * 100);
-}
-
-function poseY(value: number, space: PoseSpace) {
-  if (space.mode === "normalized") return clampPercent(value * 100);
-  if (space.mode === "percent") return clampPercent(value);
-  return clampPercent((value / space.height) * 100);
-}
-
-function keypointByName(person: RuViewPosePerson, name: string) {
-  return person.keypoints.find((point) => point.name === name);
-}
-
-function poseLabelPosition(person: RuViewPosePerson, space: PoseSpace) {
-  if (person.bbox) {
-    return {
-      x: poseX(person.bbox.x, space),
-      y: poseY(person.bbox.y, space),
-    };
-  }
-  const point = person.keypoints.find((item) => visiblePosePoint(item));
-  return {
-    x: point ? poseX(point.x, space) : 4,
-    y: point ? poseY(point.y, space) : 8,
-  };
-}
-
-function RuViewPoseOverlay({ snapshot }: { snapshot: RuViewPoseSnapshot | null }) {
-  if (!snapshot?.reachable || !snapshot.camera_aligned || !snapshot.overlay_allowed || snapshot.persons.length === 0) {
-    return null;
-  }
-
-  return (
-    <svg className="ruview-pose-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-      {snapshot.persons.map((person) => {
-        const space = inferPoseSpace(person, snapshot.frame_width, snapshot.frame_height);
-        const label = poseLabelPosition(person, space);
-        const bbox = person.bbox
-          ? {
-              x1: poseX(person.bbox.x, space),
-              y1: poseY(person.bbox.y, space),
-              x2: poseX(person.bbox.x + person.bbox.width, space),
-              y2: poseY(person.bbox.y + person.bbox.height, space),
-            }
-          : null;
-        return (
-          <g key={person.track_id} className="ruview-pose-person">
-            {bbox && (
-              <rect
-                className="ruview-pose-box"
-                x={Math.min(bbox.x1, bbox.x2)}
-                y={Math.min(bbox.y1, bbox.y2)}
-                width={Math.abs(bbox.x2 - bbox.x1)}
-                height={Math.abs(bbox.y2 - bbox.y1)}
-                rx="1.8"
-              />
-            )}
-
-            {RUVIEW_SKELETON_LINKS.map(([fromName, toName]) => {
-              const from = keypointByName(person, fromName);
-              const to = keypointByName(person, toName);
-              if (!visiblePosePoint(from) || !visiblePosePoint(to)) return null;
-              return (
-                <line
-                  key={`${person.track_id}-${fromName}-${toName}`}
-                  className="ruview-pose-bone"
-                  x1={poseX(from!.x, space)}
-                  y1={poseY(from!.y, space)}
-                  x2={poseX(to!.x, space)}
-                  y2={poseY(to!.y, space)}
-                />
-              );
-            })}
-
-            {person.keypoints.map((point) => {
-              if (!visiblePosePoint(point)) return null;
-              return (
-                <circle
-                  key={`${person.track_id}-${point.name}`}
-                  className="ruview-pose-point"
-                  cx={poseX(point.x, space)}
-                  cy={poseY(point.y, space)}
-                  r="0.85"
-                />
-              );
-            })}
-
-            <text className="ruview-pose-label" x={label.x} y={Math.max(4, label.y - 1.2)}>
-              {person.track_id}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-function readStringField(value: Record<string, unknown> | null | undefined, keys: string[]) {
-  for (const key of keys) {
-    const item = value?.[key];
-    if (typeof item === "string" && item.trim()) {
-      return item.trim();
-    }
-  }
-  return null;
-}
-
-function getRuViewSourceLabel(upstream: RuViewUpstreamStatus | null, pose: RuViewPoseSnapshot | null) {
-  if (pose?.source_kind) return pose.source_kind;
-  const endpoint = upstream?.endpoints.find((item) => item.reachable);
-  return (
-    readStringField(endpoint?.health, ["source", "data_source", "csi_source"]) ||
-    readStringField(endpoint?.stream_status, ["source", "data_source", "csi_source"]) ||
-    readStringField(endpoint?.pose_stats, ["source", "data_source", "csi_source"]) ||
-    null
-  );
 }
 
 const LivePage: React.FC = () => {
@@ -381,11 +191,6 @@ const LivePage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [streamErrorMap, setStreamErrorMap] = useState<Record<number, boolean>>({});
   const [streamRetryMap, setStreamRetryMap] = useState<Record<number, number>>({});
-  const [ruviewOverlayEnabled, setRuviewOverlayEnabled] = useState(true);
-  const [ruviewPose, setRuviewPose] = useState<RuViewPoseSnapshot | null>(null);
-  const [ruviewBridgeStatus, setRuviewBridgeStatus] = useState<RuViewBridgeStatus | null>(null);
-  const [ruviewUpstream, setRuviewUpstream] = useState<RuViewUpstreamStatus | null>(null);
-  const [ruviewError, setRuviewError] = useState<string | null>(null);
   const [fullscreenCameraId, setFullscreenCameraId] = useState<number | null>(null);
   const [fullscreenDetail, setFullscreenDetail] = useState<CameraDetail | null>(null);
   const [fullscreenBusy, setFullscreenBusy] = useState(false);
@@ -421,56 +226,6 @@ const LivePage: React.FC = () => {
       })
       .catch((event) => setError(event?.message || "Не удалось загрузить камеры"));
   }, [token]);
-
-  useEffect(() => {
-    if (!token || !ruviewOverlayEnabled) {
-      setRuviewPose(null);
-      setRuviewBridgeStatus(null);
-      setRuviewUpstream(null);
-      setRuviewError(null);
-      return;
-    }
-
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const [poseResult, bridgeResult, upstreamResult] = await Promise.allSettled([
-          getRuViewPose(token),
-          getRuViewStatus(token),
-          getRuViewUpstream(token),
-        ]);
-        if (cancelled) return;
-
-        const snapshot = poseResult.status === "fulfilled" ? poseResult.value : null;
-        const bridge = bridgeResult.status === "fulfilled" ? bridgeResult.value : null;
-        const upstream = upstreamResult.status === "fulfilled" ? upstreamResult.value : null;
-        setRuviewPose(snapshot);
-        setRuviewBridgeStatus(bridge);
-        setRuviewUpstream(upstream);
-
-        const failures = [poseResult, bridgeResult, upstreamResult]
-          .filter((result) => result.status === "rejected")
-          .map((result) => (result as PromiseRejectedResult).reason?.message || "RuView request failed");
-        setRuviewError(snapshot?.error || bridge?.last_error || failures[0] || null);
-        timer = window.setTimeout(poll, bridge?.live_csi ? RUVIEW_ONLINE_POLL_MS : RUVIEW_OFFLINE_POLL_MS);
-      } catch (event: any) {
-        if (cancelled) return;
-        setRuviewPose(null);
-        setRuviewBridgeStatus(null);
-        setRuviewUpstream(null);
-        setRuviewError(event?.message || "RuView offline");
-        timer = window.setTimeout(poll, RUVIEW_OFFLINE_POLL_MS);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [ruviewOverlayEnabled, token]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -825,64 +580,6 @@ const LivePage: React.FC = () => {
     };
   }, [showPtzPanel]);
 
-  const ruviewSummary = useMemo(() => {
-    const nodesTotal = ruviewBridgeStatus?.nodes.length ?? 0;
-    const nodesOnline = ruviewBridgeStatus?.nodes.filter((node) => node.online).length ?? 0;
-    const packetRateHz =
-      ruviewBridgeStatus?.nodes.reduce((total, node) => total + Math.max(0, node.packet_rate_hz || 0), 0) ?? 0;
-    const source = getRuViewSourceLabel(ruviewUpstream, ruviewPose);
-    const sourceIsSimulated = source ? source.toLowerCase().startsWith("simulat") : false;
-    const rfOnline = Boolean(ruviewBridgeStatus?.live_csi && !sourceIsSimulated);
-    const overlayReady = Boolean(
-      ruviewPose?.reachable && ruviewPose.camera_aligned && ruviewPose.overlay_allowed && ruviewPose.persons.length > 0
-    );
-    const waitingForCameraAnchor = Boolean(
-      rfOnline &&
-        ruviewPose?.reachable &&
-        ruviewPose.camera_aligned &&
-        !overlayReady &&
-        ruviewPose.error?.toLowerCase().includes("body-track")
-    );
-
-    if (!ruviewOverlayEnabled) {
-      return {
-        online: false,
-        overlayReady: false,
-        text: "RuView RF off",
-        title: "RuView RF polling is disabled",
-      };
-    }
-
-    const packetRateText =
-      packetRateHz > 0 ? ` · ${packetRateHz >= 10 ? packetRateHz.toFixed(0) : packetRateHz.toFixed(1)}Hz` : "";
-    const overlayText = overlayReady ? " · overlay" : waitingForCameraAnchor ? " · wait body" : " · RF only";
-    const text = rfOnline
-      ? `RF ${nodesOnline}/${nodesTotal || 0}${packetRateText}${overlayText}`
-      : ruviewError
-        ? "RuView RF issue"
-        : "RuView RF offline";
-
-    const title = [
-      `RuView RF layer: ${rfOnline ? "online" : "offline"}`,
-      `nodes: ${nodesOnline}/${nodesTotal || 0}`,
-      `CSI: ${ruviewBridgeStatus?.live_csi ? "live" : "stale"}`,
-      packetRateHz > 0 ? `packet rate: ${packetRateHz.toFixed(1)} Hz` : null,
-      source ? `source: ${source}` : null,
-      overlayReady
-        ? "camera overlay: calibrated"
-        : waitingForCameraAnchor
-          ? "camera overlay: waiting for a fresh camera body-track anchor"
-          : "camera overlay: disabled until CSI-to-camera calibration exists",
-      ruviewError ? `last message: ${ruviewError}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return { online: rfOnline, overlayReady, text, title };
-  }, [ruviewBridgeStatus, ruviewError, ruviewOverlayEnabled, ruviewPose, ruviewUpstream]);
-
-  const ruviewStatusText = ruviewSummary.text;
-
   return (
     <div className="stack">
       <section className="toolbar-card">
@@ -905,19 +602,6 @@ const LivePage: React.FC = () => {
                 {GRID_MODE_LABELS[mode]}
               </button>
             ))}
-          </div>
-
-          <div className="live-ruview-control">
-            <button
-              type="button"
-              className={ruviewOverlayEnabled ? "btn" : "btn secondary"}
-              onClick={() => setRuviewOverlayEnabled((value) => !value)}
-            >
-              RuView RF
-            </button>
-            <span className={`pill ruview-status${ruviewSummary.online ? " is-online" : ""}`} title={ruviewSummary.title}>
-              {ruviewStatusText}
-            </span>
           </div>
 
           {groups.length > 0 && (
@@ -960,7 +644,7 @@ const LivePage: React.FC = () => {
           const { camera, slotIndex } = item;
           const isFullscreenCamera = fullscreenCameraId === camera.camera_id;
           const zoomed = isFullscreenCamera && zoomState.scale > 1;
-          const mediaStyle = streamMediaStyle(ruviewPose, isFullscreenCamera, zoomState);
+          const mediaStyle = streamMediaStyle(isFullscreenCamera, zoomState);
 
           return (
             <article
@@ -1044,7 +728,6 @@ const LivePage: React.FC = () => {
                     />
                     ))}
 
-                  {ruviewOverlayEnabled && ruviewSummary.overlayReady && <RuViewPoseOverlay snapshot={ruviewPose} />}
                 </div>
 
                 {isFullscreenCamera && (
@@ -1056,7 +739,6 @@ const LivePage: React.FC = () => {
                           <span className="pill">В реальном времени</span>
                           {camera.location && <span className="pill">{camera.location}</span>}
                           {zoomState.scale > 1 && <span className="pill">Цифровой zoom x{zoomState.scale.toFixed(1)}</span>}
-                          {ruviewOverlayEnabled && <span className="pill">{ruviewStatusText}</span>}
                         </div>
                       </div>
 
