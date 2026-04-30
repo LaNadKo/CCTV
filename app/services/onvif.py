@@ -541,6 +541,16 @@ def _normalize_onvif_operation_error(action: str, exc: Exception, unsupported_me
     return ONVIFServiceError(f"{action}: {message}")
 
 
+def _clamp_unit(value: float | None) -> float:
+    return max(-1.0, min(1.0, float(value or 0.0)))
+
+
+def _clamp_speed(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, float(value)))
+
+
 def camera_to_detail_payload(camera: Any) -> dict[str, Any]:
     metadata = load_device_metadata(getattr(camera, "device_metadata", None))
     endpoints = []
@@ -583,12 +593,18 @@ def ptz_relative_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: fl
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
+    pan = _clamp_unit(pan)
+    tilt = _clamp_unit(tilt)
+    zoom = _clamp_unit(zoom)
+    speed = _clamp_speed(speed)
     client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
     translation: dict[str, Any] = {}
     if pan or tilt:
         translation["PanTilt"] = {"x": float(pan), "y": float(tilt)}
     if zoom:
         translation["Zoom"] = {"x": float(zoom)}
+    if not translation:
+        return {"ok": True}
     speed_payload = None
     if speed is not None:
         speed_payload = {}
@@ -607,11 +623,16 @@ def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: 
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
+    pan = _clamp_unit(pan)
+    tilt = _clamp_unit(tilt)
+    zoom = _clamp_unit(zoom)
     velocity: dict[str, Any] = {}
     if pan or tilt:
         velocity["PanTilt"] = {"x": float(pan), "y": float(tilt)}
     if zoom:
         velocity["Zoom"] = {"x": float(zoom)}
+    if not velocity:
+        return ptz_stop(camera)
     client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
     if timeout_seconds is not None:
         duration = max(float(timeout_seconds or 0.1), 0.1)
@@ -619,7 +640,7 @@ def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: 
             client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
             return {"ok": True}
         except Exception as exc:
-            log.warning(
+            log.debug(
                 "PTZ ContinuousMove with Timeout failed for camera %s, retrying without Timeout: %s",
                 getattr(camera, "camera_id", "?"),
                 exc,
@@ -636,12 +657,15 @@ def ptz_absolute_move(camera: Any, pan: float | None = None, tilt: float | None 
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
+    speed = _clamp_speed(speed)
     client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
     position: dict[str, Any] = {}
     if pan is not None or tilt is not None:
-        position["PanTilt"] = {"x": float(pan or 0.0), "y": float(tilt or 0.0)}
+        position["PanTilt"] = {"x": _clamp_unit(pan), "y": _clamp_unit(tilt)}
     if zoom is not None:
-        position["Zoom"] = {"x": float(zoom)}
+        position["Zoom"] = {"x": _clamp_unit(zoom)}
+    if not position:
+        return {"ok": True}
     speed_payload = None
     if speed is not None:
         speed_payload = {}
@@ -661,10 +685,14 @@ def ptz_stop(camera: Any) -> dict[str, Any]:
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
     client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    ptz = client.ptz()
     try:
-        client.ptz().Stop(ProfileToken=camera.onvif_profile_token, PanTilt=True, Zoom=True)
+        ptz.Stop(ProfileToken=camera.onvif_profile_token, PanTilt=True, Zoom=True)
     except Exception as exc:
-        raise _normalize_onvif_operation_error("Не удалось остановить PTZ-движение", exc) from exc
+        try:
+            ptz.Stop(ProfileToken=camera.onvif_profile_token)
+        except Exception as fallback_exc:
+            raise _normalize_onvif_operation_error("Не удалось остановить PTZ-движение", fallback_exc) from exc
     return {"ok": True}
 
 
