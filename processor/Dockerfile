@@ -4,8 +4,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
+COPY processor/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . ./processor/
+COPY processor/ ./processor/
+COPY cctv_ai/ ./cctv_ai/
 
-CMD ["python", "-m", "processor.main"]
+CMD ["python", "-m", "processor.cli", "run"]

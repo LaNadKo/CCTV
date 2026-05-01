@@ -6,10 +6,55 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _DLL_DIR_HANDLES: list[object] = []
+_REGISTERED_DLL_DIRS: list[Path] = []
+
+_ACCEL_ALIASES = {
+    "": "auto",
+    "auto": "auto",
+    "gpu": "auto",
+    "cpu": "cpu",
+    "nvidia": "nvidia",
+    "cuda": "nvidia",
+    "tensorrt": "nvidia",
+    "trt": "nvidia",
+    "intel": "intel",
+    "openvino": "intel",
+    "amd": "amd",
+    "rocm": "amd",
+    "migraphx": "amd",
+    "directml": "directml",
+    "dml": "directml",
+}
+
+_PROVIDER_DEVICE = {
+    "CUDAExecutionProvider": "cuda",
+    "OpenVINOExecutionProvider": "openvino",
+    "DmlExecutionProvider": "directml",
+    "MIGraphXExecutionProvider": "rocm",
+    "ROCMExecutionProvider": "rocm",
+    "CPUExecutionProvider": "cpu",
+}
+
+_PROVIDER_PRIORITY = {
+    "auto": (
+        "CUDAExecutionProvider",
+        "OpenVINOExecutionProvider",
+        "DmlExecutionProvider",
+        "MIGraphXExecutionProvider",
+        "ROCMExecutionProvider",
+        "CPUExecutionProvider",
+    ),
+    "nvidia": ("CUDAExecutionProvider", "CPUExecutionProvider"),
+    "intel": ("OpenVINOExecutionProvider", "CPUExecutionProvider"),
+    "amd": ("MIGraphXExecutionProvider", "ROCMExecutionProvider", "CPUExecutionProvider"),
+    "directml": ("DmlExecutionProvider", "CPUExecutionProvider"),
+    "cpu": ("CPUExecutionProvider",),
+}
 
 
 def _dedupe(paths: list[Path]) -> list[Path]:
@@ -173,8 +218,122 @@ def register_dll_dirs(paths: list[Path]) -> list[Path]:
         parts = current_path.split(os.pathsep) if current_path else []
         if path_str not in parts:
             os.environ["PATH"] = path_str + os.pathsep + current_path if current_path else path_str
+        if path not in _REGISTERED_DLL_DIRS:
+            _REGISTERED_DLL_DIRS.append(path)
         registered.append(path)
     return registered
+
+
+def normalize_acceleration_preference(raw: str | None = None) -> str:
+    value = (raw if raw is not None else os.environ.get("PROCESSOR_ACCEL", "auto")).strip().lower()
+    normalized = _ACCEL_ALIASES.get(value)
+    if normalized is None:
+        logger.warning("Unknown PROCESSOR_ACCEL=%s; using auto", value)
+        return "auto"
+    return normalized
+
+
+def prepare_acceleration_env(preference: str | None = None) -> dict[str, Any]:
+    target = normalize_acceleration_preference(preference)
+    cuda_root = None
+    ort_cuda_env: dict[str, Any] = {}
+    if target in {"auto", "nvidia"}:
+        ort_cuda_env = prepare_onnxruntime_cuda_env()
+        cuda_root = prepare_mmdeploy_cuda_env()
+    return {
+        "preference": target,
+        "cuda_root": cuda_root,
+        "onnxruntime_capi": ort_cuda_env.get("onnxruntime_capi"),
+        "torch_lib": ort_cuda_env.get("torch_lib"),
+        "nvidia_bins": ort_cuda_env.get("nvidia_bins") or [],
+        "registered_dll_dirs": list(_REGISTERED_DLL_DIRS),
+    }
+
+
+def available_onnx_providers(preference: str | None = None) -> list[str]:
+    prepare_acceleration_env(preference)
+    try:
+        import onnxruntime as ort
+    except Exception:
+        logger.debug("onnxruntime import failed while reading providers", exc_info=True)
+        return []
+    try:
+        return list(ort.get_available_providers())
+    except Exception:
+        logger.debug("onnxruntime provider query failed", exc_info=True)
+        return []
+
+
+def select_onnx_execution_providers(prefer_gpu: bool = True, preference: str | None = None) -> tuple[list[str], str, str]:
+    target = normalize_acceleration_preference(preference)
+    if not prefer_gpu:
+        target = "cpu"
+    available = set(available_onnx_providers(target))
+    for provider in _PROVIDER_PRIORITY[target]:
+        if provider in available:
+            providers = [provider]
+            if provider != "CPUExecutionProvider" and "CPUExecutionProvider" in available:
+                providers.append("CPUExecutionProvider")
+            return providers, _PROVIDER_DEVICE.get(provider, "cpu"), provider
+    return ["CPUExecutionProvider"], "cpu", "CPUExecutionProvider"
+
+
+def select_mmdeploy_device(preference: str | None = None) -> tuple[str, dict[str, Any]]:
+    target = normalize_acceleration_preference(preference)
+    env_info = prepare_acceleration_env(target)
+    providers = set(available_onnx_providers(target))
+    if target not in {"cpu", "intel", "amd", "directml"} and "CUDAExecutionProvider" in providers:
+        return "cuda", env_info
+    return "cpu", env_info
+
+
+def acceleration_report(preference: str | None = None) -> dict[str, Any]:
+    target = normalize_acceleration_preference(preference)
+    env_info = prepare_acceleration_env(target)
+    providers = available_onnx_providers(target)
+    selected_providers, selected_device, selected_provider = select_onnx_execution_providers(
+        prefer_gpu=target != "cpu",
+        preference=target,
+    )
+    report: dict[str, Any] = {
+        "preference": target,
+        "onnxruntime_providers": providers,
+        "selected_provider": selected_provider,
+        "selected_providers": selected_providers,
+        "selected_device": selected_device,
+        "nvidia_smi": shutil.which("nvidia-smi"),
+        "cuda_path": os.environ.get("CUDA_PATH"),
+        "cctv_cuda_path": os.environ.get("CCTV_CUDA_PATH"),
+        "cuda_root": str(env_info.get("cuda_root")) if env_info.get("cuda_root") else None,
+        "onnxruntime_capi": str(env_info.get("onnxruntime_capi")) if env_info.get("onnxruntime_capi") else None,
+        "torch_lib": str(env_info.get("torch_lib")) if env_info.get("torch_lib") else None,
+        "nvidia_bins": [str(path) for path in env_info.get("nvidia_bins", [])],
+        "registered_dll_dirs": [str(path) for path in _REGISTERED_DLL_DIRS],
+    }
+    if os.name == "posix":
+        report["dev_dri"] = Path("/dev/dri").exists()
+        report["dev_kfd"] = Path("/dev/kfd").exists()
+    return report
+
+
+def log_acceleration_report(target_logger: logging.Logger | None = None, preference: str | None = None) -> dict[str, Any]:
+    report = acceleration_report(preference)
+    out = target_logger or logger
+    out.info(
+        "Acceleration preference=%s selected=%s provider=%s available=%s cuda_root=%s nvidia_smi=%s",
+        report["preference"],
+        report["selected_device"],
+        report["selected_provider"],
+        ",".join(report["onnxruntime_providers"]) or "none",
+        report.get("cuda_root") or report.get("cuda_path") or "not-found",
+        report.get("nvidia_smi") or "not-found",
+    )
+    if report.get("selected_device") == "cpu" and report.get("preference") != "cpu":
+        out.warning(
+            "GPU acceleration is not active; fallback to CPU. registered_dll_dirs=%s",
+            ";".join(report.get("registered_dll_dirs") or []) or "none",
+        )
+    return report
 
 
 def prepare_onnxruntime_cuda_env() -> dict[str, Path | list[Path] | None]:

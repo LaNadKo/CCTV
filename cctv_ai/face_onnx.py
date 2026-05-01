@@ -9,9 +9,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
-from cctv_ai.runtime_env import prepare_onnxruntime_cuda_env
+from cctv_ai.runtime_env import prepare_acceleration_env, select_onnx_execution_providers
+
+prepare_acceleration_env()
+
+import onnxruntime as ort
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +125,15 @@ def _ensure_model_pack() -> Path:
 
 
 def _select_providers(prefer_gpu: bool = True) -> tuple[list[str], str]:
-    available = set(ort.get_available_providers())
-    if prefer_gpu and "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"], "cuda"
-    return ["CPUExecutionProvider"], "cpu"
+    providers, device_name, _provider = select_onnx_execution_providers(prefer_gpu=prefer_gpu)
+    return providers, device_name
 
 
 def _prepare_onnxruntime(prefer_gpu: bool = True) -> None:
     global _ort_env_ready
     if _ort_env_ready or not prefer_gpu:
         return
-    prepare_onnxruntime_cuda_env()
+    prepare_acceleration_env()
     if hasattr(ort, "preload_dlls"):
         try:
             ort.preload_dlls()
@@ -147,18 +148,19 @@ def _create_session(model_path: Path, prefer_gpu: bool = True) -> tuple[ort.Infe
     try:
         session = ort.InferenceSession(str(model_path), providers=providers)
         active = session.get_providers()
-        if requested_device == "cuda" and "CUDAExecutionProvider" in active:
-            return session, "cuda"
-        if requested_device == "cuda":
+        if requested_device != "cpu" and providers[0] in active:
+            return session, requested_device
+        if requested_device != "cpu":
             logger.warning(
-                "Face ONNX runtime fell back to CPU for %s; providers=%s",
+                "Face ONNX runtime fell back to CPU for %s; requested=%s active=%s",
                 model_path.name,
+                providers,
                 active,
             )
         return session, "cpu"
     except Exception:
-        if requested_device == "cuda":
-            logger.warning("Failed to initialize CUDA face runtime for %s", model_path.name, exc_info=True)
+        if requested_device != "cpu":
+            logger.warning("Failed to initialize accelerated face runtime for %s providers=%s", model_path.name, providers, exc_info=True)
         session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
         return session, "cpu"
 
@@ -399,9 +401,7 @@ def _ensure_runtime(prefer_gpu: bool = True) -> tuple[SCRFDDetector, ArcFaceReco
         model_dir = _ensure_model_pack()
         _detector = SCRFDDetector(model_dir / "det_10g.onnx", prefer_gpu=prefer_gpu)
         _recognizer = ArcFaceRecognizer(model_dir / "w600k_r50.onnx", prefer_gpu=prefer_gpu)
-        _device_name = "cuda" if (
-            _detector.device_name == "cuda" and _recognizer.device_name == "cuda"
-        ) else "cpu"
+        _device_name = _detector.device_name if _detector.device_name == _recognizer.device_name else "cpu"
         logger.info("Loaded face runtime on device=%s from %s", _device_name, model_dir)
     return _detector, _recognizer, _device_name
 
@@ -415,8 +415,8 @@ def prewarm_models(prefer_gpu: bool = True) -> str:
 def get_inference_device() -> str:
     if _detector is not None:
         return _device_name
-    providers = set(ort.get_available_providers())
-    return "cuda" if "CUDAExecutionProvider" in providers else "cpu"
+    _providers, device_name, _provider = select_onnx_execution_providers(prefer_gpu=True)
+    return device_name
 
 
 def detect_faces_rgb(

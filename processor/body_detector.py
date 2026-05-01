@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cctv_ai.runtime_env import prepare_mmdeploy_cuda_env
+from cctv_ai.runtime_env import select_mmdeploy_device
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,8 @@ def _ensure_model_pack() -> Path:
 
 
 def _want_device() -> str:
-    if prepare_mmdeploy_cuda_env() is not None:
-        return "cuda"
-    return "cpu"
+    device, _diagnostics = select_mmdeploy_device()
+    return device
 
 
 def _load_tracker():
@@ -60,8 +59,6 @@ def _load_tracker():
     det_model = target_dir / "rtmdet-nano"
     pose_model = target_dir / "rtmpose-m"
     preferred_device = _want_device()
-    if preferred_device == "cuda":
-        prepare_mmdeploy_cuda_env()
     if _tracker is None or _device != preferred_device:
         import mmdeploy_runtime as mmdeploy
 

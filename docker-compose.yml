@@ -1,3 +1,20 @@
+x-processor-common: &processor-common
+  build:
+    context: .
+    dockerfile: processor/Dockerfile
+  environment: &processor-env
+    BACKEND_URL: "http://backend:8000"
+    API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
+    PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-1}"
+    MAX_WORKERS: "${PROCESSOR_MAX_WORKERS:-4}"
+  depends_on:
+    backend:
+      condition: service_healthy
+  restart: unless-stopped
+  volumes:
+    - recordings:/app/media/recordings
+    - snapshots:/app/media/snapshots
+
 services:
   db:
     image: postgres:16-alpine
@@ -43,15 +60,22 @@ services:
       - snapshots:/app/snapshots
 
   processor:
-    build: ./processor
+    <<: *processor-common
     environment:
-      BACKEND_URL: "http://backend:8000"
-      API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
-      PROCESSOR_NAME: "processor-1"
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *processor-env
+      PROCESSOR_ACCEL: "${PROCESSOR_ACCEL:-auto}"
+    profiles:
+      - with-processor
+
+  processor-nvidia:
+    <<: *processor-common
+    build:
+      context: .
+      dockerfile: processor/Dockerfile.nvidia
+    environment:
+      <<: *processor-env
+      PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-nvidia-1}"
+      PROCESSOR_ACCEL: "nvidia"
     deploy:
       resources:
         reservations:
@@ -61,6 +85,7 @@ services:
               capabilities: [gpu]
     profiles:
       - with-gpu
+      - processor-nvidia
 
   mediamtx:
     image: bluenviron/mediamtx:latest

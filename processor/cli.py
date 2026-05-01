@@ -197,6 +197,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     updates = {
         "backend_url": args.backend_url,
         "processor_name": args.name,
+        "processor_accel": args.processor_accel,
         "max_workers": args.max_workers,
         "motion_threshold": args.motion_threshold,
         "face_scan_interval": args.face_scan_interval,
@@ -228,6 +229,8 @@ def cmd_connect(args: argparse.Namespace) -> int:
         config["backend_url"] = args.backend_url.rstrip("/")
     if args.name:
         config["processor_name"] = args.name
+    if args.processor_accel:
+        config["processor_accel"] = args.processor_accel
     if args.media_port is not None:
         config["media_port"] = args.media_port
     if args.media_token:
@@ -352,6 +355,33 @@ def cmd_system_info(args: argparse.Namespace) -> int:
     from processor.monitor import get_system_info
 
     payload = get_system_info()
+    if args.json:
+        _print_json(payload)
+    else:
+        for key, value in payload.items():
+            print(f"{key}: {value}")
+    return 0
+
+
+def cmd_acceleration(args: argparse.Namespace) -> int:
+    from cctv_ai.runtime_env import acceleration_report
+
+    if args.processor_accel:
+        os.environ["PROCESSOR_ACCEL"] = args.processor_accel
+    payload = acceleration_report(args.processor_accel)
+    if args.prewarm:
+        try:
+            from processor.vision import prewarm_models
+
+            payload["face_prewarm_device"] = prewarm_models()
+        except Exception as exc:
+            payload["face_prewarm_error"] = str(exc)
+        try:
+            from processor.body_detector import prewarm_model
+
+            payload["body_prewarm_device"] = prewarm_model()
+        except Exception as exc:
+            payload["body_prewarm_error"] = str(exc)
     if args.json:
         _print_json(payload)
     else:
@@ -532,6 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_set = config_sub.add_parser("set", help="Update local config values")
     config_set.add_argument("--backend-url")
     config_set.add_argument("--name")
+    config_set.add_argument("--processor-accel", choices=["auto", "cpu", "nvidia", "intel", "amd", "directml"])
     config_set.add_argument("--max-workers", type=int)
     config_set.add_argument("--motion-threshold", type=float)
     config_set.add_argument("--face-scan-interval", type=float)
@@ -549,6 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     connect.add_argument("--backend-url", required=False)
     connect.add_argument("--code", required=True)
     connect.add_argument("--name")
+    connect.add_argument("--processor-accel", choices=["auto", "cpu", "nvidia", "intel", "amd", "directml"])
     connect.add_argument("--max-workers", type=int)
     connect.add_argument("--motion-threshold", type=float)
     connect.add_argument("--face-scan-interval", type=float)
@@ -579,6 +611,12 @@ def build_parser() -> argparse.ArgumentParser:
     system_info = subparsers.add_parser("system-info", help="Show local system information used by processor")
     system_info.add_argument("--json", action="store_true")
     system_info.set_defaults(func=cmd_system_info)
+
+    acceleration = subparsers.add_parser("acceleration", help="Show Processor acceleration diagnostics")
+    acceleration.add_argument("--processor-accel", choices=["auto", "cpu", "nvidia", "intel", "amd", "directml"])
+    acceleration.add_argument("--prewarm", action="store_true", help="Try to initialize face/body models")
+    acceleration.add_argument("--json", action="store_true")
+    acceleration.set_defaults(func=cmd_acceleration)
 
     run = subparsers.add_parser("run", help="Run processor in headless mode")
     run.set_defaults(func=cmd_run)

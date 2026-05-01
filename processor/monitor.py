@@ -147,10 +147,17 @@ def get_system_info() -> dict:
             gpu_name = gpu_name.decode()
         info["gpu"] = gpu_name
         pynvml.nvmlShutdown()
-        info["inference_device"] = "cuda"
     except Exception:
         pass
-    if "inference_device" not in info:
+    try:
+        from cctv_ai.runtime_env import acceleration_report
+
+        accel = acceleration_report()
+        info["inference_device"] = accel.get("selected_device") or "cpu"
+        info["inference_provider"] = accel.get("selected_provider")
+        info["onnxruntime_providers"] = accel.get("onnxruntime_providers", [])
+        info["acceleration_preference"] = accel.get("preference")
+    except Exception:
         info["inference_device"] = "cpu"
     try:
         from processor.networking import detect_advertised_ip
