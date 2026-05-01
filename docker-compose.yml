@@ -33,6 +33,12 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    profiles:
+      - core
+      - server
+      - server-cpu
+      - server-gpu
+      - gpu-nvidia
 
   backend:
     build: .
@@ -58,6 +64,12 @@ services:
     volumes:
       - recordings:/app/recordings
       - snapshots:/app/snapshots
+    profiles:
+      - core
+      - server
+      - server-cpu
+      - server-gpu
+      - gpu-nvidia
 
   processor:
     <<: *processor-common
@@ -66,6 +78,7 @@ services:
       PROCESSOR_ACCEL: "${PROCESSOR_ACCEL:-auto}"
     profiles:
       - with-processor
+      - server-cpu
 
   processor-nvidia:
     <<: *processor-common
@@ -86,6 +99,8 @@ services:
     profiles:
       - with-gpu
       - processor-nvidia
+      - server-gpu
+      - gpu-nvidia
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -96,6 +111,12 @@ services:
     environment:
       MTX_PROTOCOLS: tcp
     restart: unless-stopped
+    profiles:
+      - core
+      - server
+      - server-cpu
+      - server-gpu
+      - gpu-nvidia
 
   frontend:
     build: ./frontend
@@ -107,6 +128,10 @@ services:
       - backend
     profiles:
       - with-frontend
+      - server
+      - server-cpu
+      - server-gpu
+      - gpu-nvidia
 
   nginx:
     image: nginx:alpine
@@ -124,6 +149,7 @@ services:
     restart: unless-stopped
     profiles:
       - with-nginx
+      - public
 
 volumes:
   pgdata:
