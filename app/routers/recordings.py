@@ -205,7 +205,7 @@ async def list_local_recordings(
         items.append(
             LocalRecordingOut(
                 name=entry.name,
-                url=f"/recordings/static/{entry.name}",
+                url=f"/recordings/local/{quote(entry.name)}",
                 size_bytes=stat.st_size,
                 modified_at=str(
                     __import__("datetime").datetime.fromtimestamp(stat.st_mtime)
@@ -214,6 +214,53 @@ async def list_local_recordings(
             )
         )
     return items
+
+
+@router.get("/local/{filename}")
+async def download_local_recording(
+    filename: str,
+    request: Request,
+    current_user: models.User = Depends(get_current_user_allow_query),
+):
+    base = Path("recordings").resolve()
+    path = (base / Path(filename).name).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    mime, _ = mimetypes.guess_type(path.name)
+    if not mime:
+        mime = "video/mp4"
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if range_header:
+        m = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if m:
+            start = int(m.group(1))
+            end = int(m.group(2)) if m.group(2) else file_size - 1
+            end = min(end, file_size - 1)
+            if start >= file_size:
+                raise HTTPException(status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE, detail="Range not satisfiable")
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(end - start + 1),
+                "Content-Disposition": f'inline; filename="{path.name}"',
+            }
+            return StreamingResponse(_range_stream(path, start, end), status_code=206, media_type=mime, headers=headers)
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=path.name,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'inline; filename="{path.name}"',
+        },
+    )
 
 
 def _range_stream(path: Path, start: int, end: int, chunk_size: int = 1024 * 1024):

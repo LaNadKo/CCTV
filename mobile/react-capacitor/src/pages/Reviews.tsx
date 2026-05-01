@@ -46,8 +46,13 @@ function personLabel(person: Pick<PersonOut, "person_id" | "first_name" | "last_
   return [person.last_name, person.first_name, person.middle_name].filter(Boolean).join(" ") || `ID ${person.person_id}`;
 }
 
+function mediaUrl(path: string, token: string): string {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${API_URL}${path}${separator}token=${encodeURIComponent(token)}`;
+}
+
 const ReviewsPage = () => {
-  const { token } = useAuth();
+  const { token, mediaToken } = useAuth();
   const [items, setItems] = useState<Pending[]>([]);
   const [persons, setPersons] = useState<PersonOut[]>([]);
   const [personMap, setPersonMap] = useState<Record<number, number | null>>({});
@@ -59,6 +64,7 @@ const ReviewsPage = () => {
   const [loading, setLoading] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mediaQueryToken = mediaToken || "";
 
   const filteredPersons = useMemo(
     () => fuzzyFilter(persons, pickerQuery, (person) => [personLabel(person), String(person.person_id)]),
@@ -265,7 +271,7 @@ const ReviewsPage = () => {
             {items.map((item) => {
               const snapshotAvailable = Boolean(item.snapshot_url) && !snapshotErrorMap[item.event_id];
               const recordingUrl = item.recording_file_id
-                ? `${API_URL}/recordings/file/${item.recording_file_id}?token=${encodeURIComponent(token || "")}`
+                ? `${API_URL}/recordings/file/${item.recording_file_id}?token=${encodeURIComponent(mediaQueryToken)}`
                 : null;
               const selectedPersonId = personMap[item.event_id] ?? null;
               const selectedPerson = selectedPersonId
@@ -301,7 +307,7 @@ const ReviewsPage = () => {
                   <div className="review-card__media media-frame">
                     {snapshotAvailable ? (
                       <img
-                        src={`${API_URL}${item.snapshot_url}`}
+                        src={mediaUrl(item.snapshot_url || "", mediaQueryToken)}
                         alt={`event-${item.event_id}`}
                         loading="lazy"
                         className="review-snapshot"

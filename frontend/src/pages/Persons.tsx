@@ -41,7 +41,7 @@ function cameraFrameIntervalMs(fps?: number | null): number {
 }
 
 const PersonsPage = () => {
-  const { token } = useAuth();
+  const { token, mediaToken } = useAuth();
   const [persons, setPersons] = useState<Person[]>([]);
   const [cameras, setCameras] = useState<CameraOption[]>([]);
   const [search, setSearch] = useState("");
@@ -526,7 +526,7 @@ const PersonsPage = () => {
                         ref={liveImgRef}
                         crossOrigin="anonymous"
                         alt="live"
-                        src={`${API_URL}/cameras/${liveCameraId}/stream?annotate=false&token=${encodeURIComponent(token)}`}
+                        src={`${API_URL}/cameras/${liveCameraId}/stream?annotate=false&token=${encodeURIComponent(mediaToken || "")}`}
                         style={{ width: "100%", maxHeight: 560, objectFit: "contain", background: "rgba(8,18,33,0.84)" }}
                       />
                       <div className="persons-capture-guide" aria-hidden="true">

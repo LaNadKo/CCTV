@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app import models
 from app.db import get_session
-from app.dependencies import get_current_user, get_service_scopes
+from app.dependencies import get_current_user, get_service_identity, get_service_scopes
 from app.permissions import is_admin
 from app.schemas.processors import (
     AssignCamerasIn,
@@ -39,7 +39,7 @@ from app.schemas.processors import (
     StorageConfigOut,
     SystemMetrics,
 )
-from app.security import hash_api_key
+from app.security import decrypt_secret, hash_api_key
 
 router = APIRouter(prefix="/processors", tags=["processors"])
 log = logging.getLogger("app.processors")
@@ -62,6 +62,44 @@ def require_scope(scope: str):
     async def _dep(x_api_key: str = Header(...), session: AsyncSession = Depends(get_session)):
         return await _require_scope(scope, x_api_key, session)
     return _dep
+
+
+async def _authorize_processor_key(
+    session: AsyncSession,
+    processor_id: int,
+    x_api_key: str,
+    scope: str,
+) -> tuple[models.Processor, list[str]]:
+    api_key_id, scopes = await get_service_identity(x_api_key, session)
+    if scope not in scopes and "*" not in scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Missing scope: {scope}")
+    proc = await session.get(models.Processor, processor_id)
+    if not proc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
+    if "*" not in scopes and proc.api_key_id is not None and proc.api_key_id != api_key_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not bound to this processor")
+    if "*" not in scopes and proc.api_key_id is None:
+        proc.api_key_id = api_key_id
+        await session.flush()
+    return proc, scopes
+
+
+async def _ensure_processor_camera_assignment(
+    session: AsyncSession,
+    processor_id: int,
+    camera_id: int,
+    scopes: list[str],
+) -> None:
+    if "*" in scopes:
+        return
+    result = await session.execute(
+        select(models.ProcessorCameraAssignment).where(
+            models.ProcessorCameraAssignment.processor_id == processor_id,
+            models.ProcessorCameraAssignment.camera_id == camera_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Camera is not assigned to this processor")
 
 
 def _ensure_admin(user: models.User) -> None:
@@ -205,12 +243,7 @@ async def processor_heartbeat(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:heartbeat" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:heartbeat")
-    proc = await session.get(models.Processor, processor_id)
-    if not proc:
-        raise HTTPException(status_code=404, detail="Processor not found")
+    proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:heartbeat")
     proc.status = payload.status
     proc.last_heartbeat = datetime.utcnow()
     # Store metrics
@@ -262,9 +295,7 @@ async def get_assignments(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:read" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:read")
+    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
     stmt = (
         select(models.ProcessorCameraAssignment)
         .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
@@ -292,7 +323,7 @@ async def get_assignments(
                 endpoint_kind=e.endpoint_kind,
                 endpoint_url=e.endpoint_url,
                 username=e.username,
-                password_secret=e.password_secret,
+                password_secret=decrypt_secret(e.password_secret) if e.password_secret else None,
                 is_primary=e.is_primary,
             )
             for e in ep_result.scalars().all()
@@ -333,9 +364,7 @@ async def push_event(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:write" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:write")
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:write")
     et_result = await session.execute(
         select(models.EventType).where(models.EventType.name == payload.event_type)
     )
@@ -345,6 +374,7 @@ async def push_event(
     cam = await session.get(models.Camera, payload.camera_id)
     if cam is None or cam.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    await _ensure_processor_camera_assignment(session, processor_id, payload.camera_id, scopes)
     event_type_id = et.event_type_id
     review_required = payload.event_type == "face_unknown"
     resolved_person_id = payload.person_id
@@ -393,12 +423,11 @@ async def push_recording(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:write" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:write")
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:write")
     cam = await session.get(models.Camera, payload.camera_id)
     if not cam or cam.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    await _ensure_processor_camera_assignment(session, processor_id, payload.camera_id, scopes)
     vs_result = await session.execute(
         select(models.VideoStream).where(models.VideoStream.camera_id == payload.camera_id).limit(1)
     )
@@ -449,9 +478,7 @@ async def get_gallery(
     x_api_key: str = Header(...),
 ):
     global _gallery_cache, _gallery_cache_ts
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:read" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:read")
+    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
     now = time.monotonic()
     if _gallery_cache is not None and (now - _gallery_cache_ts) < _GALLERY_CACHE_TTL:
         return _gallery_cache
@@ -481,9 +508,7 @@ async def get_storage_config(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    scopes = await get_service_scopes(x_api_key, session)
-    if "processor:read" not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=403, detail="Missing scope: processor:read")
+    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
     st_result = await session.execute(
         select(models.StorageTarget).where(models.StorageTarget.is_primary_recording.is_(True)).limit(1)
     )

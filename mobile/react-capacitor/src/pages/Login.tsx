@@ -34,7 +34,7 @@ const LoginPage: React.FC = () => {
         return;
       }
       const profile = await me(response.access_token);
-      login(response.access_token, profile);
+      login(response.access_token, profile, response.media_access_token);
       nav(from, { replace: true });
     } catch (err: any) {
       if (err?.status === 400 && String(err?.message || "").toLowerCase().includes("totp")) {
@@ -61,7 +61,7 @@ const LoginPage: React.FC = () => {
         return;
       }
       const profile = await me(response.access_token);
-      login(response.access_token, profile);
+      login(response.access_token, profile, response.media_access_token);
       nav(from, { replace: true });
     } catch (err: any) {
       setError(err?.message || "Ошибка двухфакторной авторизации");
@@ -89,7 +89,7 @@ const LoginPage: React.FC = () => {
       await changePassword(tempToken, lastCreds.password, newPassword);
       const response = await loginApi(lastCreds.login, newPassword);
       const profile = await me(response.access_token);
-      login(response.access_token, profile);
+      login(response.access_token, profile, response.media_access_token);
       nav(from, { replace: true });
     } catch (err: any) {
       setError(err?.message || "Ошибка смены пароля");

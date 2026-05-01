@@ -5,7 +5,7 @@ class UserRegister(BaseModel):
     """Used by admin to create users."""
 
     login: str = Field(min_length=3, max_length=80)
-    password: str = Field(min_length=6, max_length=100)
+    password: str = Field(min_length=8, max_length=100)
     role_id: int = 3  # default: viewer
     first_name: str | None = None
     last_name: str | None = None
@@ -28,4 +28,4 @@ class UserOut(BaseModel):
 
 class ChangePassword(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=6, max_length=100)
+    new_password: str = Field(min_length=8, max_length=100)

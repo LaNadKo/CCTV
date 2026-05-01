@@ -18,7 +18,7 @@ from pathlib import Path
 CONFIG_FILE = "processor_config.json"
 DEFAULT_CONFIG = {
     "backend_url": "http://192.168.1.100:8000",
-    "api_key": "processor-secret-key-2026",
+    "api_key": "",
     "processor_name": "",
     "max_workers": 4,
 }
@@ -108,7 +108,7 @@ class SetupFrame(ttk.Frame):
         # Fields
         fields = [
             ("IP-адрес сервера:", "backend_url", "http://192.168.1.100:8000"),
-            ("API-ключ:", "api_key", "processor-secret-key-2026"),
+            ("API-ключ:", "api_key", "сгенерируйте в Console"),
             ("Имя процессора:", "processor_name", "my-pc"),
             ("Max workers:", "max_workers", "4"),
         ]
@@ -158,6 +158,9 @@ class SetupFrame(ttk.Frame):
         vals = self.get_values()
         if not vals["backend_url"]:
             messagebox.showerror("Ошибка", "Укажите IP-адрес сервера")
+            return
+        if not vals["api_key"]:
+            messagebox.showerror("Ошибка", "Укажите API-ключ Processor из Console")
             return
         vals["max_workers"] = int(vals.get("max_workers") or 4)
         save_config(vals)

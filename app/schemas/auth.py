@@ -11,11 +11,19 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     must_change_password: bool = False
+    media_access_token: str | None = None
+    media_token_expires_seconds: int | None = None
+
+
+class MediaTokenResponse(BaseModel):
+    media_access_token: str
+    token_type: str = "bearer"
+    media_token_expires_seconds: int
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(min_length=8, max_length=100)
 
 
 class UserOut(BaseModel):

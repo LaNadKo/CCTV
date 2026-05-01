@@ -19,6 +19,7 @@ from app.services.onvif import (
     endpoint_kinds,
     load_device_metadata,
     primary_stream_url,
+    redact_url_credentials,
     read_ptz_capabilities,
 )
 
@@ -98,7 +99,7 @@ async def list_cameras(
             name=camera.name,
             location=camera.location,
             ip_address=camera.ip_address,
-            stream_url=primary_stream_url(camera.stream_url, camera.endpoints),
+            stream_url=redact_url_credentials(primary_stream_url(camera.stream_url, camera.endpoints)),
             fps=fps_by_camera.get(camera.camera_id),
             permission=permission,
             detection_enabled=camera.detection_enabled,
@@ -115,7 +116,7 @@ async def list_cameras(
             endpoints=[
                 CameraEndpointInfo(
                     endpoint_kind=endpoint.endpoint_kind,
-                    endpoint_url=endpoint.endpoint_url,
+                    endpoint_url=redact_url_credentials(endpoint.endpoint_url) or endpoint.endpoint_url,
                     is_primary=endpoint.is_primary,
                 )
                 for endpoint in camera.endpoints

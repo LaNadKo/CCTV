@@ -4,7 +4,7 @@ x-processor-common: &processor-common
     dockerfile: processor/Dockerfile
   environment: &processor-env
     BACKEND_URL: "http://backend:8000"
-    API_KEY: "${PROCESSOR_API_KEY:-processor-secret-key-2026}"
+    API_KEY: "${PROCESSOR_API_KEY:?Set PROCESSOR_API_KEY in .env}"
     PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-1}"
     MAX_WORKERS: "${PROCESSOR_MAX_WORKERS:-4}"
   depends_on:

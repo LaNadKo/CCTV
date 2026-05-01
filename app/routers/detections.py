@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
 from app.db import get_session
-from app.dependencies import get_current_user, get_service_scopes
+from app.dependencies import get_current_user, get_current_user_allow_query, get_current_user_optional, get_service_scopes
 from app.permissions import check_permission, user_camera_permission_sync, is_admin
 from app.processor_media import get_processor_by_id, get_processor_media_base_url, get_processor_media_headers
 from app.schemas.detections import DetectionIn, DetectionResponse, EventReviewUpdate, PendingEvent
@@ -53,7 +53,7 @@ async def _notify_admins_for_camera(session: AsyncSession, camera_id: int, event
 async def create_detection(
     payload: DetectionIn,
     session: AsyncSession = Depends(get_session),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User | None = Depends(get_current_user_optional),
     x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ) -> DetectionResponse:
     # Allow either user token or service API key with scope
@@ -63,6 +63,8 @@ async def create_detection(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Scope detections:create required")
         actor_user_id = None
     else:
+        if current_user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
         # Require at least control permission on camera
         perm = user_camera_permission_sync(current_user)
         if not check_permission(perm, "control") and not is_admin(current_user):
@@ -141,11 +143,7 @@ async def list_pending(
                 person_label=None,
                 recording_file_id=event.recording_file_id,
                 confidence=float(event.confidence) if event.confidence is not None else None,
-                snapshot_url=(
-                    f"/detections/events/{event.event_id}/snapshot"
-                    if event.processor_id
-                    else (f"/snapshots/event_{event.event_id}.jpg" if snapshot_path.exists() else None)
-                ),
+                snapshot_url=f"/detections/events/{event.event_id}/snapshot" if event.processor_id or snapshot_path.exists() else None,
             )
         )
     return items
@@ -155,10 +153,14 @@ async def list_pending(
 async def event_snapshot(
     event_id: int,
     session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user_allow_query),
 ):
     event = await session.get(models.Event, event_id)
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    perm = user_camera_permission_sync(current_user)
+    if not check_permission(perm, "view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if event.processor_id is not None:
         proc = await get_processor_by_id(session, event.processor_id)
         if proc is not None:

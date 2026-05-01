@@ -10,6 +10,8 @@ from urllib.parse import quote, urlparse, urlunparse
 import httpx
 from onvif import ONVIFClient, ONVIFDiscovery
 
+from app.security import decrypt_secret
+
 log = logging.getLogger("app.onvif")
 
 ONVIF_PORT_CANDIDATES: tuple[tuple[int, bool], ...] = (
@@ -139,6 +141,21 @@ def build_authenticated_url(url: str, username: str | None, password: str | None
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     netloc = f"{user}:{pwd}@{host}"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def redact_url_credentials(url: str | None) -> str | None:
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if not parsed.username and not parsed.password:
+        return url
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
     if parsed.port:
         netloc = f"{netloc}:{parsed.port}"
     return urlunparse(parsed._replace(netloc=netloc))
@@ -530,7 +547,8 @@ def _camera_onvif_credentials(camera: Any) -> tuple[str, str, str, str, int, boo
         host = str(metadata.get("host") or camera.ip_address or urlparse(endpoint_url).hostname or "")
         port = int(metadata.get("port") or urlparse(endpoint_url).port or 80)
         use_https = bool(metadata.get("use_https") or urlparse(endpoint_url).scheme == "https")
-        return endpoint_url, endpoint.username or "", endpoint.password_secret or "", host, port, use_https
+        password = decrypt_secret(endpoint.password_secret) if endpoint.password_secret else ""
+        return endpoint_url, endpoint.username or "", password, host, port, use_https
     raise ONVIFServiceError("У камеры не настроен ONVIF endpoint")
 
 
@@ -559,7 +577,7 @@ def camera_to_detail_payload(camera: Any) -> dict[str, Any]:
             {
                 "camera_endpoint_id": endpoint.camera_endpoint_id,
                 "endpoint_kind": endpoint.endpoint_kind,
-                "endpoint_url": endpoint.endpoint_url,
+                "endpoint_url": redact_url_credentials(endpoint.endpoint_url),
                 "username": endpoint.username,
                 "has_password": bool(endpoint.password_secret),
                 "is_primary": endpoint.is_primary,
@@ -570,7 +588,7 @@ def camera_to_detail_payload(camera: Any) -> dict[str, Any]:
         "name": camera.name,
         "location": camera.location,
         "ip_address": camera.ip_address,
-        "stream_url": primary_stream_url(camera.stream_url, camera.endpoints),
+        "stream_url": redact_url_credentials(primary_stream_url(camera.stream_url, camera.endpoints)),
         "permission": "admin",
         "detection_enabled": camera.detection_enabled,
         "recording_mode": camera.recording_mode,

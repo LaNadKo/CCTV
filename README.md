@@ -132,6 +132,14 @@ http://127.0.0.1:8000/docs
 rtsp://127.0.0.1:8554
 ```
 
+Security-режим backend управляется через `.env`:
+
+- `ENVIRONMENT=production` включает fail-fast проверку небезопасных настроек.
+- В production нужно задать нестандартные `JWT_SECRET`, `PROCESSOR_API_KEY`, `TOTP_ENCRYPTION_KEY`, `BOOTSTRAP_ADMIN_PASSWORD`, `CORS_ORIGINS` и `ALLOWED_HOSTS`.
+- Обычный JWT больше не используется в query-string для live/recordings/snapshots; frontend получает короткоживущий `media_access_token`.
+- `ALLOW_LEGACY_QUERY_TOKENS=false` должен оставаться выключенным, иначе в URL снова можно будет передавать основной JWT.
+- `/recordings/static` и `/snapshots` не публикуются напрямую; медиа отдаётся только через проверяемые API endpoints.
+
 Контейнер `backend` сам ждёт PostgreSQL, применяет `alembic upgrade head` и затем запускает `uvicorn`.
 
 Processor можно поднимать отдельно выбранным профилем:
