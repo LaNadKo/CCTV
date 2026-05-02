@@ -1,0 +1,30 @@
+name: cctv_console
+description: Native CCTV Console client for Windows and Android.
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  flex_color_picker: ^3.8.0
+  flutter_secure_storage: ^10.2.0
+  google_fonts: ^8.1.0
+  http: ^1.6.0
+  intl: ^0.20.2
+  provider: ^6.1.5+1
+  shared_preferences: ^2.5.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
