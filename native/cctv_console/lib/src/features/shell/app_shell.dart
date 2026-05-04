@@ -150,6 +150,20 @@ class _DesktopShell extends StatelessWidget {
     final colors = context.colors;
     final auth = context.watch<AuthController>();
     final user = auth.user;
+    final primaryTabs = tabs
+        .where(
+          (tab) => const [
+            '/live',
+            '/recordings',
+            '/reviews',
+            '/reports',
+          ].contains(tab.route),
+        )
+        .toList();
+    final secondaryTabs = tabs
+        .where((tab) => !primaryTabs.contains(tab))
+        .toList();
+    final menuActive = secondaryTabs.any((tab) => tab.route == selected.route);
 
     return Center(
       child: ConstrainedBox(
@@ -169,7 +183,7 @@ class _DesktopShell extends StatelessWidget {
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          children: tabs
+                          children: primaryTabs
                               .map(
                                 (tab) => Padding(
                                   padding: const EdgeInsets.only(right: 10),
@@ -184,6 +198,23 @@ class _DesktopShell extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (secondaryTabs.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      PopupMenuButton<String>(
+                        tooltip: 'Меню',
+                        color: colors.surfaceElevated,
+                        surfaceTintColor: Colors.transparent,
+                        onSelected: onSelect,
+                        itemBuilder: (context) => [
+                          for (final tab in secondaryTabs)
+                            PopupMenuItem(
+                              value: tab.route,
+                              child: Text(tab.label),
+                            ),
+                        ],
+                        child: _MenuChip(active: menuActive),
+                      ),
+                    ],
                     const SizedBox(width: 18),
                     if (user != null)
                       Container(
@@ -395,12 +426,6 @@ class _NavChip extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  tab.icon,
-                  size: 18,
-                  color: active ? const Color(0xFF07111F) : colors.muted,
-                ),
-                const SizedBox(width: 8),
                 Text(
                   tab.label,
                   style: TextStyle(
@@ -411,6 +436,38 @@ class _NavChip extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuChip extends StatelessWidget {
+  const _MenuChip({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        gradient: active
+            ? LinearGradient(
+                colors: [colors.primaryAccent, colors.secondaryAccent],
+              )
+            : null,
+        color: active ? null : colors.surfaceMuted,
+        border: Border.all(color: active ? Colors.transparent : colors.border),
+      ),
+      child: Text(
+        'Меню',
+        style: TextStyle(
+          color: active ? const Color(0xFF07111F) : colors.muted,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );
