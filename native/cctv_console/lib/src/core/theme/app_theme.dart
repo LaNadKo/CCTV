@@ -165,9 +165,62 @@ class AppTheme {
       extensions: [colors],
     );
 
-    final textTheme = GoogleFonts.spaceGroteskTextTheme(
-      base.textTheme,
-    ).apply(bodyColor: colors.text, displayColor: colors.textStrong);
+    final textTheme = GoogleFonts.spaceGroteskTextTheme(base.textTheme)
+        .apply(bodyColor: colors.text, displayColor: colors.textStrong)
+        .copyWith(
+          displaySmall: GoogleFonts.spaceGrotesk(
+            fontSize: 34,
+            height: 1.04,
+            fontWeight: FontWeight.w800,
+            color: colors.textStrong,
+            letterSpacing: -1.2,
+          ),
+          headlineLarge: GoogleFonts.spaceGrotesk(
+            fontSize: 30,
+            height: 1.06,
+            fontWeight: FontWeight.w800,
+            color: colors.textStrong,
+            letterSpacing: -0.8,
+          ),
+          headlineMedium: GoogleFonts.spaceGrotesk(
+            fontSize: 24,
+            height: 1.12,
+            fontWeight: FontWeight.w800,
+            color: colors.textStrong,
+          ),
+          headlineSmall: GoogleFonts.spaceGrotesk(
+            fontSize: 21,
+            height: 1.18,
+            fontWeight: FontWeight.w800,
+            color: colors.textStrong,
+          ),
+          titleLarge: GoogleFonts.spaceGrotesk(
+            fontSize: 20,
+            height: 1.2,
+            fontWeight: FontWeight.w700,
+            color: colors.textStrong,
+          ),
+          titleMedium: GoogleFonts.spaceGrotesk(
+            fontSize: 15,
+            height: 1.45,
+            fontWeight: FontWeight.w500,
+            color: colors.text,
+          ),
+          bodyLarge: GoogleFonts.spaceGrotesk(
+            fontSize: 15,
+            height: 1.45,
+            color: colors.text,
+          ),
+          bodyMedium: GoogleFonts.spaceGrotesk(
+            fontSize: 14,
+            height: 1.45,
+            color: colors.text,
+          ),
+          labelLarge: GoogleFonts.spaceGrotesk(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+          ),
+        );
 
     return base.copyWith(
       textTheme: textTheme,
@@ -180,6 +233,13 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: colors.surfaceMuted,
+        labelStyle: TextStyle(color: colors.muted, fontSize: 13),
+        hintStyle: TextStyle(color: colors.muted, fontSize: 14),
+        errorStyle: TextStyle(color: colors.danger, fontSize: 12, height: 1.2),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(radiusMd),
           borderSide: BorderSide(color: colors.border),
@@ -202,7 +262,7 @@ class AppTheme {
             borderRadius: BorderRadius.circular(16),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(

@@ -12,7 +12,7 @@ class ThemeController extends ChangeNotifier {
   static const _secondaryAccentKey = 'cctv.secondary_accent';
   static const _liveDensityKey = 'cctv.live_density';
 
-  String _apiBaseUrl = 'http://127.0.0.1:8000';
+  String _apiBaseUrl = 'http://127.0.0.1:8001';
   CctvThemeMode _themeMode = CctvThemeMode.system;
   Color _primaryAccent = const Color(0xFF5EF0FF);
   Color _secondaryAccent = const Color(0xFF6F7BFF);
@@ -132,7 +132,7 @@ class ThemeController extends ChangeNotifier {
 
   static String _normalizeUrl(String value) {
     final trimmed = value.trim();
-    if (trimmed.isEmpty) return 'http://127.0.0.1:8000';
+    if (trimmed.isEmpty) return 'http://127.0.0.1:8001';
     return trimmed.replaceAll(RegExp(r'/+$'), '');
   }
 }

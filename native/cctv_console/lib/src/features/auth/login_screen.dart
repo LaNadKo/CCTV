@@ -218,6 +218,7 @@ class _LoginHeader extends StatelessWidget {
           style: Theme.of(context).textTheme.headlineLarge?.copyWith(
             color: colors.textStrong,
             fontWeight: FontWeight.w900,
+            fontSize: 30,
             letterSpacing: -1.2,
           ),
         ),
@@ -251,6 +252,7 @@ class _ServerSettingsToggle extends StatelessWidget {
               'Параметры сервера',
               style: TextStyle(
                 color: colors.muted,
+                fontSize: 14,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -278,7 +280,13 @@ class _InlineError extends StatelessWidget {
       ),
       child: Text(
         message,
-        style: TextStyle(color: colors.danger, fontWeight: FontWeight.w700),
+        style: TextStyle(
+          color: colors.danger,
+          fontSize: 14,
+          height: 1.35,
+          fontWeight: FontWeight.w700,
+          decoration: TextDecoration.none,
+        ),
       ),
     );
   }
