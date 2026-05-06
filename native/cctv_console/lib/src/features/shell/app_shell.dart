@@ -7,6 +7,7 @@ import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
+import '../help/help_screen.dart';
 import '../live/live_screen.dart';
 import '../modules/module_screens.dart';
 import '../settings/settings_screen.dart';
