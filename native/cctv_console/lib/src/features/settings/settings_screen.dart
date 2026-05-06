@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../auth/auth_controller.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -43,33 +44,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               Text(
                 'Настройки',
-                style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                   color: colors.textStrong,
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 4),
               Text(
-                'Кастомизация клиента, адрес backend и плотность Live.',
-                style: TextStyle(color: colors.muted),
+                'Backend, оформление, верхнее меню и плотность Live.',
+                style: TextStyle(color: colors.muted, fontSize: 13),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
             ],
           ),
         ),
         SliverList.list(
           children: [
             GlassPanel(
-              padding: const EdgeInsets.all(22),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SectionTitle(
+                  const _SectionTitle(
                     title: 'Подключение',
-                    subtitle:
-                        'Адрес backend, к которому подключается нативное приложение.',
+                    subtitle: 'Адрес backend для нативного клиента.',
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 14),
                   Row(
                     children: [
                       Expanded(
@@ -77,11 +77,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           controller: _apiUrlController,
                           decoration: const InputDecoration(
                             labelText: 'Backend URL',
-                            hintText: 'http://127.0.0.1:8000',
+                            hintText: 'http://127.0.0.1:8001',
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 10),
                       ElevatedButton(
                         onPressed: () =>
                             settings.setApiBaseUrl(_apiUrlController.text),
@@ -92,21 +92,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             GlassPanel(
-              padding: const EdgeInsets.all(22),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SectionTitle(
+                  const _SectionTitle(
                     title: 'Оформление',
-                    subtitle:
-                        'Тема повторяет веб-консоль, но цвета можно менять без правки кода.',
+                    subtitle: 'Тема и акцентные цвета интерфейса.',
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 14),
                   Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
+                    spacing: 10,
+                    runSpacing: 10,
                     children: [
                       _ChoiceChipButton(
                         label: 'Системная',
@@ -126,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 18),
                   LayoutBuilder(
                     builder: (context, constraints) {
                       final compact = constraints.maxWidth < 780;
@@ -144,51 +143,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ];
                       return compact
                           ? Column(
-                              children: pickers
-                                  .map(
-                                    (picker) => Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 16,
-                                      ),
-                                      child: picker,
-                                    ),
-                                  )
-                                  .toList(),
+                              children: [
+                                pickers[0],
+                                const SizedBox(height: 14),
+                                pickers[1],
+                              ],
                             )
                           : Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Expanded(child: pickers[0]),
-                                const SizedBox(width: 16),
+                                const SizedBox(width: 14),
                                 Expanded(child: pickers[1]),
                               ],
                             );
                     },
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
                   OutlinedButton.icon(
                     onPressed: settings.resetAppearance,
-                    icon: const Icon(Icons.restart_alt_rounded),
+                    icon: const Icon(Icons.restart_alt_rounded, size: 18),
                     label: const Text('Сбросить оформление'),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
+            const _NavigationSettings(),
+            const SizedBox(height: 14),
             GlassPanel(
-              padding: const EdgeInsets.all(22),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SectionTitle(
+                  const _SectionTitle(
                     title: 'Live',
-                    subtitle:
-                        'Плотность сетки камер. На демонстрационном стенде удобно переключаться.',
+                    subtitle: 'Плотность сетки камер на экране Live.',
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 14),
                   Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
+                    spacing: 10,
+                    runSpacing: 10,
                     children: [
                       _ChoiceChipButton(
                         label: 'Компактно',
@@ -197,7 +192,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             settings.setLiveDensity(LiveDensity.compact),
                       ),
                       _ChoiceChipButton(
-                        label: 'Комфортно',
+                        label: 'Стандартно',
                         selected:
                             settings.liveDensity == LiveDensity.comfortable,
                         onTap: () =>
@@ -221,6 +216,243 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
+class _NavigationSettings extends StatelessWidget {
+  const _NavigationSettings();
+
+  static const _allOptions = [
+    _NavOption('/live', 'Live'),
+    _NavOption('/recordings', 'Записи'),
+    _NavOption('/reviews', 'Ревью', reviewOnly: true),
+    _NavOption('/reports', 'Отчёты', reviewOnly: true),
+    _NavOption('/cameras', 'Камеры', adminOnly: true),
+    _NavOption('/groups', 'Группы', adminOnly: true),
+    _NavOption('/persons', 'Персоны', adminOnly: true),
+    _NavOption('/processors', 'Processor', adminOnly: true),
+    _NavOption('/users', 'Пользователи', adminOnly: true),
+    _NavOption('/api-keys', 'API ключи', adminOnly: true),
+    _NavOption('/settings', 'Настройки'),
+    _NavOption('/help', 'Справка'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.watch<ThemeController>();
+    final user = context.watch<AuthController>().user;
+    final colors = context.colors;
+    final allowed = _allOptions.where((option) {
+      if (option.adminOnly) return user?.isAdmin ?? false;
+      if (option.reviewOnly) return user?.canReview ?? false;
+      return true;
+    }).toList();
+    final allowedRoutes = allowed.map((option) => option.route).toSet();
+    final selectedRoutes = settings.primaryNav
+        .where(allowedRoutes.contains)
+        .take(ThemeController.maxPrimaryNavItems)
+        .toList();
+    final effectiveRoutes = selectedRoutes.isEmpty
+        ? ThemeController.defaultPrimaryNav
+              .where(allowedRoutes.contains)
+              .toList()
+        : selectedRoutes;
+    final selected = effectiveRoutes
+        .map((route) => allowed.firstWhere((option) => option.route == route))
+        .toList();
+    final available = allowed
+        .where((option) => !effectiveRoutes.contains(option.route))
+        .toList();
+
+    return GlassPanel(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionTitle(
+            title: 'Верхнее меню',
+            subtitle:
+                'До пяти вкладок в шапке. Остальные разделы остаются в меню.',
+          ),
+          const SizedBox(height: 14),
+          Column(
+            children: [
+              for (var index = 0; index < selected.length; index++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _NavOrderRow(
+                    index: index,
+                    option: selected[index],
+                    canMoveUp: index > 0,
+                    canMoveDown: index < selected.length - 1,
+                    canRemove: selected.length > 1,
+                    onMoveUp: () => settings.setPrimaryNav(
+                      _move(effectiveRoutes, index, index - 1),
+                    ),
+                    onMoveDown: () => settings.setPrimaryNav(
+                      _move(effectiveRoutes, index, index + 1),
+                    ),
+                    onRemove: () => settings.setPrimaryNav(
+                      effectiveRoutes
+                          .where((route) => route != selected[index].route)
+                          .toList(),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Добавить в верхнюю панель',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final option in available)
+                OutlinedButton.icon(
+                  onPressed:
+                      effectiveRoutes.length >=
+                          ThemeController.maxPrimaryNavItems
+                      ? null
+                      : () => settings.setPrimaryNav([
+                          ...effectiveRoutes,
+                          option.route,
+                        ]),
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: Text(option.label),
+                ),
+            ],
+          ),
+          if (effectiveRoutes.length >= ThemeController.maxPrimaryNavItems) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Достигнут лимит главных вкладок. Уберите одну, чтобы добавить новую.',
+              style: TextStyle(color: colors.muted, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: settings.resetPrimaryNav,
+            icon: const Icon(Icons.restart_alt_rounded, size: 18),
+            label: const Text('Сбросить меню'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static List<String> _move(List<String> routes, int from, int to) {
+    final next = List<String>.from(routes);
+    final item = next.removeAt(from);
+    next.insert(to, item);
+    return next;
+  }
+}
+
+class _NavOrderRow extends StatelessWidget {
+  const _NavOrderRow({
+    required this.index,
+    required this.option,
+    required this.canMoveUp,
+    required this.canMoveDown,
+    required this.canRemove,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    required this.onRemove,
+  });
+
+  final int index;
+  final _NavOption option;
+  final bool canMoveUp;
+  final bool canMoveDown;
+  final bool canRemove;
+  final VoidCallback onMoveUp;
+  final VoidCallback onMoveDown;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              color: colors.primaryAccent.withValues(alpha: 0.14),
+            ),
+            child: Text(
+              '${index + 1}',
+              style: TextStyle(
+                color: colors.primaryAccent,
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              option.label,
+              style: TextStyle(
+                color: colors.textStrong,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Выше',
+            onPressed: canMoveUp ? onMoveUp : null,
+            icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
+          ),
+          IconButton(
+            tooltip: 'Ниже',
+            onPressed: canMoveDown ? onMoveDown : null,
+            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+          ),
+          IconButton(
+            tooltip: 'Убрать',
+            onPressed: canRemove ? onRemove : null,
+            icon: Icon(
+              Icons.close_rounded,
+              size: 19,
+              color: canRemove ? colors.danger : colors.muted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NavOption {
+  const _NavOption(
+    this.route,
+    this.label, {
+    this.adminOnly = false,
+    this.reviewOnly = false,
+  });
+
+  final String route;
+  final String label;
+  final bool adminOnly;
+  final bool reviewOnly;
+}
+
 class _SectionTitle extends StatelessWidget {
   const _SectionTitle({required this.title, required this.subtitle});
 
@@ -240,8 +472,8 @@ class _SectionTitle extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        const SizedBox(height: 4),
-        Text(subtitle, style: TextStyle(color: colors.muted)),
+        const SizedBox(height: 3),
+        Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
       ],
     );
   }
@@ -281,12 +513,13 @@ class _ChoiceChipButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(999),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             child: Text(
               label,
               style: TextStyle(
                 color: selected ? const Color(0xFF07111F) : colors.muted,
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
               ),
             ),
           ),
@@ -311,9 +544,9 @@ class _ColorEditor extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
         color: colors.surfaceMuted,
         border: Border.all(color: colors.border),
       ),
@@ -323,26 +556,21 @@ class _ColorEditor extends StatelessWidget {
           Row(
             children: [
               Container(
-                width: 32,
-                height: 32,
+                width: 28,
+                height: 28,
                 decoration: BoxDecoration(
                   color: color,
                   shape: BoxShape.circle,
                   border: Border.all(color: colors.borderStrong),
-                  boxShadow: [
-                    BoxShadow(
-                      color: color.withValues(alpha: 0.28),
-                      blurRadius: 18,
-                    ),
-                  ],
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   title,
                   style: TextStyle(
                     color: colors.textStrong,
+                    fontSize: 14,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
@@ -351,12 +579,13 @@ class _ColorEditor extends StatelessWidget {
                 ThemeController.colorToHex(color),
                 style: TextStyle(
                   color: colors.muted,
+                  fontSize: 12,
                   fontWeight: FontWeight.w700,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           ColorPicker(
             color: color,
             onColorChanged: onChanged,

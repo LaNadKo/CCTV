@@ -26,10 +26,18 @@ class CctvConsoleApp extends StatelessWidget {
       ),
       builder: (context, child) {
         final media = MediaQuery.of(context);
-        final safeScale = media.textScaler.scale(1).clamp(0.9, 1.08).toDouble();
+        final safeScale = media.textScaler.scale(1).clamp(0.92, 1.0).toDouble();
+        final baseStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+          decoration: TextDecoration.none,
+          decorationColor: Colors.transparent,
+        );
         return MediaQuery(
           data: media.copyWith(textScaler: TextScaler.linear(safeScale)),
-          child: child ?? const SizedBox.shrink(),
+          child: DefaultTextStyle(
+            style:
+                baseStyle ?? const TextStyle(decoration: TextDecoration.none),
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
       home: AnimatedSwitcher(

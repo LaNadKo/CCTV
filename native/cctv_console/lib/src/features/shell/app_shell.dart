@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
@@ -153,12 +154,10 @@ class _DesktopShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final settings = context.watch<ThemeController>();
     final auth = context.watch<AuthController>();
     final user = auth.user;
-    final primaryRoutes = ['/live', '/recordings', '/reviews', '/reports'];
-    final primaryTabs = tabs
-        .where((tab) => primaryRoutes.contains(tab.route))
-        .toList();
+    final primaryTabs = _resolvePrimaryTabs(tabs, settings.primaryNav);
     final secondaryTabs = tabs
         .where((tab) => !primaryTabs.contains(tab))
         .toList();
@@ -251,7 +250,11 @@ class _MobileShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final visibleTabs = tabs.take(5).toList();
+    final settings = context.watch<ThemeController>();
+    final visibleTabs = _resolvePrimaryTabs(
+      tabs,
+      settings.primaryNav,
+    ).take(5).toList();
     final selectedIndex = visibleTabs.indexWhere(
       (tab) => tab.route == selected.route,
     );
@@ -535,4 +538,25 @@ class _ShellTab {
   final String label;
   final IconData icon;
   final WidgetBuilder builder;
+}
+
+List<_ShellTab> _resolvePrimaryTabs(List<_ShellTab> tabs, List<String> routes) {
+  final selected = <_ShellTab>[];
+  for (final route in routes) {
+    final index = tabs.indexWhere((tab) => tab.route == route);
+    if (index >= 0 && !selected.contains(tabs[index])) {
+      selected.add(tabs[index]);
+    }
+  }
+  if (selected.isNotEmpty) return selected;
+  return tabs
+      .where(
+        (tab) => const [
+          '/live',
+          '/recordings',
+          '/reviews',
+          '/reports',
+        ].contains(tab.route),
+      )
+      .toList();
 }
