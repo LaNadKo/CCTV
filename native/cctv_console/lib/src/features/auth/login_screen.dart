@@ -218,7 +218,7 @@ class _LoginHeader extends StatelessWidget {
           style: Theme.of(context).textTheme.headlineLarge?.copyWith(
             color: colors.textStrong,
             fontWeight: FontWeight.w900,
-            fontSize: 30,
+            fontSize: 26,
             letterSpacing: -1.2,
           ),
         ),

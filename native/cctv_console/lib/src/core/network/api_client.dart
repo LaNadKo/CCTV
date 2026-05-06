@@ -63,6 +63,66 @@ class ApiClient {
     );
   }
 
+  Future<T> patch<T>(
+    String path, {
+    String? token,
+    Object? body,
+    required T Function(Object? json) decoder,
+  }) {
+    return _request(path, 'PATCH', token: token, body: body, decoder: decoder);
+  }
+
+  Future<void> deleteVoid(String path, {String? token}) {
+    return _request<void>(path, 'DELETE', token: token, decoder: (_) {});
+  }
+
+  Future<Object?> getJson(
+    String path, {
+    String? token,
+    Map<String, String?> query = const {},
+  }) {
+    return get(path, token: token, query: query, decoder: (json) => json);
+  }
+
+  Future<List<Map<String, dynamic>>> getJsonList(
+    String path, {
+    String? token,
+    Map<String, String?> query = const {},
+  }) {
+    return get(
+      path,
+      token: token,
+      query: query,
+      decoder: (json) => _asMapList(json),
+    );
+  }
+
+  Future<Map<String, dynamic>> postJson(
+    String path, {
+    String? token,
+    Object? body,
+  }) {
+    return post(
+      path,
+      token: token,
+      body: body,
+      decoder: (json) => _asMap(json),
+    );
+  }
+
+  Future<Map<String, dynamic>> patchJson(
+    String path, {
+    String? token,
+    Object? body,
+  }) {
+    return patch(
+      path,
+      token: token,
+      body: body,
+      decoder: (json) => _asMap(json),
+    );
+  }
+
   Future<T> _request<T>(
     String path,
     String method, {
@@ -83,12 +143,24 @@ class ApiClient {
       switch (method) {
         case 'GET':
           response = await _client.get(requestUri, headers: headers);
+          break;
         case 'POST':
           response = await _client.post(
             requestUri,
             headers: headers,
             body: body == null ? null : jsonEncode(body),
           );
+          break;
+        case 'PATCH':
+          response = await _client.patch(
+            requestUri,
+            headers: headers,
+            body: body == null ? null : jsonEncode(body),
+          );
+          break;
+        case 'DELETE':
+          response = await _client.delete(requestUri, headers: headers);
+          break;
         default:
           throw ApiException('Unsupported HTTP method: $method');
       }
@@ -208,7 +280,36 @@ class ApiClient {
     return postVoid('/admin/cameras/$cameraId/onvif/ptz/home', token: token);
   }
 
+  Future<void> reviewEvent(String token, int eventId, String status) {
+    return postVoid(
+      '/detections/events/$eventId/review',
+      token: token,
+      body: {'status': status},
+    );
+  }
+
+  Future<void> rejectAllPendingReviews(String token) {
+    return postVoid('/detections/review/reject-all', token: token);
+  }
+
   Uri cameraStreamUri(int cameraId) => uri('/cameras/$cameraId/stream');
+
+  static Map<String, dynamic> _asMap(Object? json) {
+    if (json == null) return <String, dynamic>{};
+    if (json is Map<String, dynamic>) return json;
+    if (json is Map) {
+      return json.map((key, value) => MapEntry('$key', value));
+    }
+    return {'value': json};
+  }
+
+  static List<Map<String, dynamic>> _asMapList(Object? json) {
+    if (json == null) return const [];
+    if (json is List) {
+      return json.map(_asMap).toList();
+    }
+    return [_asMap(json)];
+  }
 
   static String _readError(http.Response response) {
     final text = utf8.decode(response.bodyBytes);

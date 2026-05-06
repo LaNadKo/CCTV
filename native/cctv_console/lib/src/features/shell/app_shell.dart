@@ -7,7 +7,7 @@ import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
 import '../live/live_screen.dart';
-import '../placeholder/placeholder_screen.dart';
+import '../modules/module_screens.dart';
 import '../settings/settings_screen.dart';
 
 class AppShell extends StatefulWidget {
@@ -23,14 +23,12 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthController>();
-    final user = auth.user;
-    final tabs = _tabsFor(user);
+    final tabs = _tabsFor(auth.user);
     if (!tabs.any((tab) => tab.route == _selectedRoute)) {
       _selectedRoute = tabs.first.route;
     }
     final selected = tabs.firstWhere((tab) => tab.route == _selectedRoute);
-    final width = MediaQuery.sizeOf(context).width;
-    final compact = width < 820;
+    final compact = MediaQuery.sizeOf(context).width < 820;
 
     return AppBackdrop(
       child: SafeArea(
@@ -65,68 +63,75 @@ class _AppShellState extends State<AppShell> {
         route: '/recordings',
         label: 'Записи',
         icon: Icons.video_library_rounded,
-        builder: (_) => const PlaceholderScreen(
-          title: 'Записи',
-          subtitle: 'Следующий этап: архив, просмотр записей и экспорт.',
-        ),
+        builder: (_) => const RecordingsScreen(),
       ),
       if (canReview)
         _ShellTab(
           route: '/reviews',
           label: 'Ревью',
           icon: Icons.fact_check_rounded,
-          builder: (_) => const PlaceholderScreen(
-            title: 'Ревью',
-            subtitle: 'Будет перенесён поток проверки детекций из веб-консоли.',
-          ),
+          builder: (_) => const ReviewsScreen(),
         ),
       if (canReview)
         _ShellTab(
           route: '/reports',
           label: 'Отчёты',
           icon: Icons.analytics_rounded,
-          builder: (_) => const PlaceholderScreen(
-            title: 'Отчёты',
-            subtitle: 'Сводки, появление персон и экспорт PDF/XLSX/DOCX.',
-          ),
-        ),
-      if (isAdmin)
-        _ShellTab(
-          route: '/persons',
-          label: 'Персоны',
-          icon: Icons.badge_rounded,
-          builder: (_) => const PlaceholderScreen(
-            title: 'Персоны',
-            subtitle:
-                'Управление карточками персон и эмбеддингами будет следующим модулем.',
-          ),
+          builder: (_) => const ReportsScreen(),
         ),
       if (isAdmin)
         _ShellTab(
           route: '/cameras',
           label: 'Камеры',
           icon: Icons.videocam_rounded,
-          builder: (_) => const PlaceholderScreen(
-            title: 'Камеры',
-            subtitle: 'ONVIF discovery, RTSP/HTTP endpoints и пресеты PTZ.',
-          ),
+          builder: (_) => const CamerasScreen(),
+        ),
+      if (isAdmin)
+        _ShellTab(
+          route: '/groups',
+          label: 'Группы',
+          icon: Icons.account_tree_rounded,
+          builder: (_) => const GroupsScreen(),
+        ),
+      if (isAdmin)
+        _ShellTab(
+          route: '/persons',
+          label: 'Персоны',
+          icon: Icons.badge_rounded,
+          builder: (_) => const PersonsScreen(),
         ),
       if (isAdmin)
         _ShellTab(
           route: '/processors',
-          label: 'Процессоры',
+          label: 'Processor',
           icon: Icons.memory_rounded,
-          builder: (_) => const PlaceholderScreen(
-            title: 'Процессоры',
-            subtitle:
-                'Подключение Processor, назначение камер и диагностика GPU.',
-          ),
+          builder: (_) => const ProcessorsScreen(),
+        ),
+      if (isAdmin)
+        _ShellTab(
+          route: '/users',
+          label: 'Пользователи',
+          icon: Icons.manage_accounts_rounded,
+          builder: (_) => const UsersScreen(),
+        ),
+      if (isAdmin)
+        _ShellTab(
+          route: '/api-keys',
+          label: 'API ключи',
+          icon: Icons.vpn_key_rounded,
+          builder: (_) => const ApiKeysScreen(),
         ),
       _ShellTab(
         route: '/settings',
         label: 'Настройки',
         icon: Icons.tune_rounded,
         builder: (_) => const SettingsScreen(),
+      ),
+      _ShellTab(
+        route: '/help',
+        label: 'Справка',
+        icon: Icons.help_outline_rounded,
+        builder: (_) => const HelpScreen(),
       ),
     ];
   }
@@ -150,15 +155,9 @@ class _DesktopShell extends StatelessWidget {
     final colors = context.colors;
     final auth = context.watch<AuthController>();
     final user = auth.user;
+    final primaryRoutes = ['/live', '/recordings', '/reviews', '/reports'];
     final primaryTabs = tabs
-        .where(
-          (tab) => const [
-            '/live',
-            '/recordings',
-            '/reviews',
-            '/reports',
-          ].contains(tab.route),
-        )
+        .where((tab) => primaryRoutes.contains(tab.route))
         .toList();
     final secondaryTabs = tabs
         .where((tab) => !primaryTabs.contains(tab))
@@ -173,7 +172,7 @@ class _DesktopShell extends StatelessWidget {
           child: Column(
             children: [
               GlassPanel(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(14),
                 child: Row(
                   children: [
                     const _Brand(),
@@ -183,18 +182,17 @@ class _DesktopShell extends StatelessWidget {
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          children: primaryTabs
-                              .map(
-                                (tab) => Padding(
-                                  padding: const EdgeInsets.only(right: 10),
-                                  child: _NavChip(
-                                    tab: tab,
-                                    active: tab.route == selected.route,
-                                    onTap: () => onSelect(tab.route),
-                                  ),
+                          children: [
+                            for (final tab in primaryTabs)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 9),
+                                child: _NavChip(
+                                  tab: tab,
+                                  active: tab.route == selected.route,
+                                  onTap: () => onSelect(tab.route),
                                 ),
-                              )
-                              .toList(),
+                              ),
+                          ],
                         ),
                       ),
                     ),
@@ -209,49 +207,25 @@ class _DesktopShell extends StatelessWidget {
                           for (final tab in secondaryTabs)
                             PopupMenuItem(
                               value: tab.route,
-                              child: Text(tab.label),
+                              child: Row(
+                                children: [
+                                  Icon(tab.icon, size: 18, color: colors.muted),
+                                  const SizedBox(width: 10),
+                                  Text(tab.label),
+                                ],
+                              ),
                             ),
                         ],
                         child: _MenuChip(active: menuActive),
                       ),
                     ],
-                    const SizedBox(width: 18),
+                    const SizedBox(width: 16),
                     if (user != null)
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          color: colors.surfaceMuted,
-                          border: Border.all(color: colors.border),
-                        ),
-                        child: Row(
-                          children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  user.displayName,
-                                  style: TextStyle(
-                                    color: colors.textStrong,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                _RoleBadge(user: user),
-                              ],
-                            ),
-                            const SizedBox(width: 12),
-                            OutlinedButton(
-                              onPressed: auth.logout,
-                              child: const Text('Выйти'),
-                            ),
-                          ],
-                        ),
-                      ),
+                      _UserChip(user: user, onLogout: auth.logout),
                   ],
                 ),
               ),
-              const SizedBox(height: 22),
+              const SizedBox(height: 20),
               Expanded(child: child),
             ],
           ),
@@ -278,6 +252,9 @@ class _MobileShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final visibleTabs = tabs.take(5).toList();
+    final selectedIndex = visibleTabs.indexWhere(
+      (tab) => tab.route == selected.route,
+    );
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -286,11 +263,23 @@ class _MobileShell extends StatelessWidget {
         child: Column(
           children: [
             GlassPanel(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
                   const _Brand(compact: true),
                   const Spacer(),
+                  PopupMenuButton<String>(
+                    tooltip: 'Меню',
+                    color: colors.surfaceElevated,
+                    surfaceTintColor: Colors.transparent,
+                    onSelected: onSelect,
+                    itemBuilder: (context) => [
+                      for (final tab in tabs)
+                        PopupMenuItem(value: tab.route, child: Text(tab.label)),
+                    ],
+                    child: _MenuChip(active: !visibleTabs.contains(selected)),
+                  ),
+                  const SizedBox(width: 8),
                   OutlinedButton(
                     onPressed: context.read<AuthController>().logout,
                     child: const Text('Выйти'),
@@ -309,10 +298,9 @@ class _MobileShell extends StatelessWidget {
           border: Border(top: BorderSide(color: colors.border)),
         ),
         child: NavigationBar(
+          height: 64,
           backgroundColor: Colors.transparent,
-          selectedIndex: visibleTabs
-              .indexWhere((tab) => tab.route == selected.route)
-              .clamp(0, visibleTabs.length - 1),
+          selectedIndex: selectedIndex < 0 ? 0 : selectedIndex,
           onDestinationSelected: (index) => onSelect(visibleTabs[index].route),
           destinations: [
             for (final tab in visibleTabs)
@@ -335,11 +323,11 @@ class _Brand extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: compact ? 46 : 54,
-          height: compact ? 46 : 54,
+          width: compact ? 42 : 50,
+          height: compact ? 42 : 50,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(17),
             gradient: LinearGradient(
               colors: [
                 colors.primaryAccent.withValues(alpha: 0.16),
@@ -353,12 +341,12 @@ class _Brand extends StatelessWidget {
             style: TextStyle(
               color: colors.textStrong,
               fontWeight: FontWeight.w900,
-              fontSize: compact ? 11 : 12,
-              letterSpacing: 1.6,
+              fontSize: compact ? 10 : 11,
+              letterSpacing: 1.4,
             ),
           ),
         ),
-        const SizedBox(width: 14),
+        const SizedBox(width: 12),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -367,16 +355,58 @@ class _Brand extends StatelessWidget {
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w900,
                 color: colors.textStrong,
+                fontSize: compact ? 17 : 19,
               ),
             ),
             if (!compact)
               Text(
                 'Единый клиент для backend и Processor',
-                style: TextStyle(color: colors.muted, fontSize: 13),
+                style: TextStyle(color: colors.muted, fontSize: 12),
               ),
           ],
         ),
       ],
+    );
+  }
+}
+
+class _UserChip extends StatelessWidget {
+  const _UserChip({required this.user, required this.onLogout});
+
+  final CurrentUser user;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.all(9),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                user.displayName,
+                style: TextStyle(
+                  color: colors.textStrong,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 4),
+              _RoleBadge(user: user),
+            ],
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton(onPressed: onLogout, child: const Text('Выйти')),
+        ],
+      ),
     );
   }
 }
@@ -406,15 +436,6 @@ class _NavChip extends StatelessWidget {
             : null,
         color: active ? null : colors.surfaceMuted,
         border: Border.all(color: active ? Colors.transparent : colors.border),
-        boxShadow: active
-            ? [
-                BoxShadow(
-                  color: colors.primaryAccent.withValues(alpha: 0.24),
-                  blurRadius: 24,
-                  offset: const Offset(0, 10),
-                ),
-              ]
-            : null,
       ),
       child: Material(
         color: Colors.transparent,
@@ -422,18 +443,14 @@ class _NavChip extends StatelessWidget {
           borderRadius: BorderRadius.circular(999),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  tab.label,
-                  style: TextStyle(
-                    color: active ? const Color(0xFF07111F) : colors.muted,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Text(
+              tab.label,
+              style: TextStyle(
+                color: active ? const Color(0xFF07111F) : colors.muted,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+              ),
             ),
           ),
         ),
@@ -452,7 +469,7 @@ class _MenuChip extends StatelessWidget {
     final colors = context.colors;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 160),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(999),
         gradient: active
@@ -468,6 +485,7 @@ class _MenuChip extends StatelessWidget {
         style: TextStyle(
           color: active ? const Color(0xFF07111F) : colors.muted,
           fontWeight: FontWeight.w800,
+          fontSize: 13,
         ),
       ),
     );
