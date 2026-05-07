@@ -154,7 +154,6 @@ class _DesktopShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
     final settings = context.watch<ThemeController>();
     final auth = context.watch<AuthController>();
     final user = auth.user;
@@ -172,57 +171,73 @@ class _DesktopShell extends StatelessWidget {
           child: Column(
             children: [
               GlassPanel(
-                padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: [
-                    const _Brand(),
-                    const SizedBox(width: 18),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            for (final tab in primaryTabs)
-                              Padding(
-                                padding: const EdgeInsets.only(right: 9),
-                                child: _NavChip(
-                                  tab: tab,
-                                  active: tab.route == selected.route,
-                                  onTap: () => onSelect(tab.route),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                child: SizedBox(
+                  height: 58,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final sideReserve = constraints.maxWidth < 1080
+                          ? 210.0
+                          : 310.0;
+                      return Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: _Brand(),
+                          ),
+                          Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: sideReserve,
+                            ),
+                            child: Align(
+                              alignment: Alignment.center,
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    for (final tab in primaryTabs)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 9,
+                                        ),
+                                        child: _NavChip(
+                                          tab: tab,
+                                          active: tab.route == selected.route,
+                                          onTap: () => onSelect(tab.route),
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (secondaryTabs.isNotEmpty) ...[
-                      const SizedBox(width: 8),
-                      PopupMenuButton<String>(
-                        tooltip: 'Меню',
-                        color: colors.surfaceElevated,
-                        surfaceTintColor: Colors.transparent,
-                        onSelected: onSelect,
-                        itemBuilder: (context) => [
-                          for (final tab in secondaryTabs)
-                            PopupMenuItem(
-                              value: tab.route,
-                              child: Row(
-                                children: [
-                                  Icon(tab.icon, size: 18, color: colors.muted),
-                                  const SizedBox(width: 10),
-                                  Text(tab.label),
-                                ],
-                              ),
                             ),
+                          ),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (secondaryTabs.isNotEmpty) ...[
+                                  _DesktopMenu(
+                                    tabs: secondaryTabs,
+                                    active: menuActive,
+                                    onSelect: onSelect,
+                                  ),
+                                  const SizedBox(width: 12),
+                                ],
+                                if (user != null)
+                                  _UserChip(user: user, onLogout: auth.logout),
+                              ],
+                            ),
+                          ),
                         ],
-                        child: _MenuChip(active: menuActive),
-                      ),
-                    ],
-                    const SizedBox(width: 16),
-                    if (user != null)
-                      _UserChip(user: user, onLogout: auth.logout),
-                  ],
+                      );
+                    },
+                  ),
                 ),
               ),
               const SizedBox(height: 20),
@@ -490,6 +505,212 @@ class _MenuChip extends StatelessWidget {
           color: active ? const Color(0xFF07111F) : colors.muted,
           fontWeight: FontWeight.w800,
           fontSize: 13,
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopMenu extends StatefulWidget {
+  const _DesktopMenu({
+    required this.tabs,
+    required this.active,
+    required this.onSelect,
+  });
+
+  final List<_ShellTab> tabs;
+  final bool active;
+  final ValueChanged<String> onSelect;
+
+  @override
+  State<_DesktopMenu> createState() => _DesktopMenuState();
+}
+
+class _DesktopMenuState extends State<_DesktopMenu>
+    with SingleTickerProviderStateMixin {
+  final _link = LayerLink();
+  OverlayEntry? _entry;
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 170),
+      reverseDuration: const Duration(milliseconds: 120),
+    );
+    final curve = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    _opacity = Tween<double>(begin: 0, end: 1).animate(curve);
+    _scale = Tween<double>(begin: 0.96, end: 1).animate(curve);
+  }
+
+  @override
+  void dispose() {
+    _entry?.remove();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    if (_entry == null) {
+      _open();
+    } else {
+      _close();
+    }
+  }
+
+  void _open() {
+    final overlay = Overlay.of(context);
+    _entry = OverlayEntry(
+      builder: (context) {
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _close,
+                child: const SizedBox.expand(),
+              ),
+            ),
+            CompositedTransformFollower(
+              link: _link,
+              showWhenUnlinked: false,
+              targetAnchor: Alignment.bottomRight,
+              followerAnchor: Alignment.topRight,
+              offset: const Offset(-8, 10),
+              child: Material(
+                color: Colors.transparent,
+                child: FadeTransition(
+                  opacity: _opacity,
+                  child: ScaleTransition(
+                    scale: _scale,
+                    alignment: Alignment.topRight,
+                    child: _DesktopMenuPanel(
+                      tabs: widget.tabs,
+                      onSelect: (route) {
+                        _close();
+                        widget.onSelect(route);
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    overlay.insert(_entry!);
+    _controller.forward(from: 0);
+    setState(() {});
+  }
+
+  Future<void> _close() async {
+    final entry = _entry;
+    if (entry == null) return;
+    await _controller.reverse();
+    entry.remove();
+    if (mounted && identical(_entry, entry)) {
+      setState(() => _entry = null);
+    } else if (identical(_entry, entry)) {
+      _entry = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CompositedTransformTarget(
+      link: _link,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _toggle,
+        child: _MenuChip(active: widget.active || _entry != null),
+      ),
+    );
+  }
+}
+
+class _DesktopMenuPanel extends StatelessWidget {
+  const _DesktopMenuPanel({required this.tabs, required this.onSelect});
+
+  final List<_ShellTab> tabs;
+  final ValueChanged<String> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: 246,
+      constraints: const BoxConstraints(maxHeight: 420),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: colors.surfaceElevated,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: colors.borderStrong),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.32),
+            blurRadius: 28,
+            offset: const Offset(0, 18),
+          ),
+        ],
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final tab in tabs)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: _DesktopMenuItem(tab: tab, onTap: onSelect),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopMenuItem extends StatelessWidget {
+  const _DesktopMenuItem({required this.tab, required this.onTap});
+
+  final _ShellTab tab;
+  final ValueChanged<String> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => onTap(tab.route),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          child: Row(
+            children: [
+              Icon(tab.icon, size: 18, color: colors.primaryAccent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  tab.label,
+                  style: TextStyle(
+                    color: colors.textStrong,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: colors.muted, size: 18),
+            ],
+          ),
         ),
       ),
     );
