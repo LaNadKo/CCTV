@@ -11,6 +11,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,9 @@ from processor.monitor import get_system_info
 
 
 def base_dir() -> Path:
+    runtime_dir = os.environ.get("PROCESSOR_RUNTIME_DIR", "").strip()
+    if runtime_dir:
+        return Path(runtime_dir)
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
@@ -72,6 +76,7 @@ def default_config() -> dict[str, Any]:
         "api_key": "",
         "processor_id": None,
         "processor_name": socket.gethostname(),
+        "processor_node_uid": uuid.uuid4().hex,
         "advertised_ip": "",
         "max_workers": 4,
         "processor_accel": "auto",
@@ -123,6 +128,7 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "API_KEY": ("api_key", "str"),
         "PROCESSOR_ID": ("processor_id", "int"),
         "PROCESSOR_NAME": ("processor_name", "str"),
+        "PROCESSOR_NODE_UID": ("processor_node_uid", "str"),
         "PROCESSOR_ADVERTISED_IP": ("advertised_ip", "str"),
         "MAX_WORKERS": ("max_workers", "int"),
         "PROCESSOR_ACCEL": ("processor_accel", "str"),
@@ -144,6 +150,8 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         merged[config_key] = _coerce_env_value(raw_value, kind)
     if not merged.get("media_token"):
         merged["media_token"] = secrets.token_urlsafe(24)
+    if not merged.get("processor_node_uid"):
+        merged["processor_node_uid"] = uuid.uuid4().hex
     return normalize_config(merged)
 
 
@@ -153,6 +161,7 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["API_KEY"] = str(config.get("api_key") or "")
     os.environ["PROCESSOR_ID"] = "" if config.get("processor_id") in (None, "") else str(config["processor_id"])
     os.environ["PROCESSOR_NAME"] = str(config.get("processor_name") or socket.gethostname())
+    os.environ["PROCESSOR_NODE_UID"] = str(config.get("processor_node_uid") or "")
     os.environ["PROCESSOR_ADVERTISED_IP"] = str(config.get("advertised_ip") or "")
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
     os.environ["PROCESSOR_ACCEL"] = str(config.get("processor_accel") or "auto")
@@ -183,6 +192,7 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
         {
             "code": code,
             "name": config.get("processor_name") or socket.gethostname(),
+            "node_uid": config.get("processor_node_uid"),
             "ip_address": advertised_ip,
             "hostname": system_info.get("hostname"),
             "os_info": system_info.get("os"),
@@ -221,6 +231,8 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
     connected["api_key"] = data["api_key"]
     connected["processor_id"] = data["processor_id"]
     connected["processor_name"] = data["name"]
+    if not connected.get("processor_node_uid"):
+        connected["processor_node_uid"] = uuid.uuid4().hex
     if advertised_ip:
         connected["advertised_ip"] = advertised_ip
     save_config(connected)
@@ -228,14 +240,60 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
 
 
 def ensure_connected(config: dict[str, Any]) -> dict[str, Any]:
-    if config.get("api_key"):
+    if config.get("api_key") and config.get("processor_id"):
         return config
     connect_code = os.environ.get("PROCESSOR_CONNECT_CODE", "").strip()
     if not connect_code:
-        raise RuntimeError(
-            "Processor is not configured. Set PROCESSOR_CONNECT_CODE or connect once through the GUI."
-        )
+        if config.get("api_key"):
+            return config
+        raise RuntimeError("Processor is not configured. Set PROCESSOR_CONNECT_CODE or connect once through the GUI.")
     return connect_with_code(config, connect_code)
+
+
+class RuntimeLock:
+    def __init__(self, name: str = "processor.lock") -> None:
+        self.path = base_dir() / name
+        self._handle = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(self.path, "a+", encoding="utf-8")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            raise RuntimeError("Another local Processor instance is already running for this runtime directory") from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+        self._handle = handle
+
+    def release(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+            self._handle = None
 
 
 def configure_headless_logging() -> None:
@@ -268,7 +326,9 @@ def configure_headless_logging() -> None:
 
 def run_headless() -> None:
     config = apply_env_overrides(load_config())
+    save_config(config)
     config = ensure_connected(config)
+    save_config(config)
     export_env(config)
     configure_headless_logging()
 

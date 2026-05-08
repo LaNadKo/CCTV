@@ -11,6 +11,7 @@ from processor.media_server import ProcessorMediaServer
 from processor.monitor import SystemMonitor, get_system_info
 from processor.networking import detect_advertised_ip
 from processor.paths import ensure_media_dirs
+from processor.runtime import RuntimeLock
 from cctv_ai.runtime_env import log_acceleration_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +26,7 @@ class ProcessorService:
         self._running = False
         self._prewarm_task: asyncio.Task | None = None
         self._monitor = SystemMonitor()
+        self._runtime_lock = RuntimeLock()
         self._system_info = get_system_info()
         self._acceleration_report = log_acceleration_report(logger, settings.processor_accel)
         self._system_info["acceleration"] = {
@@ -50,25 +52,39 @@ class ProcessorService:
         )
 
     async def start(self):
-        self._running = True
-        ensure_media_dirs()
-        self._media_server.start()
-        if settings.processor_id:
-            self.processor_id = settings.processor_id
-            logger.info("Using existing processor id=%d for %s", self.processor_id, settings.processor_name)
-        else:
-            result = await self.client.register(
-                settings.processor_name,
-                {
-                    "max_workers": settings.max_workers,
-                    "media_port": settings.media_port,
-                    "media_token": settings.media_token,
-                },
-            )
-            self.processor_id = result["processor_id"]
-            logger.info("Registered as processor %s (id=%d)", settings.processor_name, self.processor_id)
-        self._prewarm_task = asyncio.create_task(asyncio.to_thread(self._prewarm_models))
-        await asyncio.gather(self._heartbeat_loop(), self._assignment_loop())
+        self._runtime_lock.acquire()
+        try:
+            self._running = True
+            ensure_media_dirs()
+            self._media_server.start()
+            if settings.processor_id:
+                self.processor_id = settings.processor_id
+                logger.info("Using existing processor id=%d for %s", self.processor_id, settings.processor_name)
+            else:
+                result = await self.client.register(
+                    settings.processor_name,
+                    {
+                        **self._system_info,
+                        "max_workers": settings.max_workers,
+                        "media_port": settings.media_port,
+                        "media_token": settings.media_token,
+                    },
+                    node_uid=settings.processor_node_uid,
+                    hostname=self._system_info.get("hostname"),
+                    ip_address=self._advertised_ip,
+                    os_info=self._system_info.get("os"),
+                    version="1.0.0",
+                )
+                self.processor_id = result["processor_id"]
+                logger.info("Registered as processor %s (id=%d)", settings.processor_name, self.processor_id)
+            self._prewarm_task = asyncio.create_task(asyncio.to_thread(self._prewarm_models))
+            await asyncio.gather(self._heartbeat_loop(), self._assignment_loop())
+        except Exception:
+            self._running = False
+            self._media_server.stop()
+            await self.client.close()
+            self._runtime_lock.release()
+            raise
 
     async def stop(self):
         self._running = False
@@ -78,6 +94,7 @@ class ProcessorService:
             w.stop()
         self._media_server.stop()
         await self.client.close()
+        self._runtime_lock.release()
 
     def _prewarm_models(self) -> None:
         face_device = "unavailable"

@@ -14,8 +14,26 @@ class BackendClient:
         self.headers = {"X-Api-Key": key, "Content-Type": "application/json"}
         self._http = httpx.AsyncClient(timeout=30, headers=self.headers)
 
-    async def register(self, name: str, capabilities: dict | None = None) -> dict:
-        r = await self._http.post(f"{self.base}/processors/register", json={"name": name, "capabilities": capabilities or {}})
+    async def register(
+        self,
+        name: str,
+        capabilities: dict | None = None,
+        node_uid: str | None = None,
+        hostname: str | None = None,
+        ip_address: str | None = None,
+        os_info: str | None = None,
+        version: str | None = None,
+    ) -> dict:
+        payload = {
+            "name": name,
+            "node_uid": node_uid,
+            "hostname": hostname,
+            "ip_address": ip_address,
+            "os_info": os_info,
+            "version": version,
+            "capabilities": capabilities or {},
+        }
+        r = await self._http.post(f"{self.base}/processors/register", json=payload)
         r.raise_for_status()
         return r.json()
 

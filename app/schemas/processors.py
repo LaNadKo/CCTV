@@ -6,6 +6,11 @@ from pydantic import BaseModel
 
 class ProcessorRegister(BaseModel):
     name: str
+    node_uid: str | None = None
+    hostname: str | None = None
+    ip_address: str | None = None
+    os_info: str | None = None
+    version: str | None = None
     capabilities: dict | None = None
 
 
@@ -25,6 +30,7 @@ class GenerateCodeOut(BaseModel):
 class ProcessorConnect(BaseModel):
     code: str
     name: str
+    node_uid: str | None = None
     hostname: str | None = None
     ip_address: str | None = None
     os_info: str | None = None
@@ -157,6 +163,7 @@ class AssignedCameraInfo(BaseModel):
 class ProcessorOut(BaseModel):
     processor_id: int
     name: str
+    node_uid: str | None = None
     status: str
     last_heartbeat: datetime | None = None
     capabilities: dict | None = None

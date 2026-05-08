@@ -463,6 +463,7 @@ class Processor(Base):
 
     processor_id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150), nullable=False)
+    node_uid: Mapped[Optional[str]] = mapped_column(String(128))
     api_key_id: Mapped[Optional[int]] = mapped_column(ForeignKey("api_keys.api_key_id", ondelete="SET NULL"))
     hostname: Mapped[Optional[str]] = mapped_column(String(255))
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
@@ -550,6 +551,7 @@ class ApiKey(Base):
 # ── Additional Indexes ──
 
 Index("processors_status_idx", Processor.status)
+Index("processors_node_uid_idx", Processor.node_uid, unique=True)
 Index("processor_assignments_camera_idx", ProcessorCameraAssignment.camera_id)
 Index("camera_presets_camera_idx", CameraPreset.camera_id)
 Index("camera_roi_zones_camera_idx", CameraRoiZone.camera_id)
