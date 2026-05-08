@@ -97,5 +97,23 @@ class BackendClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_pending_commands(self, processor_id: int, limit: int = 10) -> list[dict]:
+        r = await self._http.get(f"{self.base}/processors/{processor_id}/commands/pending", params={"limit": limit})
+        r.raise_for_status()
+        return r.json()
+
+    async def complete_command(
+        self,
+        processor_id: int,
+        command_id: int,
+        status: str,
+        result: dict | str | None = None,
+        error_message: str | None = None,
+    ) -> dict:
+        payload = {"status": status, "result": result, "error_message": error_message}
+        r = await self._http.post(f"{self.base}/processors/{processor_id}/commands/{command_id}/result", json=payload)
+        r.raise_for_status()
+        return r.json()
+
     async def close(self):
         await self._http.aclose()

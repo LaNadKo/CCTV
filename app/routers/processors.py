@@ -26,6 +26,9 @@ from app.schemas.processors import (
     PresetInfo,
     GalleryEntry,
     GenerateCodeOut,
+    ProcessorCommandCreate,
+    ProcessorCommandOut,
+    ProcessorCommandResult,
     ProcessorConnect,
     ProcessorConnectOut,
     ProcessorEventIn,
@@ -47,6 +50,13 @@ _gallery_cache: list[GalleryEntry] | None = None
 _gallery_cache_ts = 0.0
 _GALLERY_CACHE_TTL = 30.0
 _PROCESSOR_STORAGE_NAME = "Processor Media"
+SUPPORTED_COMMANDS = {
+    "reload_assignments",
+    "restart_workers",
+    "stop_all_cameras",
+    "refresh_gallery",
+    "shutdown",
+}
 
 
 # ── Helper: resolve API key scopes ──
@@ -202,6 +212,31 @@ def _apply_processor_metadata(
     proc.last_heartbeat = datetime.utcnow()
     if capabilities is not None:
         proc.capabilities = json.dumps(capabilities)
+
+
+def _json_or_none(value: str | None):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
+def _command_to_out(command: models.ProcessorCommand) -> ProcessorCommandOut:
+    return ProcessorCommandOut(
+        command_id=command.command_id,
+        processor_id=command.processor_id,
+        command_type=command.command_type,
+        payload=_json_or_none(command.payload),
+        status=command.status,
+        result=_json_or_none(command.result),
+        error_message=command.error_message,
+        requested_by_user_id=command.requested_by_user_id,
+        created_at=command.created_at,
+        claimed_at=command.claimed_at,
+        completed_at=command.completed_at,
+    )
 
 
 # ── Connection code flow (universal: LAN + WAN) ──
@@ -625,6 +660,60 @@ async def get_storage_config(
     return StorageConfigOut(storage_type=st.storage_type, root_path=st.root_path, connection_config=config)
 
 
+@router.get("/{processor_id}/commands/pending", response_model=list[ProcessorCommandOut])
+async def claim_pending_commands(
+    processor_id: int,
+    limit: int = 10,
+    session: AsyncSession = Depends(get_session),
+    x_api_key: str = Header(...),
+):
+    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    safe_limit = max(1, min(limit, 25))
+    result = await session.execute(
+        select(models.ProcessorCommand)
+        .where(
+            models.ProcessorCommand.processor_id == processor_id,
+            models.ProcessorCommand.status == "pending",
+        )
+        .order_by(models.ProcessorCommand.created_at.asc(), models.ProcessorCommand.command_id.asc())
+        .limit(safe_limit)
+    )
+    commands = result.scalars().all()
+    now = datetime.utcnow()
+    for command in commands:
+        command.status = "running"
+        command.claimed_at = now
+    await session.commit()
+    for command in commands:
+        await session.refresh(command)
+    return [_command_to_out(command) for command in commands]
+
+
+@router.post("/{processor_id}/commands/{command_id}/result", response_model=ProcessorCommandOut)
+async def complete_processor_command(
+    processor_id: int,
+    command_id: int,
+    payload: ProcessorCommandResult,
+    session: AsyncSession = Depends(get_session),
+    x_api_key: str = Header(...),
+):
+    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:write")
+    if payload.status not in {"succeeded", "failed"}:
+        raise HTTPException(status_code=400, detail="Command result status must be succeeded or failed")
+    command = await session.get(models.ProcessorCommand, command_id)
+    if not command or command.processor_id != processor_id:
+        raise HTTPException(status_code=404, detail="Command not found")
+    if command.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Command is cancelled")
+    command.status = payload.status
+    command.result = json.dumps(payload.result) if isinstance(payload.result, (dict, list)) else payload.result
+    command.error_message = payload.error_message
+    command.completed_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(command)
+    return _command_to_out(command)
+
+
 # ── JWT admin endpoints ──
 
 @router.get("", response_model=list[ProcessorOut])
@@ -668,6 +757,29 @@ async def list_processors(
             )
         )
         assigned = [AssignedCameraInfo(camera_id=cam.camera_id, name=cam.name) for _, cam in cam_result.all()]
+        pending_result = await session.execute(
+            select(func.count())
+            .select_from(models.ProcessorCommand)
+            .where(
+                models.ProcessorCommand.processor_id == p.processor_id,
+                models.ProcessorCommand.status == "pending",
+            )
+        )
+        running_result = await session.execute(
+            select(func.count())
+            .select_from(models.ProcessorCommand)
+            .where(
+                models.ProcessorCommand.processor_id == p.processor_id,
+                models.ProcessorCommand.status == "running",
+            )
+        )
+        last_command_result = await session.execute(
+            select(models.ProcessorCommand)
+            .where(models.ProcessorCommand.processor_id == p.processor_id)
+            .order_by(models.ProcessorCommand.created_at.desc(), models.ProcessorCommand.command_id.desc())
+            .limit(1)
+        )
+        last_command = last_command_result.scalar_one_or_none()
         out.append(ProcessorOut(
             processor_id=p.processor_id,
             name=p.name,
@@ -682,8 +794,79 @@ async def list_processors(
             created_at=p.created_at,
             camera_count=cnt,
             assigned_cameras=assigned,
+            pending_commands=pending_result.scalar() or 0,
+            running_commands=running_result.scalar() or 0,
+            last_command=_command_to_out(last_command) if last_command else None,
         ))
     return out
+
+
+@router.get("/{processor_id}/commands", response_model=list[ProcessorCommandOut])
+async def list_processor_commands(
+    processor_id: int,
+    limit: int = 30,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_admin(current_user)
+    proc = await session.get(models.Processor, processor_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Processor not found")
+    safe_limit = max(1, min(limit, 100))
+    result = await session.execute(
+        select(models.ProcessorCommand)
+        .where(models.ProcessorCommand.processor_id == processor_id)
+        .order_by(models.ProcessorCommand.created_at.desc(), models.ProcessorCommand.command_id.desc())
+        .limit(safe_limit)
+    )
+    return [_command_to_out(command) for command in result.scalars().all()]
+
+
+@router.post("/{processor_id}/commands", response_model=ProcessorCommandOut, status_code=status.HTTP_201_CREATED)
+async def create_processor_command(
+    processor_id: int,
+    payload: ProcessorCommandCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_admin(current_user)
+    proc = await session.get(models.Processor, processor_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Processor not found")
+    command_type = payload.command_type.strip()
+    if command_type not in SUPPORTED_COMMANDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported command: {command_type}")
+    command = models.ProcessorCommand(
+        processor_id=processor_id,
+        command_type=command_type,
+        payload=json.dumps(payload.payload or {}),
+        status="pending",
+        requested_by_user_id=current_user.user_id,
+    )
+    session.add(command)
+    await session.commit()
+    await session.refresh(command)
+    return _command_to_out(command)
+
+
+@router.post("/{processor_id}/commands/{command_id}/cancel", response_model=ProcessorCommandOut)
+async def cancel_processor_command(
+    processor_id: int,
+    command_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_admin(current_user)
+    command = await session.get(models.ProcessorCommand, command_id)
+    if not command or command.processor_id != processor_id:
+        raise HTTPException(status_code=404, detail="Command not found")
+    if command.status not in {"pending", "running"}:
+        return _command_to_out(command)
+    command.status = "cancelled"
+    command.completed_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(command)
+    return _command_to_out(command)
 
 
 @router.post("/{processor_id}/assign", status_code=status.HTTP_200_OK)

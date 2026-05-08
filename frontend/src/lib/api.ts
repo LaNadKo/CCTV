@@ -672,6 +672,7 @@ export type SystemMetrics = {
 export type ProcessorOut = {
   processor_id: number;
   name: string;
+  node_uid?: string | null;
   status: string;
   last_heartbeat?: string | null;
   capabilities?: Record<string, unknown> | null;
@@ -682,6 +683,23 @@ export type ProcessorOut = {
   created_at: string;
   camera_count: number;
   assigned_cameras: AssignedCameraInfo[];
+  pending_commands: number;
+  running_commands: number;
+  last_command?: ProcessorCommandOut | null;
+};
+
+export type ProcessorCommandOut = {
+  command_id: number;
+  processor_id: number;
+  command_type: string;
+  payload?: Record<string, unknown> | null;
+  status: string;
+  result?: Record<string, unknown> | string | null;
+  error_message?: string | null;
+  requested_by_user_id?: number | null;
+  created_at: string;
+  claimed_at?: string | null;
+  completed_at?: string | null;
 };
 
 export async function listProcessors(token: string) {
@@ -702,6 +720,18 @@ export async function unassignCameraFromProcessor(token: string, processorId: nu
 
 export async function deleteProcessor(token: string, processorId: number) {
   return request(`/processors/${processorId}`, "DELETE", token);
+}
+
+export async function listProcessorCommands(token: string, processorId: number, limit = 30) {
+  return request<ProcessorCommandOut[]>(`/processors/${processorId}/commands?limit=${limit}`, "GET", token);
+}
+
+export async function createProcessorCommand(token: string, processorId: number, command_type: string, payload?: Record<string, unknown>) {
+  return request<ProcessorCommandOut>(`/processors/${processorId}/commands`, "POST", token, { command_type, payload: payload || {} });
+}
+
+export async function cancelProcessorCommand(token: string, processorId: number, commandId: number) {
+  return request<ProcessorCommandOut>(`/processors/${processorId}/commands/${commandId}/cancel`, "POST", token);
 }
 
 // ── Reports ──
