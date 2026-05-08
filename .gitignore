@@ -32,6 +32,8 @@ recordings/
 recordings_cache/
 snapshots/
 calibration_datasets/
+!native/cctv_console/lib/src/features/recordings/
+!native/cctv_console/lib/src/features/recordings/**
 *.db
 docs/
 schem/

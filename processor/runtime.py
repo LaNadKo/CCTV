@@ -53,6 +53,13 @@ def _frame_divisor_to_interval(divisor: int) -> float:
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(config)
+    try:
+        normalized["recording_segment_seconds"] = min(
+            60,
+            max(10, int(normalized.get("recording_segment_seconds", 60))),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_segment_seconds"] = 60
     divisor = normalized.get("face_scan_divisor")
     if divisor in (None, ""):
         legacy_interval = normalized.get("face_scan_interval", 0.35)
@@ -86,7 +93,7 @@ def default_config() -> dict[str, Any]:
         "face_scan_interval": 0.35,
         "theme_primary_color": "#49C8E8",
         "theme_secondary_color": "#4C6FFF",
-        "recording_segment_seconds": 300,
+        "recording_segment_seconds": 60,
         "recordings_dir": str(base_dir() / "media" / "recordings"),
         "snapshots_dir": str(base_dir() / "media" / "snapshots"),
         "media_port": 8777,
@@ -169,7 +176,7 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
     os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))
     os.environ["FACE_SCAN_INTERVAL"] = str(normalized.get("face_scan_interval", 0.35))
-    os.environ["RECORDING_SEGMENT_SECONDS"] = str(config.get("recording_segment_seconds", 300))
+    os.environ["RECORDING_SEGMENT_SECONDS"] = str(normalized.get("recording_segment_seconds", 60))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))
     os.environ["MEDIA_PORT"] = str(config.get("media_port", 8777))

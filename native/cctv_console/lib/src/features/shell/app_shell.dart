@@ -10,6 +10,7 @@ import '../auth/auth_controller.dart';
 import '../help/help_screen.dart';
 import '../live/live_screen.dart';
 import '../modules/module_screens.dart';
+import '../recordings/recordings_screen.dart';
 import '../settings/settings_screen.dart';
 
 class AppShell extends StatefulWidget {
@@ -65,7 +66,7 @@ class _AppShellState extends State<AppShell> {
         route: '/recordings',
         label: 'Записи',
         icon: Icons.video_library_rounded,
-        builder: (_) => const RecordingsScreen(),
+        builder: (_) => const ArchiveRecordingsScreen(),
       ),
       if (canReview)
         _ShellTab(

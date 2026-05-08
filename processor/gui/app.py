@@ -657,7 +657,7 @@ class ProcessorApp(ctk.CTk):
         perf_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         self.max_workers_entry = self._create_settings_entry(perf_body, "max_workers", "Макс. камер (workers)", str(self.config_data.get("max_workers", 4)))
         self.motion_threshold_entry = self._create_settings_entry(perf_body, "motion_threshold", "Порог движения", str(self.config_data.get("motion_threshold", 25.0)))
-        self.recording_segment_entry = self._create_settings_entry(perf_body, "recording_segment_seconds", "Длина сегмента записи (сек)", str(self.config_data.get("recording_segment_seconds", 300)))
+        self.recording_segment_entry = self._create_settings_entry(perf_body, "recording_segment_seconds", "Длина сегмента записи (сек, максимум 60)", str(self.config_data.get("recording_segment_seconds", 60)))
 
         ctk.CTkLabel(perf_body, text="Быстрые пресеты", text_color=_THEME["muted"], anchor="w", font=ctk.CTkFont(size=13, weight="bold")).pack(fill="x", pady=(2, 8))
         presets_row = ctk.CTkFrame(perf_body, fg_color="transparent")
@@ -984,7 +984,7 @@ class ProcessorApp(ctk.CTk):
             previous_secondary = _normalize_hex_color(self.config_data.get("theme_secondary_color"), _DEFAULT_THEME_SECONDARY)
             self.config_data["max_workers"] = max(1, int(self.max_workers_entry.get().strip() or "1"))
             self.config_data["motion_threshold"] = float(self.motion_threshold_entry.get().strip() or "25.0")
-            self.config_data["recording_segment_seconds"] = max(30, int(self.recording_segment_entry.get().strip() or "300"))
+            self.config_data["recording_segment_seconds"] = min(60, max(10, int(self.recording_segment_entry.get().strip() or "60")))
             self.config_data["recordings_dir"] = self.recordings_dir_entry.get().strip() or str(_base_dir() / "media" / "recordings")
             self.config_data["snapshots_dir"] = self.snapshots_dir_entry.get().strip() or str(_base_dir() / "media" / "snapshots")
             self.config_data["face_scan_divisor"] = _LABEL_TO_DIVISOR.get(self.face_scan_divisor_var.get(), 8)
@@ -1215,7 +1215,7 @@ class ProcessorApp(ctk.CTk):
 
         _replace(self.max_workers_entry, self.config_data.get("max_workers", 4))
         _replace(self.motion_threshold_entry, self.config_data.get("motion_threshold", 25.0))
-        _replace(self.recording_segment_entry, self.config_data.get("recording_segment_seconds", 300))
+        _replace(self.recording_segment_entry, self.config_data.get("recording_segment_seconds", 60))
         _replace(self.recordings_dir_entry, self.config_data.get("recordings_dir", _base_dir() / "media" / "recordings"))
         _replace(self.snapshots_dir_entry, self.config_data.get("snapshots_dir", _base_dir() / "media" / "snapshots"))
         self._set_theme_entry(

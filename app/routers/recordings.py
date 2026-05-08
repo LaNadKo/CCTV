@@ -128,7 +128,7 @@ async def list_recordings(
     camera_id: Optional[int] = Query(default=None),
     date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
     date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=300, ge=1, le=2000),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[RecordingOut]:
