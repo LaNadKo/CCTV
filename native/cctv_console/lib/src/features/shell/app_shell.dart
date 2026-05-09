@@ -7,10 +7,12 @@ import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
+import '../cameras/cameras_screen.dart';
 import '../help/help_screen.dart';
 import '../live/live_screen.dart';
 import '../modules/module_screens.dart';
 import '../recordings/recordings_screen.dart';
+import '../reports/reports_screen.dart';
 import '../settings/settings_screen.dart';
 
 class AppShell extends StatefulWidget {
@@ -80,14 +82,14 @@ class _AppShellState extends State<AppShell> {
           route: '/reports',
           label: 'Отчёты',
           icon: Icons.analytics_rounded,
-          builder: (_) => const ReportsScreen(),
+          builder: (_) => const ReportsDashboardScreen(),
         ),
       if (isAdmin)
         _ShellTab(
           route: '/cameras',
           label: 'Камеры',
           icon: Icons.videocam_rounded,
-          builder: (_) => const CamerasScreen(),
+          builder: (_) => const CameraManagementScreen(),
         ),
       if (isAdmin)
         _ShellTab(

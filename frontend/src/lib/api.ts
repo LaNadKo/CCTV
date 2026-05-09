@@ -120,7 +120,6 @@ export type CurrentUser = {
   first_name: string | null;
   last_name: string | null;
   middle_name: string | null;
-  face_login_enabled: boolean;
   must_change_password: boolean;
   totp_enabled: boolean;
 };
@@ -569,7 +568,7 @@ export async function enrollPersonFromPhoto(
   if (first_name) form.append("first_name", first_name);
   if (last_name) form.append("last_name", last_name);
   if (middle_name) form.append("middle_name", middle_name);
-  const res = await fetch(`${API_URL}/auth/face/enroll-person-photo`, {
+  const res = await fetch(`${API_URL}/persons/face/enroll-person-photo`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
@@ -611,7 +610,7 @@ export async function enrollPersonFromRecording(
   if (payload.first_name) form.append("first_name", payload.first_name);
   if (payload.last_name) form.append("last_name", payload.last_name);
   if (payload.middle_name) form.append("middle_name", payload.middle_name);
-  const res = await fetch(`${API_URL}/auth/face/enroll-from-recording`, {
+  const res = await fetch(`${API_URL}/persons/face/enroll-from-recording`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
@@ -632,7 +631,7 @@ export async function enrollPersonFromSnapshot(
   if (payload.first_name) form.append("first_name", payload.first_name);
   if (payload.last_name) form.append("last_name", payload.last_name);
   if (payload.middle_name) form.append("middle_name", payload.middle_name);
-  const res = await fetch(`${API_URL}/auth/face/enroll-from-snapshot`, {
+  const res = await fetch(`${API_URL}/persons/face/enroll-from-snapshot`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
@@ -1007,7 +1006,6 @@ export type UserOut = {
   first_name: string | null;
   last_name: string | null;
   middle_name: string | null;
-  face_login_enabled: boolean;
   must_change_password: boolean;
 };
 

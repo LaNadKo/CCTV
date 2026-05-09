@@ -1,23 +1,18 @@
-from typing import List
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
-from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user
 from app.permissions import check_permission, is_at_least_user, user_camera_permission
-from app.rate_limit import check_rate_limit
-from app.schemas.face import FaceEmbedding, FaceEnrollResponse, FaceLoginRequest, FaceLoginResponse
-from app.security import create_access_token, create_media_token, decrypt_secret, verify_totp
 from app.vision import extract_best_face_embedding as _extract_best_face_embedding
 
-router = APIRouter(prefix="/auth/face", tags=["auth-face"])
+router = APIRouter(prefix="/persons/face", tags=["persons-face"])
 
 
 def _read_image_file(path: Path) -> np.ndarray | None:
@@ -29,21 +24,6 @@ def _read_image_file(path: Path) -> np.ndarray | None:
     if arr.size == 0:
         return None
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-
-def _normalize(vec: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(vec)
-    if norm == 0:
-        return vec
-    return vec / norm
-
-
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b))
-
-
-def _l2_distance(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.linalg.norm(a - b))
 
 
 async def _create_person_with_embedding(
@@ -68,35 +48,6 @@ async def _create_person_with_embedding(
         )
     )
     return person
-
-
-@router.post("/enroll", response_model=FaceEnrollResponse)
-async def enroll_face(
-    payload: FaceEmbedding,
-    current_user: models.User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> FaceEnrollResponse:
-    vec = np.array(payload.embedding, dtype=np.float32)
-    if payload.distance_metric == "cosine":
-        vec = _normalize(vec)
-
-    tpl = models.UserFaceTemplate(
-        user_id=current_user.user_id,
-        embedding=vec.tobytes(),
-        model=payload.model,
-        distance_metric=payload.distance_metric or "cosine",
-        threshold=payload.threshold,
-        quality_score=payload.quality_score,
-    )
-    session.add(tpl)
-    current_user.face_login_enabled = True
-    await session.commit()
-
-    count_res = await session.execute(
-        select(models.UserFaceTemplate).where(models.UserFaceTemplate.user_id == current_user.user_id)
-    )
-    templates_count = len(count_res.scalars().all())
-    return FaceEnrollResponse(templates_count=templates_count, face_login_enabled=True)
 
 
 @router.post("/enroll-person-photo")
@@ -227,65 +178,3 @@ async def enroll_person_from_snapshot(
     return {"person_id": person.person_id, "from_event": event_id, "embedding_len": len(emb)}
 
 
-@router.post("/login", response_model=FaceLoginResponse)
-async def face_login(
-    payload: FaceLoginRequest,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> FaceLoginResponse:
-    check_rate_limit(
-        request,
-        "auth-face-login",
-        attempts=settings.auth_rate_limit_attempts,
-        window_seconds=settings.auth_rate_limit_window_seconds,
-        detail="Too many face login attempts",
-    )
-    probe = _normalize(np.array(payload.embedding, dtype=np.float32))
-
-    result = await session.execute(select(models.UserFaceTemplate))
-    templates: List[models.UserFaceTemplate] = result.scalars().all()
-    if not templates:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No enrolled faces")
-
-    best_score = None
-    best_tpl: models.UserFaceTemplate | None = None
-    for tpl in templates:
-        stored = np.frombuffer(tpl.embedding, dtype=np.float32)
-        if tpl.distance_metric == "cosine":
-            stored = _normalize(stored)
-            score = _cosine_similarity(probe, stored)
-            threshold = tpl.threshold if tpl.threshold is not None else 0.4
-            ok = score >= threshold
-            cmp_score = score
-        else:
-            score = _l2_distance(probe, stored)
-            threshold = tpl.threshold if tpl.threshold is not None else 1.0
-            ok = score <= threshold
-            cmp_score = -score
-        if ok and (best_score is None or cmp_score > best_score):
-            best_score = cmp_score
-            best_tpl = tpl
-
-    if best_tpl is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Face not recognized")
-
-    user = await session.get(models.User, best_tpl.user_id)
-    if user is None or not user.face_login_enabled:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Face login disabled for user")
-
-    totp_method = await session.execute(
-        select(models.UserMfaMethod).where(
-            models.UserMfaMethod.user_id == user.user_id,
-            models.UserMfaMethod.mfa_type == "totp",
-            models.UserMfaMethod.is_enabled.is_(True),
-        )
-    )
-    totp = totp_method.scalar_one_or_none()
-    if totp:
-        if not payload.totp_code:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP code required")
-        if not verify_totp(payload.totp_code, decrypt_secret(totp.secret)):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
-
-    token = create_access_token({"sub": str(user.user_id)})
-    return FaceLoginResponse(access_token=token, media_access_token=create_media_token(user.user_id), user_id=user.user_id)

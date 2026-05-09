@@ -671,7 +671,6 @@ class UsersScreen extends StatelessWidget {
         ModuleColumn('Роль', ['role_id'], width: 90, formatter: roleName),
         ModuleColumn('Фамилия', ['last_name'], width: 140),
         ModuleColumn('Имя', ['first_name'], width: 140),
-        ModuleColumn('Face login', ['face_login_enabled'], width: 110),
         ModuleColumn('Смена пароля', ['must_change_password'], width: 125),
       ],
       commands: [

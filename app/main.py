@@ -16,7 +16,7 @@ from app.routers import processors as processors_router
 from app.routers import persons as persons_router
 from app.routers import reports as reports_router
 
-# face router requires torch/facenet — import conditionally
+# Person face-enrollment router requires torch/facenet, so keep import optional.
 try:
     from app.routers import face as face_router
     _has_face = True

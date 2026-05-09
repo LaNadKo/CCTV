@@ -75,7 +75,6 @@ def _user_out(user: models.User, *, totp_enabled: bool) -> UserOut:
         first_name=user.first_name,
         last_name=user.last_name,
         middle_name=user.middle_name,
-        face_login_enabled=user.face_login_enabled,
         must_change_password=user.must_change_password,
         totp_enabled=totp_enabled,
     )

@@ -46,7 +46,7 @@ export async function loginApi(login: string, password: string, totp_code?: stri
   );
 }
 export async function meApi(token: string) {
-  return request<{ user_id: number; login: string; role_id: number; face_login_enabled: boolean; must_change_password: boolean }>(
+  return request<{ user_id: number; login: string; role_id: number; must_change_password: boolean }>(
     "/auth/me", "GET", token,
   );
 }
@@ -247,5 +247,5 @@ export type AppearanceReport = {
 };
 export type UserOut = {
   user_id: number; login: string; role_id: number;
-  face_login_enabled: boolean; must_change_password: boolean;
+  must_change_password: boolean;
 };

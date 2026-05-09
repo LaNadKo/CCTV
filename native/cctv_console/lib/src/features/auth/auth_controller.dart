@@ -84,6 +84,29 @@ class AuthController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> reloadUser() async {
+    final token = _accessToken;
+    if (token == null) return;
+    _user = await apiClient.me(token);
+    notifyListeners();
+  }
+
+  Future<void> updateProfile({
+    String? firstName,
+    String? lastName,
+    String? middleName,
+  }) async {
+    final token = _accessToken;
+    if (token == null) return;
+    _user = await apiClient.updateProfile(
+      token,
+      firstName: firstName,
+      lastName: lastName,
+      middleName: middleName,
+    );
+    notifyListeners();
+  }
+
   Future<void> logout({bool notify = true}) async {
     _accessToken = null;
     _mediaToken = null;
