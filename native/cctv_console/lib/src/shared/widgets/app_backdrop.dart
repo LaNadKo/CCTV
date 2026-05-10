@@ -10,6 +10,7 @@ class AppBackdrop extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
       decoration: TextDecoration.none,
       decorationColor: Colors.transparent,
@@ -22,15 +23,25 @@ class AppBackdrop extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: colors.bg,
-            gradient: RadialGradient(
-              center: const Alignment(-0.85, -0.78),
-              radius: 1.1,
-              colors: [
-                colors.primaryAccent.withValues(alpha: 0.18),
-                colors.bg.withValues(alpha: 0),
-              ],
-              stops: const [0, 1],
-            ),
+            gradient: isDark
+                ? RadialGradient(
+                    center: const Alignment(-0.85, -0.78),
+                    radius: 1.1,
+                    colors: [
+                      colors.primaryAccent.withValues(alpha: 0.18),
+                      colors.bg.withValues(alpha: 0),
+                    ],
+                    stops: const [0, 1],
+                  )
+                : const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xFFF8FBFF),
+                      Color(0xFFEAF3FF),
+                      Color(0xFFF4F8EF),
+                    ],
+                  ),
           ),
           child: Stack(
             children: [
@@ -41,7 +52,9 @@ class AppBackdrop extends StatelessWidget {
                       center: const Alignment(0.95, -0.9),
                       radius: 1.0,
                       colors: [
-                        colors.secondaryAccent.withValues(alpha: 0.14),
+                        colors.secondaryAccent.withValues(
+                          alpha: isDark ? 0.14 : 0.12,
+                        ),
                         colors.bg.withValues(alpha: 0),
                       ],
                     ),

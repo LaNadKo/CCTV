@@ -11,6 +11,8 @@ import '../cameras/cameras_screen.dart';
 import '../help/help_screen.dart';
 import '../live/live_screen.dart';
 import '../modules/module_screens.dart';
+import '../persons/persons_screen.dart';
+import '../profile/profile_screen.dart';
 import '../recordings/recordings_screen.dart';
 import '../reports/reports_screen.dart';
 import '../settings/settings_screen.dart';
@@ -103,7 +105,7 @@ class _AppShellState extends State<AppShell> {
           route: '/persons',
           label: 'Персоны',
           icon: Icons.badge_rounded,
-          builder: (_) => const PersonsScreen(),
+          builder: (_) => const PersonsManagementScreen(),
         ),
       if (isAdmin)
         _ShellTab(
@@ -126,6 +128,12 @@ class _AppShellState extends State<AppShell> {
           icon: Icons.vpn_key_rounded,
           builder: (_) => const ApiKeysScreen(),
         ),
+      _ShellTab(
+        route: '/profile',
+        label: 'Профиль',
+        icon: Icons.person_rounded,
+        builder: (_) => const ProfileScreen(),
+      ),
       _ShellTab(
         route: '/settings',
         label: 'Настройки',
@@ -224,6 +232,8 @@ class _DesktopShell extends StatelessWidget {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                const _ThemeToggleButton(),
+                                const SizedBox(width: 8),
                                 if (secondaryTabs.isNotEmpty) ...[
                                   _DesktopMenu(
                                     tabs: secondaryTabs,
@@ -290,6 +300,8 @@ class _MobileShell extends StatelessWidget {
                 children: [
                   const _Brand(compact: true),
                   const Spacer(),
+                  const _ThemeToggleButton(compact: true),
+                  const SizedBox(width: 8),
                   PopupMenuButton<String>(
                     tooltip: 'Меню',
                     color: colors.surfaceElevated,
@@ -585,9 +597,9 @@ class _DesktopMenuState extends State<_DesktopMenu>
             CompositedTransformFollower(
               link: _link,
               showWhenUnlinked: false,
-              targetAnchor: Alignment.bottomRight,
+              targetAnchor: Alignment.bottomLeft,
               followerAnchor: Alignment.topRight,
-              offset: const Offset(-8, 10),
+              offset: const Offset(-10, 10),
               child: Material(
                 color: Colors.transparent,
                 child: FadeTransition(
@@ -635,6 +647,42 @@ class _DesktopMenuState extends State<_DesktopMenu>
         behavior: HitTestBehavior.opaque,
         onTap: _toggle,
         child: _MenuChip(active: widget.active || _entry != null),
+      ),
+    );
+  }
+}
+
+class _ThemeToggleButton extends StatelessWidget {
+  const _ThemeToggleButton({this.compact = false});
+
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final settings = context.watch<ThemeController>();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final nextMode = isDark ? CctvThemeMode.light : CctvThemeMode.dark;
+    return Tooltip(
+      message: isDark ? 'Включить светлую тему' : 'Включить тёмную тему',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: () => settings.setThemeMode(nextMode),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: compact ? 40 : 42,
+          height: compact ? 40 : 42,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: colors.surfaceMuted,
+            border: Border.all(color: colors.border),
+          ),
+          child: Icon(
+            isDark ? Icons.dark_mode_rounded : Icons.wb_sunny_rounded,
+            color: isDark ? colors.secondaryAccent : colors.warning,
+            size: compact ? 19 : 20,
+          ),
+        ),
       ),
     );
   }

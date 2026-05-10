@@ -6,7 +6,6 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
-import 'profile_security_panel.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -61,8 +60,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         SliverList.list(
           children: [
-            const ProfileSecurityPanel(),
-            const SizedBox(height: 14),
             GlassPanel(
               padding: const EdgeInsets.all(18),
               child: Column(
@@ -181,7 +178,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const _SectionTitle(
                     title: 'Live',
-                    subtitle: 'Плотность сетки камер на экране Live.',
+                    subtitle:
+                        'Плотность и сетка камер. Порядок карточек меняется на вкладке Live перетаскиванием.',
                   ),
                   const SizedBox(height: 14),
                   Wrap(
@@ -205,6 +203,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         label: 'Фокус',
                         selected: settings.liveDensity == LiveDensity.focus,
                         onTap: () => settings.setLiveDensity(LiveDensity.focus),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      _ChoiceChipButton(
+                        label: 'Сетка авто',
+                        selected: settings.liveGridColumns == 0,
+                        onTap: () => settings.setLiveGridColumns(0),
+                      ),
+                      _ChoiceChipButton(
+                        label: '1 x 1',
+                        selected: settings.liveGridColumns == 1,
+                        onTap: () => settings.setLiveGridColumns(1),
+                      ),
+                      _ChoiceChipButton(
+                        label: '2 x 2',
+                        selected: settings.liveGridColumns == 2,
+                        onTap: () => settings.setLiveGridColumns(2),
+                      ),
+                      _ChoiceChipButton(
+                        label: '3 x 3',
+                        selected: settings.liveGridColumns == 3,
+                        onTap: () => settings.setLiveGridColumns(3),
                       ),
                     ],
                   ),
@@ -233,6 +258,7 @@ class _NavigationSettings extends StatelessWidget {
     _NavOption('/processors', 'Processor', adminOnly: true),
     _NavOption('/users', 'Пользователи', adminOnly: true),
     _NavOption('/api-keys', 'API ключи', adminOnly: true),
+    _NavOption('/profile', 'Профиль'),
     _NavOption('/settings', 'Настройки'),
     _NavOption('/help', 'Справка'),
   ];

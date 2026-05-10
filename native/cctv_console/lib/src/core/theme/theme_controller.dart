@@ -19,6 +19,8 @@ class ThemeController extends ChangeNotifier {
   static const _primaryAccentKey = 'cctv.primary_accent';
   static const _secondaryAccentKey = 'cctv.secondary_accent';
   static const _liveDensityKey = 'cctv.live_density';
+  static const _liveGridColumnsKey = 'cctv.live_grid_columns';
+  static const _liveCameraOrderKey = 'cctv.live_camera_order';
   static const _primaryNavKey = 'cctv.primary_nav';
 
   String _apiBaseUrl = 'http://127.0.0.1:8001';
@@ -26,6 +28,8 @@ class ThemeController extends ChangeNotifier {
   Color _primaryAccent = const Color(0xFF5EF0FF);
   Color _secondaryAccent = const Color(0xFF6F7BFF);
   LiveDensity _liveDensity = LiveDensity.comfortable;
+  int _liveGridColumns = 0;
+  List<int> _liveCameraOrder = const [];
   List<String> _primaryNav = List<String>.from(defaultPrimaryNav);
 
   String get apiBaseUrl => _apiBaseUrl;
@@ -33,6 +37,8 @@ class ThemeController extends ChangeNotifier {
   Color get primaryAccent => _primaryAccent;
   Color get secondaryAccent => _secondaryAccent;
   LiveDensity get liveDensity => _liveDensity;
+  int get liveGridColumns => _liveGridColumns;
+  List<int> get liveCameraOrder => List.unmodifiable(_liveCameraOrder);
   List<String> get primaryNav => List.unmodifiable(_primaryNav);
 
   ThemeMode get materialThemeMode {
@@ -59,6 +65,10 @@ class ThemeController extends ChangeNotifier {
       _secondaryAccent,
     );
     _liveDensity = _parseLiveDensity(prefs.getString(_liveDensityKey));
+    _liveGridColumns = _parseLiveGridColumns(prefs.getInt(_liveGridColumnsKey));
+    _liveCameraOrder = _parseCameraOrder(
+      prefs.getStringList(_liveCameraOrderKey),
+    );
     _primaryNav = _normalizePrimaryNav(
       prefs.getStringList(_primaryNavKey) ?? _primaryNav,
     );
@@ -104,6 +114,30 @@ class ThemeController extends ChangeNotifier {
     await prefs.setString(_liveDensityKey, value.name);
   }
 
+  Future<void> setLiveGridColumns(int value) async {
+    final normalized = _parseLiveGridColumns(value);
+    if (normalized == _liveGridColumns) return;
+    _liveGridColumns = normalized;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_liveGridColumnsKey, normalized);
+  }
+
+  Future<void> setLiveCameraOrder(List<int> cameraIds) async {
+    final unique = <int>[];
+    for (final id in cameraIds) {
+      if (id > 0 && !unique.contains(id)) unique.add(id);
+    }
+    if (_listEqualsInt(unique, _liveCameraOrder)) return;
+    _liveCameraOrder = unique;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _liveCameraOrderKey,
+      unique.map((id) => '$id').toList(),
+    );
+  }
+
   Future<void> setPrimaryNav(List<String> routes) async {
     final normalized = _normalizePrimaryNav(routes);
     if (_listEquals(normalized, _primaryNav)) return;
@@ -125,6 +159,8 @@ class ThemeController extends ChangeNotifier {
     _primaryAccent = const Color(0xFF5EF0FF);
     _secondaryAccent = const Color(0xFF6F7BFF);
     _liveDensity = LiveDensity.comfortable;
+    _liveGridColumns = 0;
+    _liveCameraOrder = const [];
     _primaryNav = List<String>.from(defaultPrimaryNav);
     notifyListeners();
 
@@ -133,6 +169,8 @@ class ThemeController extends ChangeNotifier {
     await prefs.remove(_primaryAccentKey);
     await prefs.remove(_secondaryAccentKey);
     await prefs.remove(_liveDensityKey);
+    await prefs.remove(_liveGridColumnsKey);
+    await prefs.remove(_liveCameraOrderKey);
     await prefs.remove(_primaryNavKey);
   }
 
@@ -153,6 +191,21 @@ class ThemeController extends ChangeNotifier {
       (density) => density.name == value,
       orElse: () => LiveDensity.comfortable,
     );
+  }
+
+  static int _parseLiveGridColumns(int? value) {
+    if (value == null) return 0;
+    return const [0, 1, 2, 3].contains(value) ? value : 0;
+  }
+
+  static List<int> _parseCameraOrder(List<String>? values) {
+    if (values == null) return const [];
+    final result = <int>[];
+    for (final value in values) {
+      final id = int.tryParse(value);
+      if (id != null && id > 0 && !result.contains(id)) result.add(id);
+    }
+    return result;
   }
 
   static Color _parseColor(String? value, Color fallback) {
@@ -180,6 +233,14 @@ class ThemeController extends ChangeNotifier {
   }
 
   static bool _listEquals(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
+  static bool _listEqualsInt(List<int> left, List<int> right) {
     if (left.length != right.length) return false;
     for (var index = 0; index < left.length; index++) {
       if (left[index] != right[index]) return false;
