@@ -73,7 +73,7 @@ class CurrentUser {
   String get roleLabel {
     if (roleId == 1) return 'Администратор';
     if (roleId == 2) return 'Оператор';
-    return 'Наблюдатель';
+    return 'Смотрящий';
   }
 
   bool get isAdmin => roleId == 1;
@@ -210,6 +210,11 @@ class ProcessorOut {
     this.host,
     this.lastHeartbeatAt,
     required this.assignedCameras,
+    this.cameraCount = 0,
+    this.metrics,
+    this.pendingCommands = 0,
+    this.runningCommands = 0,
+    this.lastCommand,
   });
 
   final int processorId;
@@ -218,6 +223,11 @@ class ProcessorOut {
   final String? host;
   final DateTime? lastHeartbeatAt;
   final List<AssignedCameraInfo> assignedCameras;
+  final int cameraCount;
+  final Map<String, dynamic>? metrics;
+  final int pendingCommands;
+  final int runningCommands;
+  final Map<String, dynamic>? lastCommand;
 
   bool get online => status.toLowerCase() == 'online';
 
@@ -226,12 +236,27 @@ class ProcessorOut {
       processorId: json['processor_id'] as int,
       name: json['name'] as String? ?? 'Processor',
       status: json['status'] as String? ?? 'offline',
-      host: json['host'] as String?,
-      lastHeartbeatAt: DateTime.tryParse('${json['last_heartbeat_at'] ?? ''}'),
+      host: json['host'] as String? ?? json['ip_address'] as String?,
+      lastHeartbeatAt: DateTime.tryParse(
+        '${json['last_heartbeat_at'] ?? json['last_heartbeat'] ?? ''}',
+      ),
       assignedCameras: (json['assigned_cameras'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(AssignedCameraInfo.fromJson)
           .toList(),
+      cameraCount: (json['camera_count'] as num?)?.toInt() ?? 0,
+      metrics: json['metrics'] is Map
+          ? (json['metrics'] as Map).map(
+              (key, value) => MapEntry('$key', value),
+            )
+          : null,
+      pendingCommands: (json['pending_commands'] as num?)?.toInt() ?? 0,
+      runningCommands: (json['running_commands'] as num?)?.toInt() ?? 0,
+      lastCommand: json['last_command'] is Map
+          ? (json['last_command'] as Map).map(
+              (key, value) => MapEntry('$key', value),
+            )
+          : null,
     );
   }
 }

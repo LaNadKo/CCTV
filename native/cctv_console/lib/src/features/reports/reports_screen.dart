@@ -8,6 +8,7 @@ import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
+import '../modules/module_screens.dart' show ModuleColumn, ReportTable;
 
 class ReportsDashboardScreen extends StatefulWidget {
   const ReportsDashboardScreen({super.key});
@@ -420,6 +421,11 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
                   actions: _mapList(userActions['recent_actions']),
                   appearances: appearanceItems,
                 ),
+                const SizedBox(height: 14),
+                _DetailedReportSections(
+                  dashboard: dashboard,
+                  appearances: appearanceItems,
+                ),
                 const SizedBox(height: 24),
               ],
             ),
@@ -473,6 +479,232 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
         subtitle: 'Эмбеддингов: ${item['embeddings_count'] ?? 0}',
       ),
   ];
+}
+
+class _DetailedReportSections extends StatelessWidget {
+  const _DetailedReportSections({
+    required this.dashboard,
+    required this.appearances,
+  });
+
+  final Map<String, dynamic> dashboard;
+  final List<Map<String, dynamic>> appearances;
+
+  @override
+  Widget build(BuildContext context) {
+    final events = _map(dashboard['events']);
+    final archive = _map(dashboard['archive']);
+    final security = _map(dashboard['security']);
+    final userActions = _map(dashboard['user_actions']);
+    return Column(
+      children: [
+        ReportTable(
+          title: 'Камеры',
+          rows: _mapList(dashboard['cameras']),
+          columns: const [
+            ModuleColumn('Камера', ['name'], width: 180),
+            ModuleColumn('Группа', ['group_name'], width: 150),
+            ModuleColumn('Локация', ['location'], width: 150),
+            ModuleColumn('Тип', ['connection_kind'], width: 90),
+            ModuleColumn('Processor', ['assigned_processor'], width: 150),
+            ModuleColumn('Online', ['is_online'], width: 80),
+            ModuleColumn('PTZ', ['supports_ptz'], width: 70),
+            ModuleColumn('Детекция', ['detection_enabled'], width: 95),
+            ModuleColumn('События', ['event_count'], width: 90),
+            ModuleColumn('Распознано', ['recognized_count'], width: 105),
+            ModuleColumn('Неизв.', ['unknown_count'], width: 80),
+            ModuleColumn('Ревью', ['pending_reviews'], width: 80),
+            ModuleColumn('Записи', ['recordings_count'], width: 85),
+            ModuleColumn('Размер', ['recordings_size_bytes'], width: 110),
+            ModuleColumn('Последнее', ['last_event_ts'], width: 145),
+          ],
+        ),
+        const SizedBox(height: 14),
+        ReportTable(
+          title: 'Группы камер',
+          rows: _mapList(dashboard['groups']),
+          columns: const [
+            ModuleColumn('Группа', ['name'], width: 180),
+            ModuleColumn('Камер', ['camera_count'], width: 80),
+            ModuleColumn('Online', ['online_cameras'], width: 80),
+            ModuleColumn('Offline', ['offline_cameras'], width: 80),
+            ModuleColumn('События', ['event_count'], width: 90),
+            ModuleColumn('Распознано', ['recognized_count'], width: 105),
+            ModuleColumn('Ревью', ['pending_reviews'], width: 80),
+            ModuleColumn('Записи', ['recordings_count'], width: 85),
+            ModuleColumn('Размер', ['recordings_size_bytes'], width: 110),
+          ],
+        ),
+        const SizedBox(height: 14),
+        ReportTable(
+          title: 'Processor',
+          rows: _mapList(dashboard['processors']),
+          columns: const [
+            ModuleColumn('Узел', ['name'], width: 180),
+            ModuleColumn('Статус', ['status'], width: 100),
+            ModuleColumn('Online', ['is_online'], width: 80),
+            ModuleColumn('IP', ['ip_address'], width: 130),
+            ModuleColumn('Версия', ['version'], width: 120),
+            ModuleColumn('Heartbeat', ['last_heartbeat'], width: 145),
+            ModuleColumn('Камер', ['assigned_cameras'], width: 90),
+            ModuleColumn('События', ['event_count'], width: 90),
+            ModuleColumn('Записи', ['recordings_count'], width: 85),
+            ModuleColumn('CPU', ['cpu_percent'], width: 80),
+            ModuleColumn('RAM', ['ram_percent'], width: 80),
+            ModuleColumn('GPU', ['gpu_util_percent'], width: 80),
+            ModuleColumn('Uptime', ['uptime_seconds'], width: 85),
+          ],
+        ),
+        const SizedBox(height: 14),
+        ReportTable(
+          title: 'Архив по камерам',
+          rows: _mapList(archive['by_camera']),
+          columns: const [
+            ModuleColumn('Камера', ['camera_name', 'camera_id'], width: 180),
+            ModuleColumn('Файлов', ['file_count'], width: 90),
+            ModuleColumn('Видео', ['video_files'], width: 85),
+            ModuleColumn('Снимки', ['snapshot_files'], width: 85),
+            ModuleColumn('Размер', ['total_bytes'], width: 120),
+            ModuleColumn('Последний файл', ['last_file_ts'], width: 150),
+          ],
+        ),
+        const SizedBox(height: 14),
+        ReportTable(
+          title: 'Хранилища',
+          rows: _mapList(archive['by_storage']),
+          columns: const [
+            ModuleColumn('Хранилище', [
+              'storage_name',
+              'root_path',
+            ], width: 220),
+            ModuleColumn('Файлов', ['file_count'], width: 90),
+            ModuleColumn('Размер', ['total_bytes'], width: 120),
+            ModuleColumn('Видео', ['video_files'], width: 85),
+            ModuleColumn('Снимки', ['snapshot_files'], width: 85),
+          ],
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 940;
+            final tables = [
+              ReportTable(
+                title: 'Действия пользователей',
+                rows: _mapList(userActions['top_users']),
+                columns: const [
+                  ModuleColumn('Пользователь', [
+                    'login',
+                    'user_name',
+                  ], width: 170),
+                  ModuleColumn('Действий', ['action_count'], width: 90),
+                  ModuleColumn('Последнее', ['last_action_at'], width: 145),
+                ],
+              ),
+              ReportTable(
+                title: 'Последние действия',
+                rows: _mapList(userActions['recent_actions']),
+                columns: const [
+                  ModuleColumn('Время', ['created_at', 'event_ts'], width: 145),
+                  ModuleColumn('Пользователь', [
+                    'login',
+                    'user_name',
+                  ], width: 160),
+                  ModuleColumn('Действие', ['action'], width: 170),
+                  ModuleColumn('Объект', ['entity', 'target'], width: 150),
+                ],
+              ),
+            ];
+            return narrow
+                ? Column(
+                    children: [
+                      tables[0],
+                      const SizedBox(height: 14),
+                      tables[1],
+                    ],
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: tables[0]),
+                      const SizedBox(width: 14),
+                      Expanded(child: tables[1]),
+                    ],
+                  );
+          },
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 940;
+            final tables = [
+              ReportTable(
+                title: 'Типы событий',
+                rows: _mapList(events['events_by_type']),
+                columns: const [
+                  ModuleColumn('Тип', ['event_type', 'type'], width: 160),
+                  ModuleColumn('Количество', ['count'], width: 110),
+                ],
+              ),
+              ReportTable(
+                title: 'Ревьюеры',
+                rows: _mapList(events['top_reviewers']),
+                columns: const [
+                  ModuleColumn('Пользователь', [
+                    'login',
+                    'user_name',
+                  ], width: 170),
+                  ModuleColumn('Ревью', ['review_count'], width: 90),
+                  ModuleColumn('Среднее, сек', ['average_seconds'], width: 120),
+                ],
+              ),
+              ReportTable(
+                title: 'Ошибки входа',
+                rows: _mapList(security['recent_failures']),
+                columns: const [
+                  ModuleColumn('Время', ['created_at', 'event_ts'], width: 145),
+                  ModuleColumn('Логин', ['login'], width: 150),
+                  ModuleColumn('IP', ['ip_address'], width: 130),
+                  ModuleColumn('Причина', ['reason'], width: 180),
+                ],
+              ),
+            ];
+            return narrow
+                ? Column(
+                    children: [
+                      tables[0],
+                      const SizedBox(height: 14),
+                      tables[1],
+                      const SizedBox(height: 14),
+                      tables[2],
+                    ],
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: tables[0]),
+                      const SizedBox(width: 14),
+                      Expanded(child: tables[1]),
+                      const SizedBox(width: 14),
+                      Expanded(child: tables[2]),
+                    ],
+                  );
+          },
+        ),
+        const SizedBox(height: 14),
+        ReportTable(
+          title: 'Появления персон',
+          rows: appearances,
+          columns: const [
+            ModuleColumn('Персона', ['person_label', 'person_id'], width: 180),
+            ModuleColumn('Камера', ['camera_name', 'camera_id'], width: 180),
+            ModuleColumn('Время', ['event_ts'], width: 150),
+            ModuleColumn('Уверенность', ['confidence'], width: 110),
+            ModuleColumn('Событие', ['event_id'], width: 90),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

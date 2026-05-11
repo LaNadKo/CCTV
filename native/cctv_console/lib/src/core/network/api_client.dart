@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -78,6 +80,14 @@ class ApiClient {
 
   Future<void> deleteVoid(String path, {String? token}) {
     return _request<void>(path, 'DELETE', token: token, decoder: (_) {});
+  }
+
+  Future<File> downloadRecordingFile(String token, int recordingId) {
+    return downloadFile(
+      '/recordings/file/$recordingId',
+      token: token,
+      filename: 'recording-$recordingId.mp4',
+    );
   }
 
   Future<File> downloadFile(
@@ -371,6 +381,46 @@ class ApiClient {
     );
   }
 
+  Future<void> ptzContinuous(
+    String token,
+    int cameraId, {
+    double pan = 0,
+    double tilt = 0,
+    double zoom = 0,
+    double timeoutSeconds = 0.6,
+  }) {
+    return postVoid(
+      '/admin/cameras/$cameraId/onvif/ptz/continuous',
+      token: token,
+      body: {
+        'pan': pan,
+        'tilt': tilt,
+        'zoom': zoom,
+        'timeout_seconds': timeoutSeconds,
+      },
+    );
+  }
+
+  Future<void> ptzAbsolute(
+    String token,
+    int cameraId, {
+    double? pan,
+    double? tilt,
+    double? zoom,
+    double? speed,
+  }) {
+    return postVoid(
+      '/admin/cameras/$cameraId/onvif/ptz/absolute',
+      token: token,
+      body: {
+        if (pan != null) 'pan': pan,
+        if (tilt != null) 'tilt': tilt,
+        if (zoom != null) 'zoom': zoom,
+        if (speed != null) 'speed': speed,
+      },
+    );
+  }
+
   Future<void> ptzStop(String token, int cameraId) {
     return postVoid('/admin/cameras/$cameraId/onvif/ptz/stop', token: token);
   }
@@ -379,11 +429,71 @@ class ApiClient {
     return postVoid('/admin/cameras/$cameraId/onvif/ptz/home', token: token);
   }
 
-  Future<void> reviewEvent(String token, int eventId, String status) {
+  Future<List<Map<String, dynamic>>> listCameraPresets(
+    String token,
+    int cameraId,
+  ) {
+    return getJsonList('/admin/cameras/$cameraId/presets', token: token);
+  }
+
+  Future<List<Map<String, dynamic>>> refreshCameraPresets(
+    String token,
+    int cameraId,
+  ) {
+    return post(
+      '/admin/cameras/$cameraId/presets/refresh',
+      token: token,
+      decoder: (json) => _asMapList(json),
+    );
+  }
+
+  Future<Map<String, dynamic>> createCameraPreset(
+    String token,
+    int cameraId, {
+    required String name,
+    int orderIndex = 0,
+    int dwellSeconds = 10,
+  }) {
+    return postJson(
+      '/admin/cameras/$cameraId/presets',
+      token: token,
+      body: {
+        'name': name,
+        'order_index': orderIndex,
+        'dwell_seconds': dwellSeconds,
+      },
+    );
+  }
+
+  Future<void> gotoCameraPreset(String token, int cameraId, int presetId) {
+    return postVoid(
+      '/admin/cameras/$cameraId/presets/$presetId/goto',
+      token: token,
+    );
+  }
+
+  Future<void> deleteCameraPreset(String token, int cameraId, int presetId) {
+    return deleteVoid(
+      '/admin/cameras/$cameraId/presets/$presetId',
+      token: token,
+    );
+  }
+
+  Future<void> reviewEvent(
+    String token,
+    int eventId,
+    String status, {
+    int? personId,
+    String? note,
+  }) {
     return postVoid(
       '/detections/events/$eventId/review',
       token: token,
-      body: {'status': status},
+      body: {
+        'status': status,
+        if (personId != null) 'person_id': personId,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      },
     );
   }
 
@@ -391,7 +501,64 @@ class ApiClient {
     return postVoid('/detections/review/reject-all', token: token);
   }
 
-  Uri cameraStreamUri(int cameraId) => uri('/cameras/$cameraId/stream');
+  Uri cameraStreamUri(int cameraId, {bool annotate = true}) {
+    return uri('/cameras/$cameraId/stream', {
+      'annotate': annotate ? 'true' : 'false',
+    });
+  }
+
+  Uri recordingFileUri(int recordingId, String mediaToken) {
+    return uri('/recordings/file/$recordingId', {'token': mediaToken});
+  }
+
+  Uri recordingMjpegUri(int recordingId, String mediaToken) {
+    return uri('/recordings/file/$recordingId/mjpeg', {'token': mediaToken});
+  }
+
+  Uri eventSnapshotUri(int eventId, String mediaToken) {
+    return uri('/detections/events/$eventId/snapshot', {'token': mediaToken});
+  }
+
+  Future<Uint8List> captureCameraJpegFrame(
+    String token,
+    int cameraId, {
+    bool annotate = false,
+  }) async {
+    final request = http.Request(
+      'GET',
+      cameraStreamUri(cameraId, annotate: annotate),
+    );
+    request.headers['Accept'] = 'multipart/x-mixed-replace,image/jpeg,*/*';
+    request.headers['Authorization'] = 'Bearer $token';
+
+    late http.StreamedResponse response;
+    try {
+      response = await _client.send(request).timeout(_requestTimeout);
+    } catch (_) {
+      throw ApiException(
+        'Не удалось получить кадр live-потока (${baseUrlProvider()})',
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final body = await response.stream.bytesToString();
+      throw ApiException(
+        body.isEmpty ? 'Live-поток вернул HTTP ${response.statusCode}' : body,
+        statusCode: response.statusCode,
+      );
+    }
+
+    final buffer = BytesBuilder(copy: false);
+    await for (final chunk in response.stream.timeout(_requestTimeout)) {
+      buffer.add(chunk);
+      final bytes = buffer.toBytes();
+      final frame = _firstJpeg(bytes);
+      if (frame != null) return frame;
+      if (bytes.length > 8 * 1024 * 1024) {
+        throw ApiException('Live-поток не отдал JPEG-кадр');
+      }
+    }
+    throw ApiException('Live-поток завершился без JPEG-кадра');
+  }
 
   Future<Map<String, dynamic>> uploadPersonPhoto(
     String token,
@@ -459,6 +626,70 @@ class ApiClient {
     return _asMap(jsonDecode(utf8.decode(response.bodyBytes)));
   }
 
+  Future<Map<String, dynamic>> enrollPersonPhotoStream(
+    String token, {
+    required Stream<List<int>> stream,
+    required int length,
+    required String filename,
+    String? firstName,
+    String? lastName,
+    String? middleName,
+  }) async {
+    return _multipartJson(
+      '/persons/face/enroll-person-photo',
+      token: token,
+      fields: {
+        if (_nullableText(firstName) != null) 'first_name': firstName!.trim(),
+        if (_nullableText(lastName) != null) 'last_name': lastName!.trim(),
+        if (_nullableText(middleName) != null)
+          'middle_name': middleName!.trim(),
+      },
+      files: [http.MultipartFile('file', stream, length, filename: filename)],
+    );
+  }
+
+  Future<Map<String, dynamic>> enrollPersonFromSnapshot(
+    String token, {
+    required int eventId,
+    String? firstName,
+    String? lastName,
+    String? middleName,
+  }) {
+    return _multipartJson(
+      '/persons/face/enroll-from-snapshot',
+      token: token,
+      fields: {
+        'event_id': '$eventId',
+        if (_nullableText(firstName) != null) 'first_name': firstName!.trim(),
+        if (_nullableText(lastName) != null) 'last_name': lastName!.trim(),
+        if (_nullableText(middleName) != null)
+          'middle_name': middleName!.trim(),
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> enrollPersonFromRecording(
+    String token, {
+    required int recordingId,
+    double? ts,
+    String? firstName,
+    String? lastName,
+    String? middleName,
+  }) {
+    return _multipartJson(
+      '/persons/face/enroll-from-recording',
+      token: token,
+      fields: {
+        'recording_id': '$recordingId',
+        if (ts != null) 'ts': '$ts',
+        if (_nullableText(firstName) != null) 'first_name': firstName!.trim(),
+        if (_nullableText(lastName) != null) 'last_name': lastName!.trim(),
+        if (_nullableText(middleName) != null)
+          'middle_name': middleName!.trim(),
+      },
+    );
+  }
+
   Future<File> downloadReportSection(
     String token, {
     required String section,
@@ -510,6 +741,51 @@ class ApiClient {
   static String? _nullableText(String? value) {
     final text = value?.trim() ?? '';
     return text.isEmpty ? null : text;
+  }
+
+  Future<Map<String, dynamic>> _multipartJson(
+    String path, {
+    required String token,
+    Map<String, String> fields = const {},
+    List<http.MultipartFile> files = const [],
+  }) async {
+    final request = http.MultipartRequest('POST', uri(path));
+    request.headers['Accept'] = 'application/json';
+    request.headers['Authorization'] = 'Bearer $token';
+    request.fields.addAll(fields);
+    request.files.addAll(files);
+
+    late http.StreamedResponse streamed;
+    try {
+      streamed = await _client.send(request).timeout(_requestTimeout);
+    } catch (_) {
+      throw ApiException(
+        'Не удалось отправить данные на backend (${baseUrlProvider()})',
+      );
+    }
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    if (response.bodyBytes.isEmpty) return <String, dynamic>{};
+    return _asMap(jsonDecode(utf8.decode(response.bodyBytes)));
+  }
+
+  static Uint8List? _firstJpeg(Uint8List bytes) {
+    var start = -1;
+    for (var index = 0; index < bytes.length - 1; index++) {
+      if (bytes[index] == 0xFF && bytes[index + 1] == 0xD8) {
+        start = index;
+        break;
+      }
+    }
+    if (start < 0) return null;
+    for (var index = start + 2; index < bytes.length - 1; index++) {
+      if (bytes[index] == 0xFF && bytes[index + 1] == 0xD9) {
+        return Uint8List.fromList(bytes.sublist(start, index + 2));
+      }
+    }
+    return null;
   }
 
   static Future<Directory> _downloadDirectory() async {

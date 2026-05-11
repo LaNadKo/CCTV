@@ -125,6 +125,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 14),
+                  _PalettePresets(
+                    onSelect: settings.setAccentPreset,
+                    selectedPrimary: settings.primaryAccent,
+                    selectedSecondary: settings.secondaryAccent,
+                  ),
                   const SizedBox(height: 18),
                   LayoutBuilder(
                     builder: (context, constraints) {
@@ -253,7 +259,7 @@ class _NavigationSettings extends StatelessWidget {
     _NavOption('/reviews', 'Ревью', reviewOnly: true),
     _NavOption('/reports', 'Отчёты', reviewOnly: true),
     _NavOption('/cameras', 'Камеры', adminOnly: true),
-    _NavOption('/groups', 'Группы', adminOnly: true),
+    _NavOption('/groups', 'Группы'),
     _NavOption('/persons', 'Персоны', adminOnly: true),
     _NavOption('/processors', 'Processor', adminOnly: true),
     _NavOption('/users', 'Пользователи', adminOnly: true),
@@ -560,6 +566,158 @@ class _ChoiceChipButton extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PalettePresets extends StatelessWidget {
+  const _PalettePresets({
+    required this.onSelect,
+    required this.selectedPrimary,
+    required this.selectedSecondary,
+  });
+
+  final Future<void> Function(Color primary, Color secondary) onSelect;
+  final Color selectedPrimary;
+  final Color selectedSecondary;
+
+  static const _presets = [
+    _PalettePreset('CCTV Cyan', Color(0xFF5EF0FF), Color(0xFF6F7BFF)),
+    _PalettePreset('Amber Ops', Color(0xFFFFC857), Color(0xFFFF6B35)),
+    _PalettePreset('Forest Lab', Color(0xFF4ADE80), Color(0xFF22D3EE)),
+    _PalettePreset('Mono Blue', Color(0xFF93C5FD), Color(0xFF64748B)),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Готовые палитры',
+          style: TextStyle(
+            color: colors.textStrong,
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (final preset in _presets)
+              _PalettePresetButton(
+                preset: preset,
+                selected:
+                    preset.primary.toARGB32() == selectedPrimary.toARGB32() &&
+                    preset.secondary.toARGB32() == selectedSecondary.toARGB32(),
+                onTap: () => onSelect(preset.primary, preset.secondary),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _PalettePresetButton extends StatelessWidget {
+  const _PalettePresetButton({
+    required this.preset,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _PalettePreset preset;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        width: 174,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          color: colors.surfaceMuted,
+          border: Border.all(
+            color: selected ? colors.primaryAccent : colors.border,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _ColorDot(color: preset.primary),
+                Transform.translate(
+                  offset: const Offset(-5, 0),
+                  child: _ColorDot(color: preset.secondary),
+                ),
+                const Spacer(),
+                if (selected)
+                  Icon(
+                    Icons.check_circle_rounded,
+                    color: colors.primaryAccent,
+                    size: 18,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 9),
+            Text(
+              preset.label,
+              style: TextStyle(
+                color: colors.textStrong,
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              height: 26,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                gradient: LinearGradient(
+                  colors: [preset.primary, preset.secondary],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ColorDot extends StatelessWidget {
+  const _ColorDot({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color,
+        border: Border.all(color: context.colors.borderStrong),
+      ),
+    );
+  }
+}
+
+class _PalettePreset {
+  const _PalettePreset(this.label, this.primary, this.secondary);
+
+  final String label;
+  final Color primary;
+  final Color secondary;
 }
 
 class _ColorEditor extends StatelessWidget {
