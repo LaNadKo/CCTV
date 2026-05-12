@@ -13,6 +13,7 @@ import ProcessorsPage from "./pages/Processors";
 import RecordingsPage from "./pages/Recordings";
 import ReportsPage from "./pages/Reports";
 import ReviewsPage from "./pages/Reviews";
+import RfRoomPage from "./pages/RfRoom";
 import SettingsPage from "./pages/Settings";
 import UsersPage from "./pages/Users";
 import { UI_SETTINGS_EVENT, loadUiSettings, type ThemeMode, type UiSettings } from "./lib/uiSettings";
@@ -153,6 +154,7 @@ function Layout({ uiSettings }: { uiSettings: UiSettings }) {
       { to: "/groups", label: "Группы", show: true },
       { to: "/cameras", label: "Камеры", show: isAdmin },
       { to: "/processors", label: "Процессоры", show: isAdmin },
+      { to: "/rf-room", label: "RF Room", show: true },
       { to: "/users", label: "Пользователи", show: isAdmin },
       { to: "/apikeys", label: "API-ключи", show: isAdmin },
       { to: "/settings", label: "Настройки", show: true },
@@ -265,6 +267,7 @@ function AppRoutes({ uiSettings }: { uiSettings: UiSettings }) {
           <Route path="/recordings" element={<RecordingsPage />} />
           <Route path="/groups" element={<GroupsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/rf-room" element={<RfRoomPage />} />
           <Route path="/help" element={<HelpPage />} />
           <Route element={<RequireRole allow={[1, 2]} />}>
             <Route path="/reviews" element={<ReviewsPage />} />

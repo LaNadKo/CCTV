@@ -114,12 +114,23 @@ rtsp://127.0.0.1:8554
 
 Контейнер `backend` сам ждёт PostgreSQL, применяет `alembic upgrade head` и затем запускает `uvicorn`.
 
-### Вариант 2. Готовый shell-скрипт
+### Вариант 2. Полный установочный скрипт
 
-Shell-скрипт для серверной части. Поднимает тот же стек, что и Вариант 1: `db + backend + mediamtx`.
+`install.sh` — основной shell-скрипт установки. Он:
+
+- проверяет зависимости;
+- генерирует `.env`;
+- поднимает тот же стек `db + backend + mediamtx`;
+- ждёт готовности `backend`.
 
 ```bash
-./scripts/start-server.sh
+./install.sh
+```
+
+Для неинтерактивного запуска можно использовать:
+
+```bash
+CCTV_NONINTERACTIVE=1 CCTV_SKIP_GIT=1 CCTV_INSTALL_DIR="$PWD" CCTV_FORCE_OVERWRITE_ENV=1 CCTV_DOMAIN=localhost COMPOSE_PROJECT_NAME=cctvlocal ./install.sh
 ```
 
 Требования:
@@ -129,7 +140,9 @@ Shell-скрипт для серверной части. Поднимает то
 
 На чистом Windows без POSIX shell используйте прямой запуск `docker compose` из Варианта 1.
 
-Полезные команды:
+### Вариант 3. Shell-скрипты управления сервером
+
+После установки можно использовать отдельные shell-скрипты обслуживания:
 
 ```bash
 ./scripts/start-server.sh
@@ -139,7 +152,9 @@ Shell-скрипт для серверной части. Поднимает то
 ./scripts/reset-db.sh
 ```
 
-### Вариант 3. Локальная разработка на Windows
+`./scripts/start-server.sh` поднимает тот же стек `db + backend + mediamtx`, но не занимается полной первичной установкой.
+
+### Вариант 4. Локальная разработка на Windows
 
 ```bat
 start-local.bat

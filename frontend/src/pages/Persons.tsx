@@ -30,6 +30,15 @@ function personLabel(person: Person): string {
   return [person.last_name, person.first_name, person.middle_name].filter(Boolean).join(" ") || `ID ${person.person_id}`;
 }
 
+const DEFAULT_CAMERA_FPS = 25;
+const MIN_AUTO_CAPTURE_INTERVAL_MS = Math.ceil(1000 / DEFAULT_CAMERA_FPS);
+const DEFAULT_AUTO_CAPTURE_INTERVAL_MS = 100;
+
+function normalizeAutoIntervalMs(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_AUTO_CAPTURE_INTERVAL_MS;
+  return Math.max(MIN_AUTO_CAPTURE_INTERVAL_MS, Math.round(value));
+}
+
 const PersonsPage = () => {
   const { token } = useAuth();
   const [persons, setPersons] = useState<Person[]>([]);
@@ -38,7 +47,7 @@ const PersonsPage = () => {
   const [liveCameraId, setLiveCameraId] = useState<number | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [autoCapture, setAutoCapture] = useState(false);
-  const [autoIntervalMs, setAutoIntervalMs] = useState(1500);
+  const [autoIntervalMs, setAutoIntervalMs] = useState(DEFAULT_AUTO_CAPTURE_INTERVAL_MS);
   const [autoTarget, setAutoTarget] = useState(8);
   const [autoAdded, setAutoAdded] = useState(0);
   const [captureBusy, setCaptureBusy] = useState(false);
@@ -458,10 +467,10 @@ const PersonsPage = () => {
                     <input
                       className="input"
                       type="number"
-                      min={500}
-                      step={100}
+                      min={MIN_AUTO_CAPTURE_INTERVAL_MS}
+                      step={10}
                       value={autoIntervalMs}
-                      onChange={(event) => setAutoIntervalMs(Math.max(500, Number(event.target.value) || 1500))}
+                      onChange={(event) => setAutoIntervalMs(normalizeAutoIntervalMs(Number(event.target.value)))}
                     />
                   </label>
                   <label className="field">

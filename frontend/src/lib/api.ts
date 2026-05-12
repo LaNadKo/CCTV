@@ -23,7 +23,7 @@ export function clearApiUrl() {
   window.location.reload();
 }
 
-type HTTPMethod = "GET" | "POST" | "PATCH" | "DELETE";
+type HTTPMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 async function parseResponse<T>(res: Response): Promise<T> {
   if (res.status === 204 || res.status === 205) {
@@ -998,4 +998,552 @@ export async function deleteCamera(token: string, cameraId: number) {
 
 export async function rejectAllPendingReviews(token: string) {
   return request<{ updated: number }>("/detections/review/reject-all", "POST", token);
+}
+
+export type RfCoordinateSystem = {
+  origin: string;
+  x_axis: string;
+  y_axis: string;
+  z_axis: string;
+};
+
+export type RfRoomDimensions = {
+  width_cm: number;
+  depth_cm: number;
+  height_cm?: number | null;
+};
+
+export type RfNodeConfig = {
+  node_id: string;
+  ip: string;
+  mac: string;
+  physical_label: string;
+  position_label: string;
+  x_cm: number;
+  y_cm: number;
+  z_cm?: number | null;
+};
+
+export type RfRoomObject = {
+  object_id: string;
+  label: string;
+  object_type: string;
+  x_cm: number;
+  y_cm: number;
+  z_cm: number;
+  width_cm: number;
+  depth_cm: number;
+  height_cm: number;
+  rotation_deg: number;
+};
+
+export type RfRoomLayout = {
+  schema_version: number;
+  name: string;
+  units: string;
+  coordinate_system: RfCoordinateSystem;
+  room: RfRoomDimensions;
+  nodes: RfNodeConfig[];
+  objects: RfRoomObject[];
+};
+
+export type RfNodeHealth = {
+  node_id?: string;
+  role?: string;
+  mac?: string;
+  ip?: string;
+  wifi_status?: string;
+  ssid?: string;
+  bssid?: string;
+  channel?: number;
+  rssi?: number;
+  uptime_ms?: number;
+  free_heap?: number;
+  flash_size?: number;
+  psram_size?: number;
+  [key: string]: unknown;
+};
+
+export type RfScanNetwork = {
+  ssid?: string;
+  bssid?: string;
+  rssi?: number;
+  channel?: number;
+  encryption?: number;
+};
+
+export type RfNodeScan = {
+  node_id?: string;
+  count?: number;
+  networks?: RfScanNetwork[];
+  [key: string]: unknown;
+};
+
+export type RfNodeRuntime = {
+  config: RfNodeConfig;
+  online: boolean;
+  latency_ms?: number | null;
+  health?: RfNodeHealth | null;
+  scan?: RfNodeScan | null;
+  error?: string | null;
+};
+
+export type RfRoomSnapshot = {
+  generated_at: string;
+  layout: RfRoomLayout;
+  nodes: RfNodeRuntime[];
+  include_scan: boolean;
+  online_count: number;
+};
+
+export async function getRfRoom(token: string) {
+  return request<RfRoomLayout>("/rf/room", "GET", token);
+}
+
+export async function updateRfRoom(token: string, layout: RfRoomLayout) {
+  return request<RfRoomLayout>("/rf/room", "PUT", token, layout);
+}
+
+export async function getRfSnapshot(token: string, includeScan = false) {
+  return request<RfRoomSnapshot>(`/rf/snapshot${includeScan ? "?include_scan=true" : ""}`, "GET", token);
+}
+
+export type CameraRoomImagePoint = {
+  x: number;
+  y: number;
+  normalized: boolean;
+};
+
+export type CameraRoomPoint = {
+  x_cm: number;
+  y_cm: number;
+  z_cm?: number;
+};
+
+export type CameraRoomCalibration = {
+  camera_id: number;
+  enabled: boolean;
+  label: string | null;
+  image_points: CameraRoomImagePoint[];
+  room_points: CameraRoomPoint[];
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CameraRoomCalibrationIn = {
+  enabled: boolean;
+  label?: string | null;
+  image_points: CameraRoomImagePoint[];
+  room_points: CameraRoomPoint[];
+  source: string;
+};
+
+export type CameraRoomLedCandidate = {
+  x: number;
+  y: number;
+  radius: number;
+  score: number;
+};
+
+export type CameraRoomLedDetection = {
+  camera_id: number;
+  frame_width: number;
+  frame_height: number;
+  candidates: CameraRoomLedCandidate[];
+};
+
+export async function getCameraRoomCalibration(token: string, cameraId: number) {
+  return request<CameraRoomCalibration>(`/camera-room/calibrations/${cameraId}`, "GET", token);
+}
+
+export async function saveCameraRoomCalibration(token: string, cameraId: number, payload: CameraRoomCalibrationIn) {
+  return request<CameraRoomCalibration>(`/camera-room/calibrations/${cameraId}`, "PUT", token, payload);
+}
+
+export async function getCameraRoomRedLeds(token: string, cameraId: number) {
+  return request<CameraRoomLedDetection>(`/camera-room/cameras/${cameraId}/red-leds`, "GET", token);
+}
+
+export async function getCameraRoomFrame(token: string, cameraId: number) {
+  const res = await fetch(`${API_URL}/camera-room/cameras/${cameraId}/frame.jpg?ts=${Date.now()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const msg = await readErrorMessage(res);
+    const err: any = new Error(msg || res.statusText);
+    err.status = res.status;
+    throw err;
+  }
+  return res.blob();
+}
+
+export type RfNodeSample = {
+  node_id: string;
+  physical_label: string;
+  position_label: string;
+  ip: string;
+  mac: string;
+  x_cm: number;
+  y_cm: number;
+  z_cm?: number | null;
+  online: boolean;
+  latency_ms?: number | null;
+  rssi?: number | null;
+  ssid?: string | null;
+  bssid?: string | null;
+  uptime_ms?: number | null;
+  scan_network_count?: number | null;
+  strongest_networks: RfScanNetwork[];
+  error?: string | null;
+};
+
+export type RfSnapshotSample = {
+  generated_at: string;
+  include_scan: boolean;
+  online_count: number;
+  node_count: number;
+  nodes: RfNodeSample[];
+};
+
+export type RfHistoryOut = {
+  storage_path: string;
+  total_samples: number;
+  returned_samples: number;
+  samples: RfSnapshotSample[];
+};
+
+export type RfBaselineNodeStats = {
+  node_id: string;
+  physical_label: string;
+  position_label: string;
+  ip: string;
+  x_cm: number;
+  y_cm: number;
+  z_cm?: number | null;
+  samples: number;
+  online_samples: number;
+  avg_rssi?: number | null;
+  min_rssi?: number | null;
+  max_rssi?: number | null;
+  last_rssi?: number | null;
+  last_seen_at?: string | null;
+};
+
+export type RfBaselineSummary = {
+  generated_at: string;
+  storage_path: string;
+  sample_count: number;
+  node_count: number;
+  nodes: RfBaselineNodeStats[];
+};
+
+export async function collectRfHistorySample(token: string, includeScan = false) {
+  return request<RfSnapshotSample>(`/rf/history/collect${includeScan ? "?include_scan=true" : ""}`, "POST", token);
+}
+
+export async function getRfHistory(token: string, limit = 100) {
+  return request<RfHistoryOut>(`/rf/history?limit=${limit}`, "GET", token);
+}
+
+export async function getRfBaseline(token: string, limit = 100) {
+  return request<RfBaselineSummary>(`/rf/baseline?limit=${limit}`, "GET", token);
+}
+
+export async function collectRfHistoryBatch(
+  token: string,
+  params: { count?: number; intervalSeconds?: number; includeScan?: boolean } = {}
+) {
+  const qs = new URLSearchParams();
+  qs.set("count", String(params.count ?? 12));
+  qs.set("interval_seconds", String(params.intervalSeconds ?? 5));
+  if (params.includeScan) qs.set("include_scan", "true");
+  return request<RfBaselineSummary>(`/rf/history/collect-batch?${qs}`, "POST", token);
+}
+
+export type RuViewCsiNodeState = {
+  node_id: number;
+  physical_label?: string | null;
+  layout_node_id?: string | null;
+  raw_node_id?: number | null;
+  source_ip: string;
+  source_port: number;
+  packet_count: number;
+  bytes_total: number;
+  last_seen_at?: string | null;
+  stale: boolean;
+  last_sequence?: number | null;
+  frequency_mhz?: number | null;
+  antennas?: number | null;
+  subcarriers?: number | null;
+  rssi?: number | null;
+  noise_floor?: number | null;
+  last_payload_bytes?: number | null;
+  window_packet_count: number;
+  packet_rate_hz?: number | null;
+  mean_rssi?: number | null;
+  mean_power?: number | null;
+  power_std?: number | null;
+  last_mean_power?: number | null;
+};
+
+export type RuViewVitalsNodeState = {
+  node_id: number;
+  physical_label?: string | null;
+  layout_node_id?: string | null;
+  raw_node_id?: number | null;
+  source_ip: string;
+  source_port: number;
+  packet_count: number;
+  last_seen_at?: string | null;
+  stale: boolean;
+  presence: boolean;
+  fall: boolean;
+  motion: boolean;
+  breathing_bpm?: number | null;
+  heart_bpm?: number | null;
+  rssi?: number | null;
+  detected_persons?: number | null;
+  motion_energy?: number | null;
+  presence_score?: number | null;
+  device_uptime_ms?: number | null;
+};
+
+export type RuViewCsiLinkState = {
+  rx_node_id: number;
+  tx_node_id: number;
+  rx_physical_label?: string | null;
+  tx_physical_label?: string | null;
+  rx_layout_node_id?: string | null;
+  tx_layout_node_id?: string | null;
+  tx_mac?: string | null;
+  source_ip: string;
+  source_port: number;
+  packet_count: number;
+  bytes_total: number;
+  last_seen_at?: string | null;
+  stale: boolean;
+  last_sequence?: number | null;
+  channel?: number | null;
+  rssi?: number | null;
+  noise_floor?: number | null;
+  flags: number;
+  pairwise: boolean;
+  inferred: boolean;
+  unknown_peer: boolean;
+  link_age_ms?: number | null;
+  quality_score?: number | null;
+  last_payload_bytes?: number | null;
+  window_packet_count: number;
+  packet_rate_hz?: number | null;
+  mean_rssi?: number | null;
+  mean_power?: number | null;
+  power_std?: number | null;
+  last_mean_power?: number | null;
+};
+
+export type RuViewRfNodeHealthState = {
+  node_id: number;
+  physical_label?: string | null;
+  layout_node_id?: string | null;
+  source_ip: string;
+  source_port: number;
+  packet_count: number;
+  last_seen_at?: string | null;
+  stale: boolean;
+  last_sequence?: number | null;
+  uptime_ms?: number | null;
+  rssi?: number | null;
+  channel?: number | null;
+  tdm_slot?: number | null;
+  tdm_total?: number | null;
+  peer_count?: number | null;
+  dropped_csi_samples?: number | null;
+};
+
+export type RuViewTrackedPerson = {
+  person_id: string;
+  status: string;
+  confidence: number;
+  x_cm?: number | null;
+  y_cm?: number | null;
+  z_cm?: number | null;
+  source: string;
+  note?: string | null;
+};
+
+export type RuViewBridgeStatus = {
+  enabled: boolean;
+  listening: boolean;
+  bind: string;
+  port: number;
+  stimulator_enabled: boolean;
+  stimulator_running: boolean;
+  stimulator_interval_seconds?: number | null;
+  stimulus_count: number;
+  last_stimulus_at?: string | null;
+  last_stimulus_error?: string | null;
+  started_at?: string | null;
+  last_packet_at?: string | null;
+  packet_count: number;
+  csi_packet_count: number;
+  vitals_packet_count: number;
+  unknown_packet_count: number;
+  last_error?: string | null;
+  nodes: RuViewCsiNodeState[];
+  links: RuViewCsiLinkState[];
+  rf_health: RuViewRfNodeHealthState[];
+  vitals: RuViewVitalsNodeState[];
+  tracked_persons: RuViewTrackedPerson[];
+};
+
+export type RuViewCalibrationNodeSample = {
+  node_id: number;
+  physical_label?: string | null;
+  layout_node_id?: string | null;
+  source_ip: string;
+  packet_count: number;
+  rssi?: number | null;
+  mean_rssi?: number | null;
+  mean_power?: number | null;
+  power_std?: number | null;
+  packet_rate_hz?: number | null;
+  subcarriers?: number | null;
+};
+
+export type RuViewCalibrationLinkSample = {
+  rx_node_id: number;
+  tx_node_id: number;
+  rx_physical_label?: string | null;
+  tx_physical_label?: string | null;
+  packet_count: number;
+  rssi?: number | null;
+  mean_rssi?: number | null;
+  mean_power?: number | null;
+  power_std?: number | null;
+  packet_rate_hz?: number | null;
+  quality_score?: number | null;
+  inferred: boolean;
+  channel?: number | null;
+};
+
+export type RuViewCalibrationSampleIn = {
+  kind: "empty_room" | "person_at_point" | "walk_path" | "live_reference";
+  label: string;
+  duration_seconds?: number;
+  person_count?: number;
+  x_cm?: number | null;
+  y_cm?: number | null;
+  z_cm?: number | null;
+  related_nodes?: number[];
+  note?: string | null;
+  stimulate?: boolean;
+};
+
+export type RuViewCalibrationSample = {
+  sample_id: string;
+  created_at: string;
+  kind: string;
+  label: string;
+  duration_seconds: number;
+  person_count: number;
+  x_cm?: number | null;
+  y_cm?: number | null;
+  z_cm?: number | null;
+  related_nodes: number[];
+  note?: string | null;
+  packet_count: number;
+  csi_packet_count: number;
+  nodes: RuViewCalibrationNodeSample[];
+  links: RuViewCalibrationLinkSample[];
+};
+
+export type RuViewCalibrationHistory = {
+  storage_path: string;
+  total_samples: number;
+  returned_samples: number;
+  samples: RuViewCalibrationSample[];
+};
+
+export type RuViewZoneEstimate = {
+  generated_at: string;
+  baseline_samples: number;
+  ready: boolean;
+  person_count_hint?: number | null;
+  estimated_x_cm?: number | null;
+  estimated_y_cm?: number | null;
+  confidence: number;
+  active_nodes: number[];
+  message?: string | null;
+};
+
+export type CameraTrackBox = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+export type ActivePersonTrack = {
+  track_key: string;
+  status: "camera" | "rf" | "ambiguous" | "lost";
+  source: "camera" | "ruview" | "fusion" | "none";
+  person_id?: number | null;
+  person_label?: string | null;
+  processor_id?: number | null;
+  camera_id?: number | null;
+  processor_track_id?: number | null;
+  confidence?: number | null;
+  bbox?: CameraTrackBox | null;
+  frame_width?: number | null;
+  frame_height?: number | null;
+  keypoints?: number[][] | null;
+  keypoint_conf?: number[] | null;
+  estimated_x_cm?: number | null;
+  estimated_y_cm?: number | null;
+  estimated_z_cm?: number | null;
+  rf_confidence?: number | null;
+  active_nodes: number[];
+  first_seen_at: string;
+  last_seen_at: string;
+  last_camera_seen_at?: string | null;
+  last_rf_seen_at?: string | null;
+  note?: string | null;
+};
+
+export type ActiveTrackingSnapshot = {
+  generated_at: string;
+  active_count: number;
+  camera_count: number;
+  rf_count: number;
+  tracks: ActivePersonTrack[];
+  rf_message?: string | null;
+};
+
+export async function getRuViewStatus(token: string) {
+  return request<RuViewBridgeStatus>("/ruview/status", "GET", token);
+}
+
+export async function startRuViewBridge(token: string) {
+  return request<RuViewBridgeStatus>("/ruview/start", "POST", token);
+}
+
+export async function resetRuViewBridge(token: string) {
+  return request<RuViewBridgeStatus>("/ruview/reset", "POST", token);
+}
+
+export async function collectRuViewCalibration(token: string, payload: RuViewCalibrationSampleIn) {
+  return request<RuViewCalibrationSample>("/ruview/calibration/collect", "POST", token, payload);
+}
+
+export async function getRuViewCalibration(token: string, limit = 100) {
+  return request<RuViewCalibrationHistory>(`/ruview/calibration?limit=${limit}`, "GET", token);
+}
+
+export async function getRuViewEstimate(token: string, limit = 200) {
+  return request<RuViewZoneEstimate>(`/ruview/estimate?limit=${limit}`, "GET", token);
+}
+
+export async function getActiveTracking(token: string, limit = 200) {
+  return request<ActiveTrackingSnapshot>(`/tracking/active?limit=${limit}`, "GET", token);
 }

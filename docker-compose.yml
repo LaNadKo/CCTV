@@ -21,6 +21,7 @@ services:
     build: .
     ports:
       - "8000:8000"
+      - "5005:5005/udp"
     env_file: .env
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-cctv}:${POSTGRES_PASSWORD:-cctv}@db:5432/${POSTGRES_DB:-cctv}"
@@ -39,6 +40,8 @@ services:
         limits:
           memory: 4G
     volumes:
+      - ./config:/app/config
+      - ./data:/app/data
       - recordings:/app/recordings
       - snapshots:/app/snapshots
 

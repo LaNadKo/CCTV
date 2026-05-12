@@ -6,7 +6,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -39,7 +39,9 @@ from app.schemas.processors import (
     StorageConfigOut,
     SystemMetrics,
 )
+from app.schemas.tracking import ActivePersonTrack, ProcessorTrackObservationIn
 from app.security import hash_api_key
+from app.services.active_tracking import observe_camera_track
 
 router = APIRouter(prefix="/processors", tags=["processors"])
 log = logging.getLogger("app.processors")
@@ -47,6 +49,14 @@ _gallery_cache: list[GalleryEntry] | None = None
 _gallery_cache_ts = 0.0
 _GALLERY_CACHE_TTL = 30.0
 _PROCESSOR_STORAGE_NAME = "Processor Media"
+
+
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 # ── Helper: resolve API key scopes ──
@@ -367,7 +377,7 @@ async def push_event(
         confidence=payload.confidence,
         processor_id=processor_id,
         track_id=payload.track_id,
-        event_ts=payload.event_ts or datetime.now(),
+        event_ts=_as_naive_utc(payload.event_ts) or datetime.utcnow(),
     )
     session.add(evt)
     await session.flush()
@@ -383,7 +393,61 @@ async def push_event(
         review = models.EventReview(event_id=evt.event_id, status="pending")
         session.add(review)
     await session.commit()
+    should_create_event_track = (
+        payload.bbox is not None
+        and payload.frame_width is not None
+        and payload.frame_height is not None
+        and (
+            payload.bbox_kind == "body_track"
+            or resolved_person_id is not None
+        )
+    )
+    should_refresh_event_track = (
+        payload.bbox is not None
+        and payload.frame_width is not None
+        and payload.frame_height is not None
+        and payload.track_id is not None
+        and payload.bbox_kind == "face_body_estimate"
+    )
+    if should_create_event_track or should_refresh_event_track:
+        observe_camera_track(
+            processor_id,
+            ProcessorTrackObservationIn(
+                camera_id=payload.camera_id,
+                track_id=payload.track_id if payload.track_id is not None else evt.event_id,
+                person_id=resolved_person_id,
+                confidence=payload.confidence,
+                bbox=payload.bbox,
+                frame_width=payload.frame_width,
+                frame_height=payload.frame_height,
+                observed_at=payload.event_ts,
+            ),
+            create_missing=should_create_event_track,
+        )
     return ProcessorEventOut(event_id=evt.event_id)
+
+
+@router.post("/{processor_id}/tracks/observe", response_model=ActivePersonTrack)
+async def observe_track(
+    processor_id: int,
+    payload: ProcessorTrackObservationIn,
+    session: AsyncSession = Depends(get_session),
+    x_api_key: str = Header(...),
+) -> ActivePersonTrack:
+    scopes = await get_service_scopes(x_api_key, session)
+    if "processor:write" not in scopes and "*" not in scopes:
+        raise HTTPException(status_code=403, detail="Missing scope: processor:write")
+    proc = await session.get(models.Processor, processor_id)
+    if proc is None:
+        raise HTTPException(status_code=404, detail="Processor not found")
+    cam = await session.get(models.Camera, payload.camera_id)
+    if cam is None or cam.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    if payload.person_id is not None:
+        person = await session.get(models.Person, payload.person_id)
+        if person is None or person.deleted_at is not None:
+            payload = payload.model_copy(update={"person_id": None})
+    return observe_camera_track(processor_id, payload)
 
 
 @router.post("/{processor_id}/recordings", response_model=ProcessorRecordingOut)
@@ -431,8 +495,8 @@ async def push_recording(
         storage_target_id=st.storage_target_id,
         file_kind=payload.file_kind,
         file_path=payload.file_path,
-        started_at=payload.started_at or datetime.utcnow(),
-        ended_at=payload.ended_at,
+        started_at=_as_naive_utc(payload.started_at) or datetime.utcnow(),
+        ended_at=_as_naive_utc(payload.ended_at),
         duration_seconds=payload.duration_seconds,
         file_size_bytes=payload.file_size_bytes,
     )

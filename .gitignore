@@ -9,6 +9,7 @@ venv/
 .venv-processor311/
 .tmp-ort115/
 tmp/
+output/
 
 # Node
 node_modules/
@@ -76,6 +77,10 @@ processor/installer_output/
 processor/*.spec
 yolov8n-pose.pt
 yolov8n.pt
+
+# Firmware local secrets
+firmware/**/.pio/
+firmware/**/include/config.local.h
 
 # PyInstaller root artifacts
 build/
