@@ -1477,6 +1477,23 @@ export type RuViewZoneEstimate = {
   message?: string | null;
 };
 
+export type RuViewUpstreamStatus = {
+  enabled: boolean;
+  reachable: boolean;
+  base_url?: string | null;
+  health?: Record<string, unknown> | null;
+  stream_status?: Record<string, unknown> | null;
+  pose_current?: {
+    persons?: unknown[];
+    total_persons?: number;
+    source?: string;
+    timestamp?: number;
+    [key: string]: unknown;
+  } | null;
+  pose_stats?: Record<string, unknown> | null;
+  error?: string | null;
+};
+
 export type CameraTrackBox = {
   x1: number;
   y1: number;
@@ -1542,6 +1559,10 @@ export async function getRuViewCalibration(token: string, limit = 100) {
 
 export async function getRuViewEstimate(token: string, limit = 200) {
   return request<RuViewZoneEstimate>(`/ruview/estimate?limit=${limit}`, "GET", token);
+}
+
+export async function getRuViewUpstream(token: string) {
+  return request<RuViewUpstreamStatus>("/ruview/upstream", "GET", token);
 }
 
 export async function getActiveTracking(token: string, limit = 200) {

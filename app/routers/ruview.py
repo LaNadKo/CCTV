@@ -4,9 +4,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies import get_current_user
-from app.schemas.ruview import RuViewBridgeStatus, RuViewCalibrationHistory, RuViewCalibrationSample, RuViewCalibrationSampleIn, RuViewZoneEstimate
+from app.schemas.ruview import (
+    RuViewBridgeStatus,
+    RuViewCalibrationHistory,
+    RuViewCalibrationSample,
+    RuViewCalibrationSampleIn,
+    RuViewUpstreamStatus,
+    RuViewZoneEstimate,
+)
 from app.services.ruview_calibration import collect_calibration_sample, estimate_current_zone, read_calibration_samples
 from app.services.ruview_bridge import get_ruview_bridge_status, reset_ruview_bridge, start_ruview_bridge
+from app.services.ruview_upstream import get_ruview_upstream_status
 
 router = APIRouter(prefix="/ruview", tags=["ruview"])
 
@@ -56,3 +64,8 @@ async def get_zone_estimate(
     _current_user=Depends(get_current_user),
 ) -> RuViewZoneEstimate:
     return estimate_current_zone(limit=limit)
+
+
+@router.get("/upstream", response_model=RuViewUpstreamStatus)
+async def get_upstream_status(_current_user=Depends(get_current_user)) -> RuViewUpstreamStatus:
+    return await get_ruview_upstream_status()

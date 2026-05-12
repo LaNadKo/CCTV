@@ -45,6 +45,21 @@ services:
       - recordings:/app/recordings
       - snapshots:/app/snapshots
 
+  ruview-sensing:
+    image: ruvnet/wifi-densepose:latest
+    container_name: ruview-sensing
+    environment:
+      CSI_SOURCE: ${RUVIEW_SIDECAR_SOURCE:-simulated}
+      RUST_LOG: ${RUVIEW_SIDECAR_LOG_LEVEL:-info}
+      MODELS_DIR: ${RUVIEW_SIDECAR_MODELS_DIR:-data/models}
+    ports:
+      - "${RUVIEW_SIDECAR_HTTP_PORT:-3100}:3000"
+      - "${RUVIEW_SIDECAR_WS_PORT:-3101}:3001"
+      - "${RUVIEW_SIDECAR_UDP_PORT:-5505}:5005/udp"
+    restart: unless-stopped
+    profiles:
+      - ruview
+
   processor:
     build: ./processor
     environment:
