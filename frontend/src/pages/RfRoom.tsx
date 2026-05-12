@@ -1660,8 +1660,16 @@ function RuViewBridgePanel({
           <strong>{formatPacketCount(status?.stimulus_count)}</strong>
         </div>
         <div>
+          <span>RuView forwarded</span>
+          <strong>{formatPacketCount(status?.upstream_forward_count)}</strong>
+        </div>
+        <div>
           <span>Last packet</span>
           <strong>{status?.last_packet_at ? new Date(status.last_packet_at).toLocaleTimeString() : "n/a"}</strong>
+        </div>
+        <div>
+          <span>Last forward</span>
+          <strong>{status?.last_upstream_forward_at ? new Date(status.last_upstream_forward_at).toLocaleTimeString() : "n/a"}</strong>
         </div>
         <div>
           <span>Calibration samples</span>
@@ -1695,6 +1703,7 @@ function RuViewBridgePanel({
 
       {status?.last_error && <div className="rf-node-card__error">{status.last_error}</div>}
       {status?.last_stimulus_error && <div className="rf-node-card__error">{status.last_stimulus_error}</div>}
+      {status?.last_upstream_forward_error && <div className="rf-node-card__error">{status.last_upstream_forward_error}</div>}
 
       <div className="rf-link-matrix">
         <div className="rf-editor-block__title">

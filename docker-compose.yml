@@ -49,7 +49,7 @@ services:
     image: ruvnet/wifi-densepose:latest
     container_name: ruview-sensing
     environment:
-      CSI_SOURCE: ${RUVIEW_SIDECAR_SOURCE:-simulated}
+      CSI_SOURCE: ${RUVIEW_SIDECAR_SOURCE:-esp32}
       RUST_LOG: ${RUVIEW_SIDECAR_LOG_LEVEL:-info}
       MODELS_DIR: ${RUVIEW_SIDECAR_MODELS_DIR:-data/models}
     ports:

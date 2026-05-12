@@ -73,6 +73,22 @@ class Settings(BaseSettings):
         default=1.0,
         validation_alias="RUVIEW_UPSTREAM_TIMEOUT_SECONDS",
     )
+    ruview_upstream_forward_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_UPSTREAM_FORWARD_ENABLED",
+    )
+    ruview_upstream_udp_host: str = Field(
+        default="ruview-sensing",
+        validation_alias="RUVIEW_UPSTREAM_UDP_HOST",
+    )
+    ruview_upstream_udp_port: int = Field(
+        default=5005,
+        validation_alias="RUVIEW_UPSTREAM_UDP_PORT",
+    )
+    ruview_upstream_forward_min_interval_seconds: float = Field(
+        default=0.02,
+        validation_alias="RUVIEW_UPSTREAM_FORWARD_MIN_INTERVAL_SECONDS",
+    )
     camera_room_calibration_path: str = Field(
         default="data/camera_room_calibrations.json",
         validation_alias="CAMERA_ROOM_CALIBRATION_PATH",

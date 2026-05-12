@@ -135,6 +135,11 @@ class RuViewBridge:
         self._last_stimulus_error: str | None = None
         self._stimulus_source_ip: str | None = None
         self._stimulus_source_deadline = 0.0
+        self._upstream_socket: socket.socket | None = None
+        self._upstream_forward_count = 0
+        self._last_upstream_forward_at: datetime | None = None
+        self._last_upstream_forward_error: str | None = None
+        self._last_upstream_forward_monotonic = 0.0
         self._csi_nodes: dict[int, _CsiNode] = {}
         self._csi_links: dict[tuple[int, int], _CsiLink] = {}
         self._rf_health_nodes: dict[int, _RfNodeHealth] = {}
@@ -157,6 +162,13 @@ class RuViewBridge:
                 sock.close()
             except OSError:
                 pass
+        upstream_socket = self._upstream_socket
+        if upstream_socket is not None:
+            try:
+                upstream_socket.close()
+            except OSError:
+                pass
+            self._upstream_socket = None
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
@@ -177,6 +189,10 @@ class RuViewBridge:
             self._last_stimulus_error = None
             self._stimulus_source_ip = None
             self._stimulus_source_deadline = 0.0
+            self._upstream_forward_count = 0
+            self._last_upstream_forward_at = None
+            self._last_upstream_forward_error = None
+            self._last_upstream_forward_monotonic = 0.0
             self._csi_nodes.clear()
             self._csi_links.clear()
             self._rf_health_nodes.clear()
@@ -305,6 +321,12 @@ class RuViewBridge:
                 stimulus_count=self._stimulus_count,
                 last_stimulus_at=self._last_stimulus_at,
                 last_stimulus_error=self._last_stimulus_error,
+                upstream_forward_enabled=settings.ruview_upstream_forward_enabled,
+                upstream_forward_host=settings.ruview_upstream_udp_host if settings.ruview_upstream_forward_enabled else None,
+                upstream_forward_port=settings.ruview_upstream_udp_port if settings.ruview_upstream_forward_enabled else None,
+                upstream_forward_count=self._upstream_forward_count,
+                last_upstream_forward_at=self._last_upstream_forward_at,
+                last_upstream_forward_error=self._last_upstream_forward_error,
                 started_at=self._started_at,
                 last_packet_at=self._last_packet_at,
                 packet_count=self._packet_count,
@@ -413,16 +435,98 @@ class RuViewBridge:
             if magic == CSI_MAGIC:
                 self._csi_packet_count += 1
                 self._parse_csi(data, addr, now)
+                self._forward_csi_to_upstream(data, addr, now)
             elif magic == VITALS_MAGIC:
                 self._vitals_packet_count += 1
                 self._parse_vitals(data, addr, now)
+                self._forward_raw_to_upstream(data, now)
             elif magic == RF_LINK_MAGIC:
                 self._csi_packet_count += 1
                 self._parse_rf_link(data, addr, now)
+                self._forward_rf_link_to_upstream(data, addr, now)
             elif magic == RF_HEALTH_MAGIC:
                 self._parse_rf_health(data, addr, now)
             else:
                 self._unknown_packet_count += 1
+
+    def _forward_rf_link_to_upstream(self, data: bytes, addr: tuple[str, int], now: datetime) -> None:
+        if len(data) < 24:
+            return
+
+        rx_node_id = data[5]
+        sequence = struct.unpack_from("<I", data, 8)[0]
+        rssi = struct.unpack_from("<b", data, 16)[0]
+        noise_floor = struct.unpack_from("<b", data, 17)[0]
+        channel = data[18]
+        payload_len = struct.unpack_from("<H", data, 20)[0]
+        header_len = 24
+        if data[4] >= 2 and len(data) >= 32:
+            configured_header_len = struct.unpack_from("<H", data, 22)[0]
+            header_len = configured_header_len if configured_header_len >= 32 else 32
+
+        payload = data[header_len : min(len(data), header_len + payload_len)]
+        if len(payload) < 2:
+            return
+
+        resolved, _identity_source_ip = self._resolve_packet_identity_locked(addr[0], rx_node_id)
+        frequency_mhz = _frequency_mhz_for_channel(channel)
+        packet = _build_ruview_adr018_packet(
+            node_id=resolved[0] or rx_node_id or 1,
+            sequence=sequence,
+            frequency_mhz=frequency_mhz,
+            rssi=rssi,
+            noise_floor=noise_floor,
+            payload=payload,
+        )
+        if packet is not None:
+            self._forward_raw_to_upstream(packet, now)
+
+    def _forward_csi_to_upstream(self, data: bytes, addr: tuple[str, int], now: datetime) -> None:
+        if len(data) < 22:
+            return
+
+        raw_node_id = data[4]
+        resolved, _identity_source_ip = self._resolve_packet_identity_locked(addr[0], raw_node_id)
+        subcarriers = struct.unpack_from("<H", data, 6)[0]
+        frequency_mhz = struct.unpack_from("<I", data, 8)[0]
+        sequence = struct.unpack_from("<I", data, 12)[0]
+        rssi = struct.unpack_from("<b", data, 16)[0]
+        noise_floor = struct.unpack_from("<b", data, 17)[0]
+        payload_len = max(0, min(len(data) - 20, subcarriers * 2))
+        payload = data[20 : 20 + payload_len]
+        packet = _build_ruview_adr018_packet(
+            node_id=resolved[0] or raw_node_id or 1,
+            sequence=sequence,
+            frequency_mhz=frequency_mhz,
+            rssi=rssi,
+            noise_floor=noise_floor,
+            payload=payload,
+        )
+        if packet is not None:
+            self._forward_raw_to_upstream(packet, now)
+
+    def _forward_raw_to_upstream(self, data: bytes, now: datetime) -> None:
+        if not settings.ruview_upstream_forward_enabled:
+            return
+
+        current = time.monotonic()
+        min_interval = max(float(settings.ruview_upstream_forward_min_interval_seconds), 0.0)
+        if min_interval and current - self._last_upstream_forward_monotonic < min_interval:
+            return
+
+        try:
+            if self._upstream_socket is None:
+                self._upstream_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._upstream_socket.sendto(
+                data,
+                (settings.ruview_upstream_udp_host, int(settings.ruview_upstream_udp_port)),
+            )
+            self._upstream_forward_count += 1
+            self._last_upstream_forward_at = now
+            self._last_upstream_forward_error = None
+            self._last_upstream_forward_monotonic = current
+        except OSError as exc:
+            self._last_upstream_forward_error = f"{settings.ruview_upstream_udp_host}:{settings.ruview_upstream_udp_port}: {exc}"
 
     def _parse_rf_link(self, data: bytes, addr: tuple[str, int], now: datetime) -> None:
         if len(data) < 24:
@@ -749,6 +853,54 @@ def _compact_errors(errors: list[str]) -> str | None:
     unique_errors = list(dict.fromkeys(errors))
     suffix = "; ..." if len(unique_errors) > 3 else ""
     return "; ".join(unique_errors[:3]) + suffix
+
+
+def _frequency_mhz_for_channel(channel: int) -> int:
+    if 1 <= channel <= 13:
+        return 2412 + (channel - 1) * 5
+    if channel == 14:
+        return 2484
+    if 36 <= channel <= 177:
+        return 5000 + channel * 5
+    return 2437
+
+
+def _build_ruview_adr018_packet(
+    *,
+    node_id: int,
+    sequence: int,
+    frequency_mhz: int,
+    rssi: int,
+    noise_floor: int,
+    payload: bytes,
+) -> bytes | None:
+    pair_count = min(len(payload) // 2, 255)
+    if pair_count <= 0:
+        return None
+
+    payload = payload[: pair_count * 2]
+    packet = bytearray(20 + len(payload))
+    struct.pack_into("<I", packet, 0, CSI_MAGIC)
+    packet[4] = max(0, min(int(node_id), 255))
+    packet[5] = 1
+    struct.pack_into("<H", packet, 6, pair_count)
+    struct.pack_into("<I", packet, 8, max(0, min(int(frequency_mhz), 0xFFFFFFFF)))
+    struct.pack_into("<I", packet, 12, int(sequence) & 0xFFFFFFFF)
+
+    # The current RuView image reads RSSI/noise at [14..15], while its ADR-018
+    # firmware writes them at [16..17]. Duplicating the bytes keeps the adapter
+    # compatible with both parser variants; sequence exactness is not used for
+    # pose estimation.
+    rssi_byte = struct.pack("<b", max(-128, min(int(rssi), 127)))[0]
+    noise_byte = struct.pack("<b", max(-128, min(int(noise_floor), 127)))[0]
+    packet[14] = rssi_byte
+    packet[15] = noise_byte
+    packet[16] = rssi_byte
+    packet[17] = noise_byte
+    packet[18] = 0
+    packet[19] = 0
+    packet[20:] = payload
+    return bytes(packet)
 
 
 def _payload_power_stats(payload: bytes) -> tuple[float | None, float | None]:

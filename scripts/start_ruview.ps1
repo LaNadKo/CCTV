@@ -1,6 +1,6 @@
 param(
     [ValidateSet("simulated", "auto", "esp32", "wifi")]
-    [string]$Source = "simulated",
+    [string]$Source = "esp32",
     [int]$HttpPort = 3100,
     [int]$WsPort = 3101,
     [int]$UdpPort = 5505,
