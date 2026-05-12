@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
 
@@ -49,11 +50,23 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
   }
 
   Future<void> _saveProfile() async {
+    final fields = {
+      'Фамилия': _lastName.text,
+      'Имя': _firstName.text,
+      'Отчество': _middleName.text,
+    };
+    for (final entry in fields.entries) {
+      final error = validateOptionalHumanName(entry.key, entry.value);
+      if (error != null) {
+        _toast(error);
+        return;
+      }
+    }
     await _run(() async {
       await context.read<AuthController>().updateProfile(
-        lastName: _lastName.text,
-        firstName: _firstName.text,
-        middleName: _middleName.text,
+        lastName: normalizeHumanName(_lastName.text),
+        firstName: normalizeHumanName(_firstName.text),
+        middleName: normalizeHumanName(_middleName.text),
       );
       _toast('Профиль сохранён');
     });
@@ -255,16 +268,25 @@ class _ProfileForm extends StatelessWidget {
         children: [
           TextField(
             controller: lastName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.next,
             decoration: const InputDecoration(labelText: 'Фамилия'),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: firstName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.next,
             decoration: const InputDecoration(labelText: 'Имя'),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: middleName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.done,
             decoration: const InputDecoration(labelText: 'Отчество'),
           ),
           const SizedBox(height: 12),

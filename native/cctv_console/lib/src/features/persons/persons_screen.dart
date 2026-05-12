@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
 
@@ -80,15 +81,24 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   }
 
   Future<void> _createPerson() async {
+    final error = _validateNameControllers(
+      lastName: _createLastName,
+      firstName: _createFirstName,
+      middleName: _createMiddleName,
+    );
+    if (error != null) {
+      _toast(error);
+      return;
+    }
     await _run(() async {
       final (api, token) = _deps();
       final created = await api.postJson(
         '/persons',
         token: token,
         body: {
-          'first_name': _optional(_createFirstName.text),
-          'last_name': _optional(_createLastName.text),
-          'middle_name': _optional(_createMiddleName.text),
+          'first_name': _optional(normalizeHumanName(_createFirstName.text)),
+          'last_name': _optional(normalizeHumanName(_createLastName.text)),
+          'middle_name': _optional(normalizeHumanName(_createMiddleName.text)),
         },
       );
       _createFirstName.clear();
@@ -103,15 +113,24 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   Future<void> _saveSelectedPerson() async {
     final personId = _selectedPersonId;
     if (personId == null) return;
+    final error = _validateNameControllers(
+      lastName: _editLastName,
+      firstName: _editFirstName,
+      middleName: _editMiddleName,
+    );
+    if (error != null) {
+      _toast(error);
+      return;
+    }
     await _run(() async {
       final (api, token) = _deps();
       await api.patchJson(
         '/persons/$personId',
         token: token,
         body: {
-          'first_name': _editFirstName.text.trim(),
-          'last_name': _editLastName.text.trim(),
-          'middle_name': _editMiddleName.text.trim(),
+          'first_name': normalizeHumanName(_editFirstName.text),
+          'last_name': normalizeHumanName(_editLastName.text),
+          'middle_name': normalizeHumanName(_editMiddleName.text),
         },
       );
       await _reloadQuietly();
@@ -211,6 +230,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   }
 
   Future<void> _createPersonFromPhoto() async {
+    final error = _validateNameControllers(
+      lastName: _createLastName,
+      firstName: _createFirstName,
+      middleName: _createMiddleName,
+    );
+    if (error != null) {
+      _toast(error);
+      return;
+    }
     final picked = await openFile(
       acceptedTypeGroups: const [
         XTypeGroup(
@@ -228,9 +256,9 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
         stream: picked.openRead(),
         length: await picked.length(),
         filename: picked.name,
-        firstName: _createFirstName.text,
-        lastName: _createLastName.text,
-        middleName: _createMiddleName.text,
+        firstName: normalizeHumanName(_createFirstName.text),
+        lastName: normalizeHumanName(_createLastName.text),
+        middleName: normalizeHumanName(_createMiddleName.text),
       );
       _createFirstName.clear();
       _createLastName.clear();
@@ -359,6 +387,23 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   String _selectedLabel() {
     final person = _selectedPerson();
     return person == null ? 'не выбрана' : _personLabel(person);
+  }
+
+  String? _validateNameControllers({
+    required TextEditingController lastName,
+    required TextEditingController firstName,
+    required TextEditingController middleName,
+  }) {
+    final fields = {
+      'Фамилия': lastName.text,
+      'Имя': firstName.text,
+      'Отчество': middleName.text,
+    };
+    for (final entry in fields.entries) {
+      final error = validateOptionalHumanName(entry.key, entry.value);
+      if (error != null) return error;
+    }
+    return null;
   }
 
   void _toast(String message) {
@@ -897,14 +942,23 @@ class _NameFields extends StatelessWidget {
         final fields = [
           TextField(
             controller: lastName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.next,
             decoration: const InputDecoration(labelText: 'Фамилия'),
           ),
           TextField(
             controller: firstName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.next,
             decoration: const InputDecoration(labelText: 'Имя'),
           ),
           TextField(
             controller: middleName,
+            inputFormatters: humanNameInputFormatters(),
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.done,
             decoration: const InputDecoration(labelText: 'Отчество'),
           ),
         ];
