@@ -45,26 +45,48 @@ class ApiClient {
     String path, {
     String? token,
     Map<String, String?> query = const {},
+    Duration? timeout,
     required T Function(Object? json) decoder,
   }) {
-    return _request(path, 'GET', token: token, query: query, decoder: decoder);
+    return _request(
+      path,
+      'GET',
+      token: token,
+      query: query,
+      timeout: timeout,
+      decoder: decoder,
+    );
   }
 
   Future<T> post<T>(
     String path, {
     String? token,
     Object? body,
+    Duration? timeout,
     required T Function(Object? json) decoder,
   }) {
-    return _request(path, 'POST', token: token, body: body, decoder: decoder);
+    return _request(
+      path,
+      'POST',
+      token: token,
+      body: body,
+      timeout: timeout,
+      decoder: decoder,
+    );
   }
 
-  Future<void> postVoid(String path, {String? token, Object? body}) {
+  Future<void> postVoid(
+    String path, {
+    String? token,
+    Object? body,
+    Duration? timeout,
+  }) {
     return _request<void>(
       path,
       'POST',
       token: token,
       body: body,
+      timeout: timeout,
       decoder: (_) {},
     );
   }
@@ -73,13 +95,27 @@ class ApiClient {
     String path, {
     String? token,
     Object? body,
+    Duration? timeout,
     required T Function(Object? json) decoder,
   }) {
-    return _request(path, 'PATCH', token: token, body: body, decoder: decoder);
+    return _request(
+      path,
+      'PATCH',
+      token: token,
+      body: body,
+      timeout: timeout,
+      decoder: decoder,
+    );
   }
 
-  Future<void> deleteVoid(String path, {String? token}) {
-    return _request<void>(path, 'DELETE', token: token, decoder: (_) {});
+  Future<void> deleteVoid(String path, {String? token, Duration? timeout}) {
+    return _request<void>(
+      path,
+      'DELETE',
+      token: token,
+      timeout: timeout,
+      decoder: (_) {},
+    );
   }
 
   Future<File> downloadRecordingFile(String token, int recordingId) {
@@ -148,11 +184,13 @@ class ApiClient {
     String path, {
     String? token,
     Object? body,
+    Duration? timeout,
   }) {
     return post(
       path,
       token: token,
       body: body,
+      timeout: timeout,
       decoder: (json) => _asMap(json),
     );
   }
@@ -161,11 +199,13 @@ class ApiClient {
     String path, {
     String? token,
     Object? body,
+    Duration? timeout,
   }) {
     return patch(
       path,
       token: token,
       body: body,
+      timeout: timeout,
       decoder: (json) => _asMap(json),
     );
   }
@@ -176,6 +216,7 @@ class ApiClient {
     String? token,
     Map<String, String?> query = const {},
     Object? body,
+    Duration? timeout,
     required T Function(Object? json) decoder,
   }) async {
     final headers = <String, String>{
@@ -185,13 +226,15 @@ class ApiClient {
     };
 
     late http.Response response;
+    late Uri requestUri;
+    final effectiveTimeout = timeout ?? _requestTimeout;
     try {
-      final requestUri = uri(path, query);
+      requestUri = uri(path, query);
       switch (method) {
         case 'GET':
           response = await _client
               .get(requestUri, headers: headers)
-              .timeout(_requestTimeout);
+              .timeout(effectiveTimeout);
           break;
         case 'POST':
           response = await _client
@@ -200,7 +243,7 @@ class ApiClient {
                 headers: headers,
                 body: body == null ? null : jsonEncode(body),
               )
-              .timeout(_requestTimeout);
+              .timeout(effectiveTimeout);
           break;
         case 'PATCH':
           response = await _client
@@ -209,20 +252,25 @@ class ApiClient {
                 headers: headers,
                 body: body == null ? null : jsonEncode(body),
               )
-              .timeout(_requestTimeout);
+              .timeout(effectiveTimeout);
           break;
         case 'DELETE':
           response = await _client
               .delete(requestUri, headers: headers)
-              .timeout(_requestTimeout);
+              .timeout(effectiveTimeout);
           break;
         default:
           throw ApiException('Unsupported HTTP method: $method');
       }
     } catch (error) {
       if (error is ApiException) rethrow;
+      if (error is TimeoutException) {
+        throw ApiException(
+          'Backend не ответил за ${effectiveTimeout.inSeconds} сек. (${requestUri.toString()})',
+        );
+      }
       throw ApiException(
-        'Не удалось связаться с backend (${baseUrlProvider()})',
+        'Не удалось связаться с backend (${baseUrlProvider()}): $error',
       );
     }
 
