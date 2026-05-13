@@ -11,12 +11,24 @@ import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
 
+const int _minLiveCaptureIntervalMs = 100;
+const int _maxLiveCaptureIntervalMs = 2000;
+const int _maxLiveCaptureEmbeddings = 100;
+const double _fallbackLiveCameraFps = 10;
+
 class PersonsManagementScreen extends StatefulWidget {
   const PersonsManagementScreen({super.key});
 
   @override
   State<PersonsManagementScreen> createState() =>
       _PersonsManagementScreenState();
+}
+
+class _LiveCaptureResult {
+  const _LiveCaptureResult({required this.status, required this.maxSimilarity});
+
+  final String status;
+  final double? maxSimilarity;
 }
 
 class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
@@ -32,6 +44,14 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   String? _error;
   int? _selectedPersonId;
   int? _embeddingCameraId;
+  bool _liveCaptureRunning = false;
+  bool _liveCaptureBusy = false;
+  int _liveCaptureIntervalMs = _minLiveCaptureIntervalMs;
+  int _liveCaptureTarget = 20;
+  int _liveCaptureAdded = 0;
+  int _liveCaptureAttempts = 0;
+  int _liveCaptureDuplicates = 0;
+  String? _liveCaptureStatus;
   List<Map<String, dynamic>> _persons = const [];
   List<CameraSummary> _cameras = const [];
   List<Map<String, dynamic>> _appearances = const [];
@@ -45,6 +65,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
 
   @override
   void dispose() {
+    _liveCaptureRunning = false;
     _searchController.dispose();
     _createFirstName.dispose();
     _createLastName.dispose();
@@ -75,6 +96,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
             !_cameras.any((camera) => camera.cameraId == _embeddingCameraId)) {
           _embeddingCameraId = null;
         }
+        _liveCaptureIntervalMs = _normalizeLiveInterval(_liveCaptureIntervalMs);
       });
       _syncEditControllers();
     });
@@ -206,26 +228,178 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   }
 
   Future<void> _captureLiveEmbedding() async {
-    final personId = _selectedPersonId;
-    final cameraId = _embeddingCameraId;
-    if (personId == null) return;
-    if (cameraId == null) {
+    if (_liveCaptureBusy) return;
+    if (_selectedPersonId == null) return;
+    if (_embeddingCameraId == null) {
       _toast('Выберите камеру для live-кадра');
       return;
     }
-    await _run(() async {
-      final (api, token) = _deps();
-      final bytes = await api.captureCameraJpegFrame(token, cameraId);
-      final result = await api.uploadPersonPhotoStream(
-        token,
-        personId,
-        stream: Stream<List<int>>.value(bytes),
-        length: bytes.length,
-        filename: 'live-camera-$cameraId.jpg',
-        cameraId: cameraId,
-      );
+    setState(() {
+      _liveCaptureBusy = true;
+      _liveCaptureStatus = 'Получаю live-кадр...';
+    });
+    try {
+      final result = await _captureLiveEmbeddingSample(reload: true);
+      final status = result.status;
+      final similarity = result.maxSimilarity;
+      final message = switch (status) {
+        'added' => 'Эмбеддинг добавлен из live-потока',
+        'duplicate' =>
+          'Похожий ракурс уже есть${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
+        'mismatch' =>
+          'Лицо не похоже на выбранную персону${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
+        _ => 'Live-кадр отправлен: $status',
+      };
+      if (!mounted) return;
+      setState(() => _liveCaptureStatus = message);
+      _toast(message);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _liveCaptureStatus = '$error');
+      _toast('$error');
+    } finally {
+      if (mounted) setState(() => _liveCaptureBusy = false);
+    }
+  }
+
+  Future<_LiveCaptureResult> _captureLiveEmbeddingSample({
+    required bool reload,
+  }) async {
+    final personId = _selectedPersonId;
+    final cameraId = _embeddingCameraId;
+    if (personId == null) throw ApiException('Выберите персону');
+    if (cameraId == null) throw ApiException('Выберите камеру для live-сбора');
+    final (api, token) = _deps();
+    final bytes = await api.captureCameraJpegFrame(token, cameraId);
+    final result = await api.uploadPersonPhotoStream(
+      token,
+      personId,
+      stream: Stream<List<int>>.value(bytes),
+      length: bytes.length,
+      filename:
+          'live-camera-$cameraId-${DateTime.now().millisecondsSinceEpoch}.jpg',
+      cameraId: cameraId,
+    );
+    if (reload) {
       await _reloadQuietly();
-      _toast('Live-кадр отправлен: ${result['status'] ?? 'ok'}');
+    }
+    final similarity = result['max_similarity'];
+    return _LiveCaptureResult(
+      status: '${result['status'] ?? 'added'}',
+      maxSimilarity: similarity is num ? similarity.toDouble() : null,
+    );
+  }
+
+  Future<void> _startLiveAutoCapture() async {
+    if (_liveCaptureRunning || _liveCaptureBusy) return;
+    if (_selectedPersonId == null) {
+      _toast('Выберите персону');
+      return;
+    }
+    if (_embeddingCameraId == null) {
+      _toast('Выберите камеру для live-сбора');
+      return;
+    }
+    final personId = _selectedPersonId;
+    final cameraId = _embeddingCameraId;
+    final target = _normalizeLiveTarget(_liveCaptureTarget);
+    final intervalMs = _normalizeLiveInterval(_liveCaptureIntervalMs);
+    setState(() {
+      _liveCaptureRunning = true;
+      _liveCaptureBusy = false;
+      _liveCaptureIntervalMs = intervalMs;
+      _liveCaptureTarget = target;
+      _liveCaptureAdded = 0;
+      _liveCaptureAttempts = 0;
+      _liveCaptureDuplicates = 0;
+      _liveCaptureStatus =
+          'Автосбор запущен: интервал $intervalMs мс, цель $target.';
+    });
+
+    var added = 0;
+    var attempts = 0;
+    var duplicates = 0;
+    while (mounted &&
+        _liveCaptureRunning &&
+        personId == _selectedPersonId &&
+        cameraId == _embeddingCameraId &&
+        added < target &&
+        attempts < _maxLiveCaptureEmbeddings) {
+      final startedAt = DateTime.now();
+      setState(() {
+        _liveCaptureBusy = true;
+        _liveCaptureStatus =
+            'Кадр ${attempts + 1}/$_maxLiveCaptureEmbeddings...';
+      });
+      try {
+        final result = await _captureLiveEmbeddingSample(reload: false);
+        attempts += 1;
+        if (result.status == 'added') {
+          added += 1;
+        } else if (result.status == 'duplicate') {
+          duplicates += 1;
+        } else if (result.status == 'mismatch') {
+          if (mounted) {
+            setState(() {
+              _liveCaptureRunning = false;
+              _liveCaptureStatus =
+                  'Автосбор остановлен: лицо не похоже на выбранную персону.';
+            });
+          }
+          break;
+        }
+        if (mounted) {
+          setState(() {
+            _liveCaptureAdded = added;
+            _liveCaptureAttempts = attempts;
+            _liveCaptureDuplicates = duplicates;
+            _liveCaptureStatus =
+                'Добавлено $added/$target, дублей $duplicates, попыток $attempts.';
+          });
+        }
+      } catch (error) {
+        if (mounted) {
+          setState(() {
+            _liveCaptureRunning = false;
+            _liveCaptureStatus = '$error';
+          });
+        }
+        break;
+      } finally {
+        if (mounted) setState(() => _liveCaptureBusy = false);
+      }
+
+      final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+      final waitMs = intervalMs - elapsedMs;
+      if (waitMs > 0 &&
+          mounted &&
+          _liveCaptureRunning &&
+          added < target &&
+          attempts < _maxLiveCaptureEmbeddings) {
+        await Future<void>.delayed(Duration(milliseconds: waitMs));
+      }
+    }
+
+    if (!mounted) return;
+    final completed = added >= target;
+    setState(() {
+      _liveCaptureRunning = false;
+      _liveCaptureBusy = false;
+      _liveCaptureAdded = added;
+      _liveCaptureAttempts = attempts;
+      _liveCaptureDuplicates = duplicates;
+      _liveCaptureStatus = completed
+          ? 'Автосбор завершён: добавлено $added эмбеддингов.'
+          : 'Автосбор остановлен: добавлено $added, попыток $attempts.';
+    });
+    unawaited(_reloadQuietly());
+  }
+
+  void _stopLiveAutoCapture() {
+    if (!_liveCaptureRunning) return;
+    setState(() {
+      _liveCaptureRunning = false;
+      _liveCaptureStatus = 'Автосбор останавливается...';
     });
   }
 
@@ -354,6 +528,13 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     unawaited(_loadSelectedAppearances());
   }
 
+  void _setEmbeddingCameraId(int? value) {
+    setState(() {
+      _embeddingCameraId = value;
+      _liveCaptureIntervalMs = _normalizeLiveInterval(_liveCaptureIntervalMs);
+    });
+  }
+
   void _syncEditControllers() {
     final person = _selectedPerson();
     _editFirstName.text = '${person?['first_name'] ?? ''}';
@@ -404,6 +585,50 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
       if (error != null) return error;
     }
     return null;
+  }
+
+  int get _minLiveIntervalForSelectedCamera {
+    CameraSummary? selectedCamera;
+    for (final camera in _cameras) {
+      if (camera.cameraId == _embeddingCameraId) {
+        selectedCamera = camera;
+        break;
+      }
+    }
+    final fps = selectedCamera?.fps;
+    final safeFps = fps != null && fps.isFinite && fps > 0
+        ? (fps > 60 ? 60 : fps)
+        : _fallbackLiveCameraFps;
+    final byFps = (1000 / safeFps).ceil();
+    final bounded = byFps < _minLiveCaptureIntervalMs
+        ? _minLiveCaptureIntervalMs
+        : byFps;
+    return bounded > _maxLiveCaptureIntervalMs
+        ? _maxLiveCaptureIntervalMs
+        : bounded;
+  }
+
+  int _normalizeLiveInterval(int value) {
+    final min = _minLiveIntervalForSelectedCamera;
+    if (value < min) return min;
+    if (value > _maxLiveCaptureIntervalMs) return _maxLiveCaptureIntervalMs;
+    return value;
+  }
+
+  int _normalizeLiveTarget(int value) {
+    if (value < 1) return 1;
+    if (value > _maxLiveCaptureEmbeddings) return _maxLiveCaptureEmbeddings;
+    return value;
+  }
+
+  void _setLiveCaptureInterval(double value) {
+    setState(
+      () => _liveCaptureIntervalMs = _normalizeLiveInterval(value.round()),
+    );
+  }
+
+  void _setLiveCaptureTarget(double value) {
+    setState(() => _liveCaptureTarget = _normalizeLiveTarget(value.round()));
   }
 
   void _toast(String message) {
@@ -509,8 +734,25 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
                       createMiddleName: _createMiddleName,
                       cameras: _cameras,
                       embeddingCameraId: _embeddingCameraId,
-                      onEmbeddingCameraChanged: (value) =>
-                          setState(() => _embeddingCameraId = value),
+                      minLiveCaptureIntervalMs:
+                          _minLiveIntervalForSelectedCamera,
+                      liveCaptureIntervalMs: _normalizeLiveInterval(
+                        _liveCaptureIntervalMs,
+                      ),
+                      liveCaptureTarget: _normalizeLiveTarget(
+                        _liveCaptureTarget,
+                      ),
+                      liveCaptureAdded: _liveCaptureAdded,
+                      liveCaptureAttempts: _liveCaptureAttempts,
+                      liveCaptureDuplicates: _liveCaptureDuplicates,
+                      liveCaptureRunning: _liveCaptureRunning,
+                      liveCaptureBusy: _liveCaptureBusy,
+                      liveCaptureStatus: _liveCaptureStatus,
+                      onEmbeddingCameraChanged: _setEmbeddingCameraId,
+                      onLiveCaptureIntervalChanged: _setLiveCaptureInterval,
+                      onLiveCaptureTargetChanged: _setLiveCaptureTarget,
+                      onStartLiveCapture: _startLiveAutoCapture,
+                      onStopLiveCapture: _stopLiveAutoCapture,
                       onCreate: _createPerson,
                       onCreateFromPhoto: _createPersonFromPhoto,
                       onSave: _saveSelectedPerson,
@@ -704,7 +946,20 @@ class _PersonDetailPanel extends StatelessWidget {
     required this.createMiddleName,
     required this.cameras,
     required this.embeddingCameraId,
+    required this.minLiveCaptureIntervalMs,
+    required this.liveCaptureIntervalMs,
+    required this.liveCaptureTarget,
+    required this.liveCaptureAdded,
+    required this.liveCaptureAttempts,
+    required this.liveCaptureDuplicates,
+    required this.liveCaptureRunning,
+    required this.liveCaptureBusy,
+    required this.liveCaptureStatus,
     required this.onEmbeddingCameraChanged,
+    required this.onLiveCaptureIntervalChanged,
+    required this.onLiveCaptureTargetChanged,
+    required this.onStartLiveCapture,
+    required this.onStopLiveCapture,
     required this.onCreate,
     required this.onCreateFromPhoto,
     required this.onSave,
@@ -724,7 +979,20 @@ class _PersonDetailPanel extends StatelessWidget {
   final TextEditingController createMiddleName;
   final List<CameraSummary> cameras;
   final int? embeddingCameraId;
+  final int minLiveCaptureIntervalMs;
+  final int liveCaptureIntervalMs;
+  final int liveCaptureTarget;
+  final int liveCaptureAdded;
+  final int liveCaptureAttempts;
+  final int liveCaptureDuplicates;
+  final bool liveCaptureRunning;
+  final bool liveCaptureBusy;
+  final String? liveCaptureStatus;
   final ValueChanged<int?> onEmbeddingCameraChanged;
+  final ValueChanged<double> onLiveCaptureIntervalChanged;
+  final ValueChanged<double> onLiveCaptureTargetChanged;
+  final VoidCallback onStartLiveCapture;
+  final VoidCallback onStopLiveCapture;
   final VoidCallback onCreate;
   final VoidCallback onCreateFromPhoto;
   final VoidCallback onSave;
@@ -787,24 +1055,19 @@ class _PersonDetailPanel extends StatelessWidget {
                       middleName: middleName,
                     ),
                     const SizedBox(height: 14),
-                    Row(
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
                       children: [
                         ElevatedButton.icon(
                           onPressed: busy ? null : onSave,
                           icon: const Icon(Icons.save_rounded, size: 18),
                           label: const Text('Сохранить'),
                         ),
-                        const SizedBox(width: 10),
                         OutlinedButton.icon(
                           onPressed: busy ? null : onAddPhoto,
                           icon: const Icon(Icons.add_photo_alternate_rounded),
                           label: const Text('Добавить фото'),
-                        ),
-                        const SizedBox(width: 10),
-                        OutlinedButton.icon(
-                          onPressed: busy ? null : onCaptureLive,
-                          icon: const Icon(Icons.camera_rounded),
-                          label: const Text('Кадр из Live'),
                         ),
                       ],
                     ),
@@ -814,10 +1077,24 @@ class _PersonDetailPanel extends StatelessWidget {
                       value: embeddingCameraId,
                       onChanged: onEmbeddingCameraChanged,
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Фото используется для добавления эмбеддинга. Если локальное извлечение лица недоступно, backend попробует Processor выбранной камеры.',
-                      style: TextStyle(color: colors.muted, fontSize: 12),
+                    const SizedBox(height: 14),
+                    _LiveCapturePanel(
+                      cameraSelected: embeddingCameraId != null,
+                      busy: busy,
+                      running: liveCaptureRunning,
+                      captureBusy: liveCaptureBusy,
+                      intervalMs: liveCaptureIntervalMs,
+                      minIntervalMs: minLiveCaptureIntervalMs,
+                      target: liveCaptureTarget,
+                      added: liveCaptureAdded,
+                      attempts: liveCaptureAttempts,
+                      duplicates: liveCaptureDuplicates,
+                      status: liveCaptureStatus,
+                      onIntervalChanged: onLiveCaptureIntervalChanged,
+                      onTargetChanged: onLiveCaptureTargetChanged,
+                      onStart: onStartLiveCapture,
+                      onStop: onStopLiveCapture,
+                      onCaptureOnce: onCaptureLive,
                     ),
                     const SizedBox(height: 14),
                     _AppearancesPanel(items: appearances),
@@ -923,6 +1200,276 @@ class _AppearancesPanel extends StatelessWidget {
   }
 }
 
+class _LiveCapturePanel extends StatelessWidget {
+  const _LiveCapturePanel({
+    required this.cameraSelected,
+    required this.busy,
+    required this.running,
+    required this.captureBusy,
+    required this.intervalMs,
+    required this.minIntervalMs,
+    required this.target,
+    required this.added,
+    required this.attempts,
+    required this.duplicates,
+    required this.status,
+    required this.onIntervalChanged,
+    required this.onTargetChanged,
+    required this.onStart,
+    required this.onStop,
+    required this.onCaptureOnce,
+  });
+
+  final bool cameraSelected;
+  final bool busy;
+  final bool running;
+  final bool captureBusy;
+  final int intervalMs;
+  final int minIntervalMs;
+  final int target;
+  final int added;
+  final int attempts;
+  final int duplicates;
+  final String? status;
+  final ValueChanged<double> onIntervalChanged;
+  final ValueChanged<double> onTargetChanged;
+  final VoidCallback onStart;
+  final VoidCallback onStop;
+  final VoidCallback onCaptureOnce;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final normalizedInterval = intervalMs
+        .clamp(minIntervalMs, _maxLiveCaptureIntervalMs)
+        .toDouble();
+    final normalizedTarget = target
+        .clamp(1, _maxLiveCaptureEmbeddings)
+        .toDouble();
+    final progress = target <= 0 ? 0.0 : (added / target).clamp(0.0, 1.0);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Live-сбор эмбеддингов',
+                      style: TextStyle(
+                        color: colors.textStrong,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Минимальный интервал: $minIntervalMs мс. Сессия ограничена $_maxLiveCaptureEmbeddings эмбеддингами.',
+                      style: TextStyle(color: colors.muted, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              if (captureBusy)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 8,
+              backgroundColor: colors.surfaceElevated.withValues(alpha: 0.45),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _CaptureStat(label: 'Добавлено', value: '$added/$target'),
+              _CaptureStat(label: 'Попыток', value: '$attempts'),
+              _CaptureStat(label: 'Дублей', value: '$duplicates'),
+              _CaptureStat(label: 'Интервал', value: '$intervalMs мс'),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _SliderRow(
+            label: 'Интервал',
+            valueLabel: '$intervalMs мс',
+            value: normalizedInterval,
+            min: minIntervalMs.toDouble(),
+            max: _maxLiveCaptureIntervalMs.toDouble(),
+            divisions: ((_maxLiveCaptureIntervalMs - minIntervalMs) / 50)
+                .round(),
+            enabled: !running && !captureBusy,
+            onChanged: onIntervalChanged,
+          ),
+          _SliderRow(
+            label: 'Цель',
+            valueLabel: '$target',
+            value: normalizedTarget,
+            min: 1,
+            max: _maxLiveCaptureEmbeddings.toDouble(),
+            divisions: _maxLiveCaptureEmbeddings - 1,
+            enabled: !running && !captureBusy,
+            onChanged: onTargetChanged,
+          ),
+          if (status != null && status!.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              status!,
+              style: TextStyle(
+                color: running ? colors.primaryAccent : colors.muted,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              OutlinedButton.icon(
+                onPressed: busy || running || captureBusy || !cameraSelected
+                    ? null
+                    : onCaptureOnce,
+                icon: const Icon(Icons.camera_rounded, size: 18),
+                label: const Text('Снимок из Live'),
+              ),
+              ElevatedButton.icon(
+                onPressed: busy || captureBusy || !cameraSelected
+                    ? null
+                    : (running ? onStop : onStart),
+                icon: Icon(
+                  running
+                      ? Icons.stop_circle_rounded
+                      : Icons.play_circle_rounded,
+                  size: 18,
+                ),
+                label: Text(running ? 'Остановить сбор' : 'Запустить сбор'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Для качественной базы держите лицо в кадре и плавно меняйте ракурс. Похожие кадры backend помечает как дубли и не добавляет повторно.',
+            style: TextStyle(color: colors.muted, fontSize: 12, height: 1.35),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaptureStat extends StatelessWidget {
+  const _CaptureStat({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: colors.surfaceElevated.withValues(alpha: 0.5),
+        border: Border.all(color: colors.border),
+      ),
+      child: Text(
+        '$label: $value',
+        style: TextStyle(
+          color: colors.text,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _SliderRow extends StatelessWidget {
+  const _SliderRow({
+    required this.label,
+    required this.valueLabel,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String valueLabel;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Row(
+      children: [
+        SizedBox(
+          width: 82,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: colors.text,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value,
+            min: min,
+            max: max,
+            divisions: divisions <= 0 ? null : divisions,
+            label: valueLabel,
+            onChanged: enabled ? onChanged : null,
+          ),
+        ),
+        SizedBox(
+          width: 64,
+          child: Text(
+            valueLabel,
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              color: colors.textStrong,
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _NameFields extends StatelessWidget {
   const _NameFields({
     required this.firstName,
@@ -1001,7 +1548,7 @@ class _CameraSelector extends StatelessWidget {
     return DropdownButtonFormField<int?>(
       initialValue: value,
       decoration: const InputDecoration(
-        labelText: 'Камера для fallback через Processor',
+        labelText: 'Камера для Live-сбора и fallback через Processor',
       ),
       items: [
         const DropdownMenuItem<int?>(
