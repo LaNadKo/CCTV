@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
@@ -17,7 +18,8 @@ class LiveScreen extends StatefulWidget {
   State<LiveScreen> createState() => _LiveScreenState();
 }
 
-class _LiveScreenState extends State<LiveScreen> {
+class _LiveScreenState extends State<LiveScreen>
+    with RouteRefreshState<LiveScreen> {
   bool _loading = false;
   String? _error;
   List<CameraSummary> _cameras = const [];
@@ -29,6 +31,15 @@ class _LiveScreenState extends State<LiveScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/live';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {

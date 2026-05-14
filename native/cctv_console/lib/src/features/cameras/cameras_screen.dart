@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
@@ -18,7 +19,8 @@ class CameraManagementScreen extends StatefulWidget {
   State<CameraManagementScreen> createState() => _CameraManagementScreenState();
 }
 
-class _CameraManagementScreenState extends State<CameraManagementScreen> {
+class _CameraManagementScreenState extends State<CameraManagementScreen>
+    with RouteRefreshState<CameraManagementScreen> {
   final _host = TextEditingController();
   final _port = TextEditingController();
   final _username = TextEditingController();
@@ -37,6 +39,15 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/cameras';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_busy) return Future<void>.value();
+    return _load();
   }
 
   @override
@@ -142,6 +153,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       _devices = const [];
       _toast('Камера добавлена');
       await _load();
+      _markCamerasChanged();
     });
   }
 
@@ -195,6 +207,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       );
       _toast('Камера добавлена вручную');
       await _load();
+      _markCamerasChanged();
     });
   }
 
@@ -219,6 +232,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       );
       _toast('Камера сохранена');
       await _load();
+      _markCamerasChanged();
     });
   }
 
@@ -234,6 +248,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       ),
     );
     await _load();
+    _markCamerasChanged();
   }
 
   Future<void> _refreshOnvif(int cameraId) async {
@@ -246,6 +261,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       );
       _toast('ONVIF данные обновлены');
       await _load();
+      _markCamerasChanged();
     });
   }
 
@@ -274,6 +290,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       final (api, token) = _deps();
       await api.deleteVoid('/admin/cameras/$cameraId', token: token);
       await _load();
+      _markCamerasChanged();
     });
   }
 
@@ -297,6 +314,17 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _markCamerasChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const [
+      '/live',
+      '/recordings',
+      '/processors',
+      '/groups',
+      '/reports',
+    ]);
   }
 
   void _selectDevice(Map<String, dynamic> device) {
