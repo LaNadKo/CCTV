@@ -165,6 +165,7 @@ export type CameraSummary = {
   permission: string;
   ip_address?: string;
   stream_url?: string;
+  fps?: number | null;
   detection_enabled: boolean;
   recording_mode: string;
   tracking_enabled?: boolean;

@@ -24,10 +24,20 @@ type Person = {
 type CameraOption = {
   camera_id: number;
   name: string;
+  fps?: number | null;
 };
+
+const FALLBACK_CAMERA_FPS = 10;
+const MIN_CAPTURE_INTERVAL_MS = 25;
 
 function personLabel(person: Person): string {
   return [person.last_name, person.first_name, person.middle_name].filter(Boolean).join(" ") || `ID ${person.person_id}`;
+}
+
+function cameraFrameIntervalMs(fps?: number | null): number {
+  const safeFps =
+    typeof fps === "number" && Number.isFinite(fps) && fps > 0 ? Math.min(60, fps) : FALLBACK_CAMERA_FPS;
+  return Math.max(MIN_CAPTURE_INTERVAL_MS, Math.ceil(1000 / safeFps));
 }
 
 const PersonsPage = () => {
@@ -38,7 +48,8 @@ const PersonsPage = () => {
   const [liveCameraId, setLiveCameraId] = useState<number | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [autoCapture, setAutoCapture] = useState(false);
-  const [autoIntervalMs, setAutoIntervalMs] = useState(1500);
+  const [autoIntervalMs, setAutoIntervalMs] = useState(cameraFrameIntervalMs());
+  const [autoIntervalTouched, setAutoIntervalTouched] = useState(false);
   const [autoTarget, setAutoTarget] = useState(8);
   const [autoAdded, setAutoAdded] = useState(0);
   const [captureBusy, setCaptureBusy] = useState(false);
@@ -64,6 +75,11 @@ const PersonsPage = () => {
     () => persons.find((person) => person.person_id === selectedPersonId) || null,
     [persons, selectedPersonId]
   );
+  const selectedLiveCamera = useMemo(
+    () => cameras.find((camera) => camera.camera_id === liveCameraId) || null,
+    [cameras, liveCameraId]
+  );
+  const minAutoIntervalMs = cameraFrameIntervalMs(selectedLiveCamera?.fps);
 
   const liveHint = autoCapture
     ? "Автосбор активен: держите лицо в рамке и плавно меняйте ракурс."
@@ -76,7 +92,7 @@ const PersonsPage = () => {
     try {
       const [personItems, cameraItems] = await Promise.all([listPersons(token), getCameras(token)]);
       setPersons(personItems);
-      setCameras(cameraItems.map((camera) => ({ camera_id: camera.camera_id, name: camera.name })));
+      setCameras(cameraItems.map((camera) => ({ camera_id: camera.camera_id, name: camera.name, fps: camera.fps })));
 
       if (!selectedPersonId && personItems.length > 0) {
         setSelectedPersonId(personItems[0].person_id);
@@ -105,6 +121,14 @@ const PersonsPage = () => {
     setEditLast(selectedPerson.last_name || "");
     setEditMiddle(selectedPerson.middle_name || "");
   }, [selectedPerson]);
+
+  useEffect(() => {
+    if (!autoIntervalTouched) {
+      setAutoIntervalMs(minAutoIntervalMs);
+    } else if (autoIntervalMs < minAutoIntervalMs) {
+      setAutoIntervalMs(minAutoIntervalMs);
+    }
+  }, [autoIntervalMs, autoIntervalTouched, minAutoIntervalMs]);
 
   const handleCreate = async () => {
     if (!token) return;
@@ -221,9 +245,9 @@ const PersonsPage = () => {
     }
     const timer = window.setInterval(() => {
       captureFromLive();
-    }, autoIntervalMs);
+    }, Math.max(minAutoIntervalMs, autoIntervalMs));
     return () => window.clearInterval(timer);
-  }, [autoAdded, autoCapture, autoIntervalMs, autoTarget, captureFromLive]);
+  }, [autoAdded, autoCapture, autoIntervalMs, autoTarget, captureFromLive, minAutoIntervalMs]);
 
   return (
     <div className="stack">
@@ -448,7 +472,7 @@ const PersonsPage = () => {
                     >
                       {cameras.map((camera) => (
                         <option key={camera.camera_id} value={camera.camera_id}>
-                          {camera.name} (#{camera.camera_id})
+                          {camera.name} (#{camera.camera_id}{camera.fps ? `, ${camera.fps} FPS` : ""})
                         </option>
                       ))}
                     </select>
@@ -458,10 +482,13 @@ const PersonsPage = () => {
                     <input
                       className="input"
                       type="number"
-                      min={500}
-                      step={100}
+                      min={minAutoIntervalMs}
+                      step={10}
                       value={autoIntervalMs}
-                      onChange={(event) => setAutoIntervalMs(Math.max(500, Number(event.target.value) || 1500))}
+                      onChange={(event) => {
+                        setAutoIntervalTouched(true);
+                        setAutoIntervalMs(Math.max(minAutoIntervalMs, Number(event.target.value) || minAutoIntervalMs));
+                      }}
                     />
                   </label>
                   <label className="field">
@@ -486,6 +513,9 @@ const PersonsPage = () => {
                   </span>
                   <span className="hero-badge">
                     Режим <strong>{autoCapture ? "автосбор" : "ручной"}</strong>
+                  </span>
+                  <span className="hero-badge">
+                    FPS <strong>{selectedLiveCamera?.fps || FALLBACK_CAMERA_FPS}</strong> / min <strong>{minAutoIntervalMs} ms</strong>
                   </span>
                 </div>
 
