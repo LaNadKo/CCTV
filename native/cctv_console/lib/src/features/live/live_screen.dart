@@ -9,6 +9,7 @@ import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/mjpeg_stream_view.dart';
 import '../auth/auth_controller.dart';
 
 class LiveScreen extends StatefulWidget {
@@ -558,6 +559,7 @@ class _CameraTileState extends State<_CameraTile> {
         pan: pan,
         tilt: tilt,
         zoom: zoom,
+        timeoutSeconds: 2.0,
       );
     } catch (error) {
       if (!mounted) return;
@@ -612,24 +614,17 @@ class _CameraTileState extends State<_CameraTile> {
                     InteractiveViewer(
                       minScale: 1,
                       maxScale: 5,
-                      child: Image.network(
-                        api
-                            .cameraStreamUri(
-                              camera.cameraId,
-                              annotate: widget.annotate,
-                            )
-                            .toString(),
+                      child: MjpegStreamView(
+                        uri: api.cameraStreamUri(
+                          camera.cameraId,
+                          annotate: widget.annotate,
+                        ),
                         headers: {'Authorization': 'Bearer $token'},
                         fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                        gaplessPlayback: true,
-                        errorBuilder: (context, error, stackTrace) {
-                          return _NoStream(
-                            camera: camera,
-                            message: 'Нет live-потока',
-                          );
-                        },
+                        errorBuilder: (context, error) => _NoStream(
+                          camera: camera,
+                          message: 'Нет live-потока: $error',
+                        ),
                       ),
                     )
                   else
@@ -861,26 +856,39 @@ class _PtzButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final button = SizedBox(
-      width: 38,
-      height: 34,
-      child: OutlinedButton(
-        onPressed: onPressed,
-        style: OutlinedButton.styleFrom(
-          padding: EdgeInsets.zero,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+    final colors = context.colors;
+    if (onReleased == null) {
+      return SizedBox(
+        width: 38,
+        height: 34,
+        child: OutlinedButton(
+          onPressed: onPressed,
+          style: OutlinedButton.styleFrom(
+            padding: EdgeInsets.zero,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
+          child: Icon(icon, size: 19),
         ),
-        child: Icon(icon, size: 19),
-      ),
-    );
-    if (onReleased == null) return button;
+      );
+    }
     return GestureDetector(
       onTapDown: onPressed == null ? null : (_) => onPressed!(),
       onTapUp: onPressed == null ? null : (_) => onReleased!(),
       onTapCancel: onPressed == null ? null : onReleased,
-      child: button,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: 38,
+        height: 34,
+        decoration: BoxDecoration(
+          color: onPressed == null ? colors.surfaceMuted : Colors.transparent,
+          border: Border.all(color: colors.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        alignment: Alignment.center,
+        child: Icon(icon, size: 19, color: colors.text),
+      ),
     );
   }
 }
@@ -982,6 +990,7 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
         pan: pan,
         tilt: tilt,
         zoom: zoom,
+        timeoutSeconds: 2.0,
       );
     } catch (_) {
       // В fullscreen не спамим snackbar на каждое нажатие клавиши.
@@ -1001,6 +1010,7 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
       _stop();
       return;
     }
+    if (event is KeyRepeatEvent) return;
     if (event is! KeyDownEvent) return;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.escape) {
@@ -1041,18 +1051,19 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
                   : InteractiveViewer(
                       minScale: 1,
                       maxScale: 8,
-                      child: Image.network(
-                        api
-                            .cameraStreamUri(
-                              widget.camera.cameraId,
-                              annotate: widget.annotate,
-                            )
-                            .toString(),
+                      child: MjpegStreamView(
+                        uri: api.cameraStreamUri(
+                          widget.camera.cameraId,
+                          annotate: widget.annotate,
+                        ),
                         headers: {'Authorization': 'Bearer $token'},
                         fit: BoxFit.contain,
-                        width: double.infinity,
-                        height: double.infinity,
-                        gaplessPlayback: true,
+                        errorBuilder: (context, error) => Center(
+                          child: Text(
+                            'Нет live-потока: $error',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ),
                       ),
                     ),
             ),

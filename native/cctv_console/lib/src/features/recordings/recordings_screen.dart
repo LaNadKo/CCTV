@@ -12,12 +12,13 @@ import '../../core/network/api_client.dart';
 import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/mjpeg_stream_view.dart';
 import '../auth/auth_controller.dart';
 import '../modules/module_screens.dart'
     show EmptyPanel, ErrorPanel, ModuleHeader, RefreshButton;
 
-const _daySeconds = 24 * 60 * 60;
-const _maxDayClips = 2000;
+const _archivePageSize = 220;
+const _maxTimelineEvents = 10000;
 
 class ArchiveRecordingsScreen extends StatefulWidget {
   const ArchiveRecordingsScreen({super.key});
@@ -31,6 +32,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     with RouteRefreshState<ArchiveRecordingsScreen> {
   late final Player _player;
   late final VideoController _videoController;
+  late final ScrollController _scrollController;
   StreamSubscription<bool>? _completedSub;
 
   var _loading = false;
@@ -40,16 +42,17 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   List<_TimelineEvent> _events = const [];
   int? _cameraId;
   int? _selectedId;
-  int? _selectedHour;
-  DateTime _selectedDate = _dateOnly(DateTime.now());
   bool _chainPlayback = false;
   String _eventTypeFilter = 'all';
+  bool _loadingMore = false;
+  bool _hasMore = true;
 
   @override
   void initState() {
     super.initState();
     _player = Player();
     _videoController = VideoController(_player);
+    _scrollController = ScrollController()..addListener(_maybeLoadMore);
     _completedSub = _player.stream.completed.listen((completed) {
       if (completed && _chainPlayback && mounted) {
         _playNextClip();
@@ -69,19 +72,25 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _completedSub?.cancel();
     unawaited(_player.dispose());
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool append = false}) async {
     final auth = context.read<AuthController>();
     final token = auth.accessToken;
     final api = context.read<ApiClient>();
     if (token == null) return;
+    if (append && (!_hasMore || _loadingMore || _loading)) return;
 
     setState(() {
-      _loading = true;
+      if (append) {
+        _loadingMore = true;
+      } else {
+        _loading = true;
+      }
       _error = null;
     });
 
@@ -92,67 +101,110 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
 
       final cameras = await api.listCameras(token);
       final activeCameraId = _cameraId ?? cameras.firstOrNull?.cameraId;
-      final dateKey = _dateKey(_selectedDate);
+      final offset = append ? _records.length : 0;
       final query = <String, String?>{
         if (activeCameraId != null) 'camera_id': '$activeCameraId',
-        'date_from': '${dateKey}T00:00:00',
-        'date_to': '${dateKey}T23:59:59',
-        'limit': '$_maxDayClips',
+        'limit': '$_archivePageSize',
+        'offset': '$offset',
       };
 
-      final results = await Future.wait([
-        api.getJsonList('/recordings', token: token, query: query),
-        api.getJsonList('/detections/timeline', token: token, query: query),
-      ]);
+      final page = await api.getJsonList(
+        '/recordings',
+        token: token,
+        query: query,
+      );
 
-      final records =
-          results[0]
-              .map(_RecordingClip.fromJson)
-              .where((record) => record.fileKind == 'video')
-              .toList()
-            ..sort((left, right) => left.startedAt.compareTo(right.startedAt));
-      final events = results[1].map(_TimelineEvent.fromJson).toList()
-        ..sort((left, right) => left.ts.compareTo(right.ts));
+      final pageRecords = page
+          .map(_RecordingClip.fromJson)
+          .where((record) => record.fileKind == 'video')
+          .toList();
+      final combined = append
+          ? _mergeRecords(_records, pageRecords)
+          : pageRecords;
+      combined.sort((left, right) => left.startedAt.compareTo(right.startedAt));
+
+      final eventQuery = <String, String?>{
+        if (activeCameraId != null) 'camera_id': '$activeCameraId',
+        'limit': '$_maxTimelineEvents',
+        if (combined.isNotEmpty)
+          'date_from': combined.first.startedAt.toIso8601String(),
+        if (combined.isNotEmpty)
+          'date_to': combined.last.endAt.toIso8601String(),
+      };
+      final events = combined.isEmpty
+          ? <_TimelineEvent>[]
+          : await api
+                .getJsonList(
+                  '/detections/timeline',
+                  token: token,
+                  query: eventQuery,
+                )
+                .then(
+                  (items) =>
+                      items.map(_TimelineEvent.fromJson).toList()
+                        ..sort((left, right) => left.ts.compareTo(right.ts)),
+                );
 
       final currentSelected = _selectedId;
-      final selected = records.any((record) => record.id == currentSelected)
+      final selected = combined.any((record) => record.id == currentSelected)
           ? currentSelected
-          : records.lastOrNull?.id;
+          : combined.lastOrNull?.id;
       final selectedRecord = selected == null
           ? null
-          : records.firstWhere((record) => record.id == selected);
+          : combined.firstWhere((record) => record.id == selected);
 
       if (!mounted) return;
       setState(() {
         _cameras = cameras;
         _cameraId = activeCameraId;
-        _records = records;
+        _records = combined;
         _events = events;
         _selectedId = selected;
-        _selectedHour = selectedRecord?.hour ?? _selectedHour;
+        _hasMore = pageRecords.length >= _archivePageSize;
       });
 
-      if (selectedRecord != null) {
+      if (!append && selectedRecord != null) {
         await _openClip(selectedRecord, play: false, keepChain: false);
-      } else {
+      } else if (!append) {
         await _player.stop();
       }
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = '$error');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _loadingMore = false;
+        });
+      }
     }
   }
 
-  Map<int, List<_RecordingClip>> get _recordsByHour {
-    final map = {
-      for (var hour = 0; hour < 24; hour++) hour: <_RecordingClip>[],
+  List<_RecordingClip> _mergeRecords(
+    List<_RecordingClip> current,
+    List<_RecordingClip> page,
+  ) {
+    final byId = <int, _RecordingClip>{
+      for (final record in current) record.id: record,
     };
-    for (final record in _records) {
-      map[record.hour]!.add(record);
+    for (final record in page) {
+      byId[record.id] = record;
     }
-    return map;
+    return byId.values.toList();
+  }
+
+  void _maybeLoadMore() {
+    if (!_scrollController.hasClients ||
+        !_hasMore ||
+        _loadingMore ||
+        _loading) {
+      return;
+    }
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - 900) {
+      unawaited(_load(append: true));
+    }
   }
 
   _RecordingClip? get _selectedRecord {
@@ -172,15 +224,44 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     _RecordingClip record, {
     required bool play,
     bool keepChain = true,
+    Duration? seekTo,
   }) async {
     if (!mounted) return;
     if (!keepChain) _chainPlayback = false;
     setState(() {
       _selectedId = record.id;
-      _selectedHour = record.hour;
     });
     await _ensureMediaToken();
     await _player.open(Media(_recordingUri(record).toString()), play: play);
+    if (seekTo != null && seekTo > Duration.zero) {
+      await _player.seek(seekTo);
+    }
+  }
+
+  Future<void> _openArchivePosition(
+    DateTime position, {
+    bool play = false,
+  }) async {
+    if (_records.isEmpty) return;
+    _RecordingClip? target;
+    for (final record in _records) {
+      if (!position.isBefore(record.startedAt) &&
+          position.isBefore(record.endAt)) {
+        target = record;
+        break;
+      }
+    }
+    target ??= _records.lastWhere(
+      (record) => !record.startedAt.isAfter(position),
+      orElse: () => _records.first,
+    );
+    final offset = position.difference(target.startedAt);
+    final boundedOffset = offset.isNegative
+        ? Duration.zero
+        : offset > target.duration
+        ? target.duration
+        : offset;
+    await _openClip(target, play: play, seekTo: boundedOffset);
   }
 
   Future<void> _playFrom(_RecordingClip record) async {
@@ -188,16 +269,8 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     await _openClip(record, play: true);
   }
 
-  Future<void> _playWholeDay() async {
+  Future<void> _playArchive() async {
     final first = _records.firstOrNull;
-    if (first == null) return;
-    await _playFrom(first);
-  }
-
-  Future<void> _playSelectedHour() async {
-    final hour = _selectedHour;
-    if (hour == null) return;
-    final first = _recordsByHour[hour]?.firstOrNull;
     if (first == null) return;
     await _playFrom(first);
   }
@@ -246,31 +319,6 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
         .toList(growable: false);
   }
 
-  List<_TimelineEvent> _eventsForHour(int hour) {
-    return _visibleEvents
-        .where((event) => event.ts.hour == hour)
-        .toList(growable: false);
-  }
-
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-    );
-    if (picked == null) return;
-    setState(() => _selectedDate = _dateOnly(picked));
-    await _load();
-  }
-
-  Future<void> _shiftDate(int days) async {
-    final next = _dateOnly(_selectedDate.add(Duration(days: days)));
-    if (next.isAfter(_dateOnly(DateTime.now()))) return;
-    setState(() => _selectedDate = next);
-    await _load();
-  }
-
   Future<void> _downloadSelected() async {
     final record = _selectedRecord;
     final token = context.read<AuthController>().accessToken;
@@ -305,15 +353,13 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   @override
   Widget build(BuildContext context) {
     final selectedRecord = _selectedRecord;
-    final byHour = _recordsByHour;
     final visibleEvents = _visibleEvents;
-    final selectedHourRecords = _selectedHour == null
-        ? const <_RecordingClip>[]
-        : byHour[_selectedHour] ?? const <_RecordingClip>[];
+    final clipList = _records.reversed.toList(growable: false);
 
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverToBoxAdapter(
@@ -322,7 +368,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                 ModuleHeader(
                   title: 'Записи',
                   subtitle:
-                      'Архив воспроизводится как единая суточная лента: файлы режутся по 60 секунд, группируются по дням и часам.',
+                      'Единая архивная лента по всем сохранённым видео. Старые сегменты подгружаются при прокрутке.',
                   icon: Icons.video_library_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -330,16 +376,9 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       ElevatedButton.icon(
-                        onPressed: _records.isEmpty ? null : _playWholeDay,
+                        onPressed: _records.isEmpty ? null : _playArchive,
                         icon: const Icon(Icons.play_circle_rounded, size: 18),
-                        label: const Text('Воспроизвести день'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: selectedHourRecords.isEmpty
-                            ? null
-                            : _playSelectedHour,
-                        icon: const Icon(Icons.playlist_play_rounded, size: 18),
-                        label: const Text('Воспроизвести час'),
+                        label: const Text('Воспроизвести архив'),
                       ),
                       RefreshButton(loading: _loading, onPressed: _load),
                     ],
@@ -349,15 +388,15 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                 _ArchiveControls(
                   cameras: _cameras,
                   cameraId: _cameraId,
-                  selectedDate: _selectedDate,
                   loading: _loading,
                   onCameraChanged: (value) async {
-                    setState(() => _cameraId = value);
+                    setState(() {
+                      _cameraId = value;
+                      _selectedId = null;
+                      _hasMore = true;
+                    });
                     await _load();
                   },
-                  onDateTap: _pickDate,
-                  onPrevDay: () => _shiftDate(-1),
-                  onNextDay: () => _shiftDate(1),
                   eventTypeFilter: _eventTypeFilter,
                   onEventTypeChanged: (value) =>
                       setState(() => _eventTypeFilter = value),
@@ -393,84 +432,59 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                   ),
                 const SizedBox(height: 14),
                 if (_records.isNotEmpty)
-                  _DayTimeline(
+                  _ArchiveTimelineSlider(
                     records: _records,
                     events: visibleEvents,
                     selectedId: _selectedId,
-                    onSelect: (record) => _openClip(record, play: false),
+                    onSelectRecord: (record) => _openClip(record, play: false),
+                    onSelectPosition: (position) =>
+                        _openArchivePosition(position),
                   ),
                 const SizedBox(height: 14),
                 if (_records.isNotEmpty)
-                  _SummaryRail(
-                    records: _records,
-                    events: visibleEvents,
-                    selectedDate: _selectedDate,
-                  ),
+                  _SummaryRail(records: _records, events: visibleEvents),
                 const SizedBox(height: 14),
+                if (_records.isNotEmpty)
+                  _SectionTitle(
+                    title: 'Все клипы',
+                    subtitle:
+                        '${_records.length} загружено. Прокрутите ниже, чтобы подгрузить более старые записи.',
+                  ),
+                const SizedBox(height: 12),
               ],
             ),
           ),
           if (_records.isNotEmpty)
-            SliverGrid(
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final hour = 23 - index;
-                final records = byHour[hour] ?? const <_RecordingClip>[];
-                final events = _eventsForHour(hour);
-                return _HourFolderCard(
-                  hour: hour,
-                  records: records,
-                  events: events,
-                  active: _selectedHour == hour,
-                  snapshotUri: records.isEmpty
-                      ? null
-                      : _snapshotUri(records.last).toString(),
-                  onTap: records.isEmpty
-                      ? null
-                      : () {
-                          setState(() {
-                            _selectedHour = hour;
-                            _selectedId = records.first.id;
-                          });
-                        },
+            SliverList.builder(
+              itemCount: clipList.length + (_hasMore ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (index >= clipList.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Center(
+                      child: _loadingMore
+                          ? const CircularProgressIndicator(strokeWidth: 2)
+                          : OutlinedButton.icon(
+                              onPressed: () => _load(append: true),
+                              icon: const Icon(Icons.expand_more_rounded),
+                              label: const Text('Загрузить более старые'),
+                            ),
+                    ),
+                  );
+                }
+                final record = clipList[index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _ArchiveClipRow(
+                    record: record,
+                    active: record.id == _selectedId,
+                    snapshotUri: _snapshotUri(record).toString(),
+                    events: _eventsForClip(record),
+                    onTap: () => _openClip(record, play: false),
+                    onPlay: () => _playFrom(record),
+                  ),
                 );
-              }, childCount: 24),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 230,
-                mainAxisExtent: 178,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-              ),
-            ),
-          if (_records.isNotEmpty && _selectedHour != null)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 18, bottom: 12),
-                child: _SectionTitle(
-                  title: 'Клипы ${_selectedHour.toString().padLeft(2, '0')}:00',
-                  subtitle:
-                      '${selectedHourRecords.length} сегментов по минутам. Нажмите клип, чтобы открыть его в основном плеере.',
-                ),
-              ),
-            ),
-          if (_records.isNotEmpty && _selectedHour != null)
-            SliverGrid(
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final record = selectedHourRecords[index];
-                return _MinuteClipCard(
-                  record: record,
-                  active: record.id == _selectedId,
-                  snapshotUri: _snapshotUri(record).toString(),
-                  events: _eventsForClip(record),
-                  onTap: () => _openClip(record, play: false),
-                  onPlay: () => _playFrom(record),
-                );
-              }, childCount: selectedHourRecords.length),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 280,
-                mainAxisExtent: 215,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-              ),
+              },
             ),
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
@@ -483,24 +497,16 @@ class _ArchiveControls extends StatelessWidget {
   const _ArchiveControls({
     required this.cameras,
     required this.cameraId,
-    required this.selectedDate,
     required this.loading,
     required this.onCameraChanged,
-    required this.onDateTap,
-    required this.onPrevDay,
-    required this.onNextDay,
     required this.eventTypeFilter,
     required this.onEventTypeChanged,
   });
 
   final List<CameraSummary> cameras;
   final int? cameraId;
-  final DateTime selectedDate;
   final bool loading;
   final ValueChanged<int?> onCameraChanged;
-  final VoidCallback onDateTap;
-  final VoidCallback onPrevDay;
-  final VoidCallback onNextDay;
   final String eventTypeFilter;
   final ValueChanged<String> onEventTypeChanged;
 
@@ -534,27 +540,6 @@ class _ArchiveControls extends StatelessWidget {
               ],
               onChanged: loading ? null : onCameraChanged,
             ),
-          ),
-          OutlinedButton.icon(
-            onPressed: loading ? null : onPrevDay,
-            icon: const Icon(Icons.chevron_left_rounded),
-            label: const Text('День назад'),
-          ),
-          OutlinedButton.icon(
-            onPressed: loading ? null : onDateTap,
-            icon: const Icon(Icons.calendar_month_rounded),
-            label: Text(_dayLabel(selectedDate)),
-          ),
-          OutlinedButton.icon(
-            onPressed:
-                loading ||
-                    _dateOnly(
-                      selectedDate,
-                    ).isAtSameMomentAs(_dateOnly(DateTime.now()))
-                ? null
-                : onNextDay,
-            icon: const Icon(Icons.chevron_right_rounded),
-            label: const Text('День вперёд'),
           ),
           SizedBox(
             width: 230,
@@ -596,7 +581,7 @@ class _ArchiveControls extends StatelessWidget {
               border: Border.all(color: colors.border),
             ),
             child: Text(
-              'Структура: день → час → клип до 60 сек',
+              'Структура: единая лента → минутные клипы → метки событий',
               style: TextStyle(color: colors.muted, fontSize: 12),
             ),
           ),
@@ -746,11 +731,10 @@ class _MjpegFallbackDialog extends StatelessWidget {
                 borderRadius: BorderRadius.circular(18),
                 child: Container(
                   color: Colors.black,
-                  child: Image.network(
-                    uri,
+                  child: MjpegStreamView(
+                    uri: Uri.parse(uri),
                     fit: BoxFit.contain,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, _, _) => Center(
+                    errorBuilder: (_, _) => Center(
                       child: Text(
                         'MJPEG поток не открылся. URL можно проверить во внешнем плеере.',
                         style: TextStyle(color: colors.muted),
@@ -778,136 +762,173 @@ class _MjpegFallbackDialog extends StatelessWidget {
   }
 }
 
-class _DayTimeline extends StatelessWidget {
-  const _DayTimeline({
+class _ArchiveTimelineSlider extends StatefulWidget {
+  const _ArchiveTimelineSlider({
     required this.records,
     required this.events,
     required this.selectedId,
-    required this.onSelect,
+    required this.onSelectRecord,
+    required this.onSelectPosition,
   });
 
   final List<_RecordingClip> records;
   final List<_TimelineEvent> events;
   final int? selectedId;
-  final ValueChanged<_RecordingClip> onSelect;
+  final ValueChanged<_RecordingClip> onSelectRecord;
+  final ValueChanged<DateTime> onSelectPosition;
+
+  @override
+  State<_ArchiveTimelineSlider> createState() => _ArchiveTimelineSliderState();
+}
+
+class _ArchiveTimelineSliderState extends State<_ArchiveTimelineSlider> {
+  double? _dragValue;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final records = widget.records;
+    final start = records.first.startedAt;
+    final end = records.last.endAt.isAfter(start)
+        ? records.last.endAt
+        : start.add(const Duration(minutes: 1));
+    final totalMs = end
+        .difference(start)
+        .inMilliseconds
+        .clamp(1, 1 << 53)
+        .toInt();
+    final selected = records
+        .where((record) => record.id == widget.selectedId)
+        .firstOrNull;
+    final selectedMs = selected == null
+        ? totalMs.toDouble()
+        : selected.startedAt
+              .difference(start)
+              .inMilliseconds
+              .clamp(0, totalMs)
+              .toDouble();
+    final value = (_dragValue ?? selectedMs)
+        .clamp(0.0, totalMs.toDouble())
+        .toDouble();
+
     return GlassPanel(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const _SectionTitle(
-            title: 'Суточная лента',
+            title: 'Архивная лента',
             subtitle:
-                'Синие участки - сохранённые минутные сегменты, вертикальные метки - события распознавания и движения.',
+                'Единая шкала по загруженным записям: каждый час отмечен, цветные риски - события.',
           ),
           const SizedBox(height: 12),
-          SizedBox(
-            height: 42,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final width = constraints.maxWidth;
-                return Stack(
-                  children: [
-                    Positioned.fill(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: colors.surfaceMuted,
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: colors.border),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final hours = end.difference(start).inHours + 2;
+              final width = (hours * 92.0)
+                  .clamp(constraints.maxWidth, 16000.0)
+                  .toDouble();
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: width,
+                  height: 100,
+                  child: Stack(
+                    children: [
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: 20,
+                        height: 38,
+                        child: CustomPaint(
+                          painter: _ArchiveTimelinePainter(
+                            records: records,
+                            events: widget.events,
+                            selectedId: widget.selectedId,
+                            start: start,
+                            totalMs: totalMs,
+                            colors: colors,
+                          ),
                         ),
                       ),
-                    ),
-                    for (var hour = 1; hour < 24; hour++)
                       Positioned(
-                        left: width * hour / 24,
+                        left: 0,
+                        right: 0,
                         top: 0,
-                        bottom: 0,
-                        child: Container(width: 1, color: colors.border),
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 0,
+                            activeTrackColor: Colors.transparent,
+                            inactiveTrackColor: Colors.transparent,
+                            overlayShape: SliderComponentShape.noOverlay,
+                            thumbColor: colors.secondaryAccent,
+                          ),
+                          child: Slider(
+                            min: 0,
+                            max: totalMs.toDouble(),
+                            value: value,
+                            onChanged: (next) =>
+                                setState(() => _dragValue = next),
+                            onChangeEnd: (next) {
+                              setState(() => _dragValue = null);
+                              widget.onSelectPosition(
+                                start.add(Duration(milliseconds: next.round())),
+                              );
+                            },
+                          ),
+                        ),
                       ),
-                    for (final record in records)
-                      Positioned(
-                        left: width * record.startSecond / _daySeconds,
-                        top: 8,
-                        width:
-                            (width * record.durationForTimeline / _daySeconds)
-                                .clamp(4.0, width),
-                        bottom: 8,
-                        child: Tooltip(
-                          message: _timeRange(record),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(999),
-                            onTap: () => onSelect(record),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 180),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(999),
-                                gradient: LinearGradient(
-                                  colors: record.id == selectedId
-                                      ? [
-                                          colors.primaryAccent,
-                                          colors.secondaryAccent,
-                                        ]
-                                      : [
-                                          colors.primaryAccent.withValues(
-                                            alpha: 0.72,
-                                          ),
-                                          colors.secondaryAccent.withValues(
-                                            alpha: 0.48,
-                                          ),
-                                        ],
-                                ),
-                                boxShadow: record.id == selectedId
-                                    ? [
-                                        BoxShadow(
-                                          color: colors.primaryAccent
-                                              .withValues(alpha: 0.22),
-                                          blurRadius: 18,
-                                        ),
-                                      ]
-                                    : null,
-                              ),
+                      for (final tick in _hourTicks(start, end))
+                        Positioned(
+                          left:
+                              width *
+                              tick.difference(start).inMilliseconds /
+                              totalMs,
+                          top: 63,
+                          child: Text(
+                            DateFormat('dd.MM HH:00').format(tick),
+                            style: TextStyle(
+                              color: colors.muted,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
-                      ),
-                    for (final event in events)
-                      Positioned(
-                        left: width * event.secondOfDay / _daySeconds,
-                        top: 5,
-                        bottom: 5,
-                        child: Container(
-                          width: 4,
-                          decoration: BoxDecoration(
-                            color: _eventColor(context, event.type),
-                            borderRadius: BorderRadius.circular(999),
+                      for (final record in records)
+                        Positioned(
+                          left:
+                              width *
+                              record.startedAt
+                                  .difference(start)
+                                  .inMilliseconds /
+                              totalMs,
+                          top: 20,
+                          width:
+                              (width * record.duration.inMilliseconds / totalMs)
+                                  .clamp(5.0, 140.0)
+                                  .toDouble(),
+                          height: 38,
+                          child: Tooltip(
+                            message: _timeRange(record),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(999),
+                              onTap: () => widget.onSelectRecord(record),
+                              child: const SizedBox.expand(),
+                            ),
                           ),
                         ),
-                      ),
-                  ],
-                );
-              },
-            ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              for (final label in const [
-                '00:00',
-                '06:00',
-                '12:00',
-                '18:00',
-                '24:00',
-              ])
-                Text(
-                  label,
-                  style: TextStyle(color: colors.muted, fontSize: 11),
-                ),
-            ],
+          Text(
+            selected == null
+                ? 'Выберите позицию на шкале.'
+                : 'Текущий клип: ${DateFormat('dd.MM.yyyy HH:mm:ss').format(selected.startedAt)}',
+            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
         ],
       ),
@@ -915,20 +936,109 @@ class _DayTimeline extends StatelessWidget {
   }
 }
 
-class _SummaryRail extends StatelessWidget {
-  const _SummaryRail({
+class _ArchiveTimelinePainter extends CustomPainter {
+  const _ArchiveTimelinePainter({
     required this.records,
     required this.events,
-    required this.selectedDate,
+    required this.selectedId,
+    required this.start,
+    required this.totalMs,
+    required this.colors,
   });
 
   final List<_RecordingClip> records;
   final List<_TimelineEvent> events;
-  final DateTime selectedDate;
+  final int? selectedId;
+  final DateTime start;
+  final int totalMs;
+  final AppColors colors;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final basePaint = Paint()
+      ..color = colors.surfaceMuted
+      ..style = PaintingStyle.fill;
+    final borderPaint = Paint()
+      ..color = colors.border
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    final rect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(999),
+    );
+    canvas.drawRRect(rect, basePaint);
+    canvas.drawRRect(rect, borderPaint);
+
+    final end = start.add(Duration(milliseconds: totalMs));
+    final tickPaint = Paint()
+      ..color = colors.border
+      ..strokeWidth = 1;
+    for (final tick in _hourTicks(start, end)) {
+      final x = size.width * tick.difference(start).inMilliseconds / totalMs;
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), tickPaint);
+    }
+
+    for (final record in records) {
+      final left =
+          size.width *
+          record.startedAt.difference(start).inMilliseconds /
+          totalMs;
+      final width = (size.width * record.duration.inMilliseconds / totalMs)
+          .clamp(4.0, size.width)
+          .toDouble();
+      final paint = Paint()
+        ..shader = LinearGradient(
+          colors: record.id == selectedId
+              ? [colors.primaryAccent, colors.secondaryAccent]
+              : [
+                  colors.primaryAccent.withValues(alpha: 0.70),
+                  colors.secondaryAccent.withValues(alpha: 0.45),
+                ],
+        ).createShader(Rect.fromLTWH(left, 7, width, size.height - 14));
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(left, 7, width, size.height - 14),
+          const Radius.circular(999),
+        ),
+        paint,
+      );
+    }
+
+    for (final event in events) {
+      final diff = event.ts.difference(start).inMilliseconds;
+      if (diff < 0 || diff > totalMs) continue;
+      final x = size.width * diff / totalMs;
+      final paint = Paint()
+        ..color = _eventColorByName(colors, event.type)
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(Offset(x, 4), Offset(x, size.height - 4), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ArchiveTimelinePainter oldDelegate) {
+    return oldDelegate.records != records ||
+        oldDelegate.events != events ||
+        oldDelegate.selectedId != selectedId ||
+        oldDelegate.start != start ||
+        oldDelegate.totalMs != totalMs ||
+        oldDelegate.colors != colors;
+  }
+}
+
+class _SummaryRail extends StatelessWidget {
+  const _SummaryRail({required this.records, required this.events});
+
+  final List<_RecordingClip> records;
+  final List<_TimelineEvent> events;
 
   @override
   Widget build(BuildContext context) {
     final hours = records.map((record) => record.hour).toSet().length;
+    final range = records.isEmpty
+        ? '-'
+        : '${DateFormat('dd.MM HH:mm').format(records.first.startedAt)} - ${DateFormat('dd.MM HH:mm').format(records.last.endAt)}';
     final totalBytes = records.fold<int>(
       0,
       (sum, record) => sum + (record.sizeBytes ?? 0),
@@ -937,9 +1047,9 @@ class _SummaryRail extends StatelessWidget {
       spacing: 12,
       runSpacing: 12,
       children: [
-        _MetricPill(label: 'Дата', value: _dayLabel(selectedDate)),
+        _MetricPill(label: 'Диапазон', value: range),
         _MetricPill(label: 'Клипы', value: '${records.length}'),
-        _MetricPill(label: 'Часы с архивом', value: '$hours / 24'),
+        _MetricPill(label: 'Часы с архивом', value: '$hours'),
         _MetricPill(label: 'Метки', value: '${events.length}'),
         _MetricPill(label: 'Объём', value: _formatBytes(totalBytes)),
       ],
@@ -947,97 +1057,8 @@ class _SummaryRail extends StatelessWidget {
   }
 }
 
-class _HourFolderCard extends StatelessWidget {
-  const _HourFolderCard({
-    required this.hour,
-    required this.records,
-    required this.events,
-    required this.active,
-    required this.snapshotUri,
-    required this.onTap,
-  });
-
-  final int hour;
-  final List<_RecordingClip> records;
-  final List<_TimelineEvent> events;
-  final bool active;
-  final String? snapshotUri;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final hasRecords = records.isNotEmpty;
-    return RepaintBoundary(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: hasRecords ? colors.surface : colors.surfaceMuted,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: active ? colors.primaryAccent : colors.border,
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(15),
-                  child: snapshotUri == null
-                      ? Container(
-                          color: colors.surfaceMuted,
-                          child: Center(
-                            child: Text(
-                              'Нет записей',
-                              style: TextStyle(
-                                color: colors.muted,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        )
-                      : Image.network(
-                          snapshotUri!,
-                          fit: BoxFit.cover,
-                          width: double.infinity,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
-                                color: colors.surfaceMuted,
-                                child: Icon(
-                                  Icons.broken_image_rounded,
-                                  color: colors.muted,
-                                ),
-                              ),
-                        ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '${hour.toString().padLeft(2, '0')}:00',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                hasRecords
-                    ? '${records.length} клипов · ${events.length} меток'
-                    : 'Пусто',
-                style: TextStyle(color: colors.muted, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MinuteClipCard extends StatelessWidget {
-  const _MinuteClipCard({
+class _ArchiveClipRow extends StatelessWidget {
+  const _ArchiveClipRow({
     required this.record,
     required this.active,
     required this.snapshotUri,
@@ -1061,8 +1082,8 @@ class _MinuteClipCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(20),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(12),
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: colors.surface,
             borderRadius: BorderRadius.circular(20),
@@ -1070,70 +1091,74 @@ class _MinuteClipCard extends StatelessWidget {
               color: active ? colors.primaryAccent : colors.border,
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Expanded(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(15),
-                        child: Image.network(
-                          snapshotUri,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
-                                color: colors.surfaceMuted,
-                                child: Icon(
-                                  Icons.broken_image_rounded,
-                                  color: colors.muted,
-                                ),
-                              ),
-                        ),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: SizedBox(
+                  width: 148,
+                  height: 84,
+                  child: Image.network(
+                    snapshotUri,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: colors.surfaceMuted,
+                      child: Icon(
+                        Icons.broken_image_rounded,
+                        color: colors.muted,
                       ),
                     ),
-                    Positioned(
-                      right: 8,
-                      bottom: 8,
-                      child: IconButton.filled(
-                        onPressed: onPlay,
-                        icon: const Icon(Icons.play_arrow_rounded),
-                        tooltip: 'Играть отсюда',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      DateFormat(
+                        'dd.MM.yyyy HH:mm:ss',
+                      ).format(record.startedAt),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: colors.textStrong,
+                        fontWeight: FontWeight.w900,
                       ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${_timeRange(record)} · ${_formatDuration(record.durationSeconds)} · ${_formatBytes(record.sizeBytes)}',
+                      style: TextStyle(color: colors.muted, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        if (events.isEmpty)
+                          _EventBadge(
+                            label: 'без меток',
+                            icon: Icons.radio_button_unchecked_rounded,
+                            color: colors.muted,
+                          )
+                        else
+                          for (final event in events.take(3))
+                            _EventBadge(
+                              label:
+                                  '${_eventLabel(event.type)} ${DateFormat('HH:mm:ss').format(event.ts)}',
+                              icon: _eventIcon(event.type),
+                              color: _eventColor(context, event.type),
+                            ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 10),
-              Text(
-                _timeRange(record),
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  _EventBadge(
-                    label: _formatDuration(record.durationSeconds),
-                    icon: Icons.schedule_rounded,
-                    color: colors.primaryAccent,
-                  ),
-                  if (events.isEmpty)
-                    _EventBadge(
-                      label: 'без меток',
-                      icon: Icons.radio_button_unchecked_rounded,
-                      color: colors.muted,
-                    )
-                  else
-                    for (final event in events.take(2))
-                      _EventBadge(
-                        label: _eventLabel(event.type),
-                        icon: _eventIcon(event.type),
-                        color: _eventColor(context, event.type),
-                      ),
-                ],
+              const SizedBox(width: 10),
+              IconButton.filled(
+                onPressed: onPlay,
+                icon: const Icon(Icons.play_arrow_rounded),
+                tooltip: 'Играть отсюда',
               ),
             ],
           ),
@@ -1277,11 +1302,12 @@ class _RecordingClip {
   final int? sizeBytes;
 
   int get hour => startedAt.hour;
-  int get startSecond =>
-      startedAt.hour * 3600 + startedAt.minute * 60 + startedAt.second;
-  double get durationForTimeline {
-    final fromDates = endAt.difference(startedAt).inSeconds.toDouble();
-    return (durationSeconds ?? fromDates).clamp(10.0, 60.0).toDouble();
+  Duration get duration {
+    final milliseconds =
+        ((durationSeconds ?? endAt.difference(startedAt).inSeconds) * 1000)
+            .round()
+            .clamp(1000, 24 * 60 * 60 * 1000);
+    return Duration(milliseconds: milliseconds);
   }
 
   factory _RecordingClip.fromJson(Map<String, dynamic> json) {
@@ -1315,8 +1341,6 @@ class _TimelineEvent {
   final DateTime ts;
   final String type;
 
-  int get secondOfDay => ts.hour * 3600 + ts.minute * 60 + ts.second;
-
   factory _TimelineEvent.fromJson(Map<String, dynamic> json) {
     return _TimelineEvent(
       id: json['event_id'] as int? ?? 0,
@@ -1330,20 +1354,6 @@ class _TimelineEvent {
 DateTime? _parseDate(Object? value) {
   if (value == null) return null;
   return DateTime.tryParse('$value');
-}
-
-DateTime _dateOnly(DateTime value) =>
-    DateTime(value.year, value.month, value.day);
-
-String _dateKey(DateTime value) =>
-    '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
-
-String _dayLabel(DateTime value) {
-  final today = _dateOnly(DateTime.now());
-  final date = _dateOnly(value);
-  if (date == today) return 'Сегодня';
-  if (date == today.subtract(const Duration(days: 1))) return 'Вчера';
-  return DateFormat('dd.MM.yyyy').format(value);
 }
 
 String _timeRange(_RecordingClip record) {
@@ -1388,6 +1398,10 @@ IconData _eventIcon(String type) {
 
 Color _eventColor(BuildContext context, String type) {
   final colors = context.colors;
+  return _eventColorByName(colors, type);
+}
+
+Color _eventColorByName(AppColors colors, String type) {
   return switch (type) {
     'face_recognized' => colors.success,
     'face_unknown' => colors.warning,
@@ -1395,6 +1409,19 @@ Color _eventColor(BuildContext context, String type) {
     'motion_detected' => colors.secondaryAccent,
     _ => colors.muted,
   };
+}
+
+List<DateTime> _hourTicks(DateTime start, DateTime end) {
+  var tick = DateTime(start.year, start.month, start.day, start.hour);
+  if (tick.isBefore(start)) {
+    tick = tick.add(const Duration(hours: 1));
+  }
+  final ticks = <DateTime>[];
+  while (!tick.isAfter(end)) {
+    ticks.add(tick);
+    tick = tick.add(const Duration(hours: 1));
+  }
+  return ticks;
 }
 
 extension _NullableIterableItems<T> on Iterable<T> {
