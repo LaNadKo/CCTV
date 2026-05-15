@@ -238,3 +238,37 @@ class RuViewUpstreamStatus(BaseModel):
     pose_current: dict[str, Any] | None = None
     pose_stats: dict[str, Any] | None = None
     error: str | None = None
+
+
+class RuViewPoseBox(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class RuViewPoseKeypoint(BaseModel):
+    name: str | None = None
+    x: float
+    y: float
+    z: float | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class RuViewPosePerson(BaseModel):
+    stable_id: str
+    ruview_id: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    bbox: RuViewPoseBox | None = None
+    keypoints: list[RuViewPoseKeypoint] = Field(default_factory=list)
+    zone: str | None = None
+    last_seen_at: datetime
+
+
+class RuViewPoseSnapshot(BaseModel):
+    generated_at: datetime
+    reachable: bool
+    source: str | None = None
+    total_persons: int = Field(default=0, ge=0)
+    persons: list[RuViewPosePerson] = Field(default_factory=list)
+    error: str | None = None
