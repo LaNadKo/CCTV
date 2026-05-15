@@ -28,7 +28,7 @@ type CameraOption = {
 };
 
 const FALLBACK_CAMERA_FPS = 10;
-const MIN_CAPTURE_INTERVAL_MS = 25;
+const MIN_CAPTURE_INTERVAL_MS = 16;
 
 function personLabel(person: Person): string {
   return [person.last_name, person.first_name, person.middle_name].filter(Boolean).join(" ") || `ID ${person.person_id}`;
