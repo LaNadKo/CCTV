@@ -811,6 +811,13 @@ const LivePage: React.FC = () => {
     const overlayReady = Boolean(
       ruviewPose?.reachable && ruviewPose.camera_aligned && ruviewPose.overlay_allowed && ruviewPose.persons.length > 0
     );
+    const waitingForCameraAnchor = Boolean(
+      rfOnline &&
+        ruviewPose?.reachable &&
+        ruviewPose.camera_aligned &&
+        !overlayReady &&
+        ruviewPose.error?.toLowerCase().includes("body-track")
+    );
 
     if (!ruviewOverlayEnabled) {
       return {
@@ -823,7 +830,7 @@ const LivePage: React.FC = () => {
 
     const packetRateText =
       packetRateHz > 0 ? ` · ${packetRateHz >= 10 ? packetRateHz.toFixed(0) : packetRateHz.toFixed(1)}Hz` : "";
-    const overlayText = overlayReady ? " · overlay" : " · RF only";
+    const overlayText = overlayReady ? " · overlay" : waitingForCameraAnchor ? " · wait body" : " · RF only";
     const text = rfOnline
       ? `RF ${nodesOnline}/${nodesTotal || 0}${packetRateText}${overlayText}`
       : ruviewError
@@ -836,7 +843,11 @@ const LivePage: React.FC = () => {
       `CSI: ${ruviewBridgeStatus?.live_csi ? "live" : "stale"}`,
       packetRateHz > 0 ? `packet rate: ${packetRateHz.toFixed(1)} Hz` : null,
       source ? `source: ${source}` : null,
-      overlayReady ? "camera overlay: calibrated" : "camera overlay: disabled until CSI-to-camera calibration exists",
+      overlayReady
+        ? "camera overlay: calibrated"
+        : waitingForCameraAnchor
+          ? "camera overlay: waiting for a fresh camera body-track anchor"
+          : "camera overlay: disabled until CSI-to-camera calibration exists",
       ruviewError ? `last message: ${ruviewError}` : null,
     ]
       .filter(Boolean)

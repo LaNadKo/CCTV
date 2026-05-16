@@ -99,6 +99,18 @@ class Settings(BaseSettings):
         default=1.6,
         validation_alias="RUVIEW_CALIBRATOR_WINDOW_SECONDS",
     )
+    ruview_rf_overlay_requires_camera_anchor: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_RF_OVERLAY_REQUIRES_CAMERA_ANCHOR",
+    )
+    ruview_camera_anchor_max_age_seconds: float = Field(
+        default=3.0,
+        validation_alias="RUVIEW_CAMERA_ANCHOR_MAX_AGE_SECONDS",
+    )
+    ruview_rf_pose_hold_seconds: float = Field(
+        default=3.0,
+        validation_alias="RUVIEW_RF_POSE_HOLD_SECONDS",
+    )
 
     @field_validator("debug", mode="before")
     @classmethod

@@ -4,6 +4,7 @@ import json
 import math
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 from app.config import settings
 from app.schemas.ruview import RuViewPoseBox, RuViewPoseKeypoint, RuViewPosePerson, RuViewPoseSnapshot
 from app.services.ruview_bridge import RecentCsiPacket, get_recent_ruview_csi_packets
+from app.services.ruview_calibration import get_latest_camera_sample
 
 CSI_MAGIC = 0xC5110001
 RF_LINK_MAGIC = 0xC5110101
@@ -63,6 +65,17 @@ class _Model:
 
 _model_lock = threading.RLock()
 _model_cache: _Model | None = None
+
+_pose_lock = threading.RLock()
+_stabilized_person: RuViewPosePerson | None = None
+_stabilized_raw_center: tuple[float, float] | None = None
+_stabilized_updated_at: float = 0.0
+_stabilized_anchor_at: float = 0.0
+
+_SMOOTH_ALPHA = 0.18
+_ANCHORED_ALPHA = 0.55
+_STATIC_DEADBAND_PX = 14.0
+_MAX_RF_DELTA_PX = 42.0
 
 
 def _decode_csi_packet(packet: RecentCsiPacket) -> _DecodedCsi | None:
@@ -212,6 +225,286 @@ def _pose_from_prediction(prediction: np.ndarray, model: _Model, packet_count: i
     )
 
 
+def _person_center(person: RuViewPosePerson) -> tuple[float, float] | None:
+    if person.bbox:
+        return person.bbox.x + person.bbox.width / 2.0, person.bbox.y + person.bbox.height / 2.0
+    points = [point for point in person.keypoints if point.visible]
+    if not points:
+        return None
+    return sum(point.x for point in points) / len(points), sum(point.y for point in points) / len(points)
+
+
+def _person_bounds(person: RuViewPosePerson) -> RuViewPoseBox | None:
+    if person.bbox:
+        return person.bbox
+    points = [point for point in person.keypoints if point.visible]
+    if not points:
+        return None
+    min_x = min(point.x for point in points)
+    max_x = max(point.x for point in points)
+    min_y = min(point.y for point in points)
+    max_y = max(point.y for point in points)
+    return RuViewPoseBox(x=min_x, y=min_y, width=max(1.0, max_x - min_x), height=max(1.0, max_y - min_y))
+
+
+def _copy_person(person: RuViewPosePerson) -> RuViewPosePerson:
+    return RuViewPosePerson(
+        track_id=person.track_id,
+        source_id=person.source_id,
+        confidence=person.confidence,
+        bbox=RuViewPoseBox(**person.bbox.model_dump()) if person.bbox else None,
+        keypoints=[RuViewPoseKeypoint(**point.model_dump()) for point in person.keypoints],
+        age_ms=person.age_ms,
+    )
+
+
+def _blend_value(old: float, new: float, alpha: float) -> float:
+    return old * (1.0 - alpha) + new * alpha
+
+
+def _blend_person(old: RuViewPosePerson | None, new: RuViewPosePerson, alpha: float) -> RuViewPosePerson:
+    if old is None:
+        return _copy_person(new)
+    old_points = {point.name: point for point in old.keypoints}
+    points: list[RuViewPoseKeypoint] = []
+    for point in new.keypoints:
+        previous = old_points.get(point.name)
+        if previous:
+            points.append(
+                RuViewPoseKeypoint(
+                    name=point.name,
+                    x=_blend_value(previous.x, point.x, alpha),
+                    y=_blend_value(previous.y, point.y, alpha),
+                    confidence=point.confidence,
+                    visible=point.visible,
+                )
+            )
+        else:
+            points.append(RuViewPoseKeypoint(**point.model_dump()))
+    bbox = new.bbox
+    if old.bbox and new.bbox:
+        bbox = RuViewPoseBox(
+            x=_blend_value(old.bbox.x, new.bbox.x, alpha),
+            y=_blend_value(old.bbox.y, new.bbox.y, alpha),
+            width=_blend_value(old.bbox.width, new.bbox.width, alpha),
+            height=_blend_value(old.bbox.height, new.bbox.height, alpha),
+        )
+    return RuViewPosePerson(
+        track_id="rf-1",
+        source_id=new.source_id,
+        confidence=new.confidence,
+        bbox=bbox,
+        keypoints=points,
+        age_ms=new.age_ms,
+    )
+
+
+def _translate_person(person: RuViewPosePerson, dx: float, dy: float) -> RuViewPosePerson:
+    copy = _copy_person(person)
+    if copy.bbox:
+        copy.bbox.x += dx
+        copy.bbox.y += dy
+    for point in copy.keypoints:
+        point.x += dx
+        point.y += dy
+    return copy
+
+
+def _clamp_person(person: RuViewPosePerson, width: float, height: float) -> RuViewPosePerson:
+    copy = _copy_person(person)
+    if copy.bbox:
+        copy.bbox.x = max(0.0, min(width, copy.bbox.x))
+        copy.bbox.y = max(0.0, min(height, copy.bbox.y))
+        copy.bbox.width = max(0.0, min(copy.bbox.width, width - copy.bbox.x))
+        copy.bbox.height = max(0.0, min(copy.bbox.height, height - copy.bbox.y))
+    for point in copy.keypoints:
+        point.x = max(0.0, min(width, point.x))
+        point.y = max(0.0, min(height, point.y))
+    return copy
+
+
+def _box_from_payload(value: Any, sx: float, sy: float) -> RuViewPoseBox | None:
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(value[0]) * sx, float(value[1]) * sy, float(value[2]) * sx, float(value[3]) * sy)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in (x1, y1, x2, y2)):
+        return None
+    return RuViewPoseBox(x=min(x1, x2), y=min(y1, y2), width=max(1.0, abs(x2 - x1)), height=max(1.0, abs(y2 - y1)))
+
+
+def _keypoints_from_payload(track: dict[str, Any], sx: float, sy: float) -> list[RuViewPoseKeypoint]:
+    raw_points = track.get("keypoints")
+    if not isinstance(raw_points, list):
+        return []
+    raw_conf = track.get("keypoint_conf")
+    confs = raw_conf if isinstance(raw_conf, list) else []
+    points: list[RuViewPoseKeypoint] = []
+    for index, raw in enumerate(raw_points[: len(_COCO_KEYPOINT_NAMES)]):
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            continue
+        try:
+            x = float(raw[0]) * sx
+            y = float(raw[1]) * sy
+            confidence = float(confs[index]) if index < len(confs) else None
+        except (TypeError, ValueError):
+            continue
+        visible = math.isfinite(x) and math.isfinite(y) and (confidence is None or confidence >= 0.12)
+        points.append(
+            RuViewPoseKeypoint(
+                name=_COCO_KEYPOINT_NAMES[index],
+                x=x,
+                y=y,
+                confidence=confidence,
+                visible=visible,
+            )
+        )
+    return points
+
+
+def _latest_camera_anchor(model: _Model) -> RuViewPosePerson | None:
+    sample = get_latest_camera_sample(max_age_seconds=float(settings.ruview_camera_anchor_max_age_seconds))
+    if not sample:
+        return None
+    try:
+        frame_width = max(1.0, float(sample.get("frame_width") or model.frame_width))
+        frame_height = max(1.0, float(sample.get("frame_height") or model.frame_height))
+    except (TypeError, ValueError):
+        frame_width = model.frame_width
+        frame_height = model.frame_height
+    sx = model.frame_width / frame_width
+    sy = model.frame_height / frame_height
+    tracks = sample.get("tracks")
+    if not isinstance(tracks, list):
+        return None
+
+    candidates: list[tuple[float, RuViewPosePerson]] = []
+    for track in tracks:
+        if not isinstance(track, dict) or bool(track.get("head_only")):
+            continue
+        try:
+            track_age_ms = float(track.get("age_ms") or 0.0)
+        except (TypeError, ValueError):
+            track_age_ms = 0.0
+        if track_age_ms > 900.0:
+            continue
+        bbox = _box_from_payload(track.get("tracking_bbox") or track.get("bbox"), sx, sy)
+        if bbox is None or bbox.width < 24.0 or bbox.height < 40.0:
+            continue
+        points = _keypoints_from_payload(track, sx, sy)
+        visible_points = [point for point in points if point.visible and (point.confidence is None or point.confidence >= 0.18)]
+        if len(visible_points) < 5:
+            continue
+        confidence = 0.5
+        try:
+            confidence = max(0.0, min(1.0, float(track.get("confidence") or 0.5)))
+        except (TypeError, ValueError):
+            pass
+        score = confidence + min(1.0, len(visible_points) / 17.0)
+        candidates.append(
+            (
+                score,
+                RuViewPosePerson(
+                    track_id="rf-1",
+                    source_id="camera-anchor",
+                    confidence=max(confidence, 0.55),
+                    bbox=bbox,
+                    keypoints=points,
+                ),
+            )
+        )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _fit_person_to_anchor(raw: RuViewPosePerson, anchor: RuViewPosePerson) -> RuViewPosePerson:
+    raw_bounds = _person_bounds(raw)
+    if raw_bounds is None or anchor.bbox is None:
+        return _copy_person(anchor)
+    sx = anchor.bbox.width / max(raw_bounds.width, 1.0)
+    sy = anchor.bbox.height / max(raw_bounds.height, 1.0)
+
+    fitted = _copy_person(raw)
+    fitted.track_id = "rf-1"
+    fitted.source_id = "ruview-rf-camera-anchored"
+    fitted.confidence = max(raw.confidence or 0.0, anchor.confidence or 0.0)
+    fitted.bbox = RuViewPoseBox(**anchor.bbox.model_dump())
+    for point in fitted.keypoints:
+        point.x = anchor.bbox.x + (point.x - raw_bounds.x) * sx
+        point.y = anchor.bbox.y + (point.y - raw_bounds.y) * sy
+
+    anchor_points = {point.name: point for point in anchor.keypoints if point.visible}
+    merged: list[RuViewPoseKeypoint] = []
+    for point in fitted.keypoints:
+        anchor_point = anchor_points.get(point.name)
+        if anchor_point and (anchor_point.confidence is None or anchor_point.confidence >= 0.22):
+            merged.append(RuViewPoseKeypoint(**anchor_point.model_dump()))
+        else:
+            merged.append(point)
+    fitted.keypoints = merged
+    return fitted
+
+
+def _stabilize_pose(raw: RuViewPosePerson, model: _Model) -> tuple[RuViewPosePerson | None, str | None]:
+    global _stabilized_anchor_at, _stabilized_person, _stabilized_raw_center, _stabilized_updated_at
+    now_float = time.monotonic()
+    raw_center = _person_center(raw)
+    if raw_center is None:
+        return None, "RF-pose model did not produce a usable center"
+
+    anchor = _latest_camera_anchor(model)
+    with _pose_lock:
+        if anchor is not None:
+            target = _fit_person_to_anchor(raw, anchor)
+            stabilized = _blend_person(_stabilized_person, target, _ANCHORED_ALPHA)
+            stabilized = _clamp_person(stabilized, model.frame_width, model.frame_height)
+            _stabilized_person = stabilized
+            _stabilized_raw_center = raw_center
+            _stabilized_updated_at = now_float
+            _stabilized_anchor_at = now_float
+            return stabilized, None
+
+        if _stabilized_person is None:
+            if settings.ruview_rf_overlay_requires_camera_anchor:
+                return None, "Нет свежего body-track камеры для привязки RF-скелета"
+            stabilized = _clamp_person(_blend_person(None, raw, 1.0), model.frame_width, model.frame_height)
+            _stabilized_person = stabilized
+            _stabilized_raw_center = raw_center
+            _stabilized_updated_at = now_float
+            return stabilized, None
+
+        since_anchor = now_float - _stabilized_anchor_at if _stabilized_anchor_at else float("inf")
+        if settings.ruview_rf_overlay_requires_camera_anchor and since_anchor > float(settings.ruview_rf_pose_hold_seconds):
+            _stabilized_person = None
+            _stabilized_raw_center = None
+            _stabilized_updated_at = 0.0
+            _stabilized_anchor_at = 0.0
+            return None, "RF-скелет скрыт: нет свежей camera-привязки"
+
+        previous_raw = _stabilized_raw_center or raw_center
+        dx = raw_center[0] - previous_raw[0]
+        dy = raw_center[1] - previous_raw[1]
+        distance = math.hypot(dx, dy)
+        if distance < _STATIC_DEADBAND_PX:
+            dx = 0.0
+            dy = 0.0
+        elif distance > _MAX_RF_DELTA_PX:
+            scale = _MAX_RF_DELTA_PX / distance
+            dx *= scale
+            dy *= scale
+        predicted = _translate_person(_stabilized_person, dx * _SMOOTH_ALPHA, dy * _SMOOTH_ALPHA)
+        predicted.source_id = "ruview-rf-held"
+        predicted.confidence = min(predicted.confidence or 0.45, 0.55)
+        stabilized = _clamp_person(predicted, model.frame_width, model.frame_height)
+        _stabilized_person = stabilized
+        _stabilized_raw_center = raw_center
+        _stabilized_updated_at = now_float
+        return stabilized, None
+
+
 def get_calibrated_pose_snapshot() -> RuViewPoseSnapshot | None:
     model = _load_model()
     if model is None:
@@ -236,10 +529,21 @@ def get_calibrated_pose_snapshot() -> RuViewPoseSnapshot | None:
     person = _pose_from_prediction(prediction, model, packet_count=len(decoded))
     if person is None:
         return None
+    person, error = _stabilize_pose(person, model)
+    if person is None:
+        return RuViewPoseSnapshot(
+            reachable=True,
+            source_url=str(model.path),
+            source_kind="cctv-rf-calibrated-ridge",
+            captured_at=datetime.now(timezone.utc),
+            camera_aligned=True,
+            overlay_allowed=False,
+            error=error,
+        )
     return RuViewPoseSnapshot(
         reachable=True,
         source_url=str(model.path),
-        source_kind="cctv-rf-calibrated-ridge",
+        source_kind=person.source_id or "cctv-rf-calibrated-ridge",
         captured_at=datetime.now(timezone.utc),
         camera_aligned=True,
         overlay_allowed=True,
