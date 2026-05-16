@@ -296,10 +296,17 @@ def _is_simulated_source(source: str) -> bool:
 
 async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
     if not settings.ruview_upstream_enabled:
-        return RuViewPoseSnapshot(reachable=False, error="RuView upstream disabled")
+        return RuViewPoseSnapshot(
+            reachable=False,
+            camera_aligned=False,
+            overlay_allowed=False,
+            error="RuView upstream disabled",
+        )
     if settings.ruview_require_live_csi_for_pose and not has_recent_ruview_csi():
         return RuViewPoseSnapshot(
             reachable=False,
+            camera_aligned=False,
+            overlay_allowed=False,
             error="Нет live CSI от ESP32, симуляция RuView скрыта",
         )
 
@@ -319,29 +326,43 @@ async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
                     return RuViewPoseSnapshot(
                         reachable=False,
                         source_url=base_url,
+                        source_kind=payload_source or None,
                         captured_at=captured_at,
                         latency_ms=latency_ms,
+                        camera_aligned=False,
+                        overlay_allowed=False,
                         error="RuView sidecar работает в simulated mode; overlay отключён",
                     )
                 if not settings.ruview_allow_uncalibrated_pose_overlay:
                     return RuViewPoseSnapshot(
                         reachable=False,
                         source_url=base_url,
+                        source_kind=payload_source or None,
                         captured_at=captured_at,
                         latency_ms=latency_ms,
+                        camera_aligned=False,
+                        overlay_allowed=False,
                         error="RuView RF активен, но camera-aligned overlay отключён",
                     )
                 persons = _extract_persons(payload)
                 return RuViewPoseSnapshot(
                     reachable=True,
                     source_url=base_url,
+                    source_kind=payload_source or None,
                     captured_at=captured_at,
                     latency_ms=latency_ms,
+                    camera_aligned=False,
+                    overlay_allowed=False,
                     persons=persons,
                 )
             except Exception as exc:
                 last_error = str(exc)
-    return RuViewPoseSnapshot(reachable=False, error=last_error or "No RuView upstream URL configured")
+    return RuViewPoseSnapshot(
+        reachable=False,
+        camera_aligned=False,
+        overlay_allowed=False,
+        error=last_error or "No RuView upstream URL configured",
+    )
 
 
 def reset_ruview_pose_tracks() -> None:

@@ -89,7 +89,10 @@ class RuViewPosePerson(BaseModel):
 class RuViewPoseSnapshot(BaseModel):
     reachable: bool
     source_url: str | None = None
+    source_kind: str | None = None
     captured_at: datetime | None = None
     latency_ms: float | None = None
+    camera_aligned: bool = False
+    overlay_allowed: bool = False
     persons: list[RuViewPosePerson] = Field(default_factory=list)
     error: str | None = None

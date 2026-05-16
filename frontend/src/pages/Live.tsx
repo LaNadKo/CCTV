@@ -8,6 +8,8 @@ import {
   getAdminCamera,
   getCameras,
   getRuViewPose,
+  getRuViewStatus,
+  getRuViewUpstream,
   gotoCameraPreset,
   listGroups,
   ptzContinuous,
@@ -19,9 +21,11 @@ import {
   type CameraPtzCapabilities,
   type CameraSummary,
   type GroupOut,
+  type RuViewBridgeStatus,
   type RuViewPoseKeypoint,
   type RuViewPosePerson,
   type RuViewPoseSnapshot,
+  type RuViewUpstreamStatus,
 } from "../lib/api";
 import { loadUiSettings } from "../lib/uiSettings";
 
@@ -67,8 +71,8 @@ const DEFAULT_ZOOM: ZoomState = {
   originX: 50,
   originY: 50,
 };
-const RUVIEW_ONLINE_POLL_MS = 180;
-const RUVIEW_OFFLINE_POLL_MS = 1200;
+const RUVIEW_ONLINE_POLL_MS = 900;
+const RUVIEW_OFFLINE_POLL_MS = 1800;
 const MIN_POSE_CONFIDENCE = 0.05;
 const RUVIEW_SKELETON_LINKS: Array<[string, string]> = [
   ["left_shoulder", "right_shoulder"],
@@ -250,7 +254,7 @@ function poseLabelPosition(person: RuViewPosePerson, space: PoseSpace) {
 }
 
 function RuViewPoseOverlay({ snapshot }: { snapshot: RuViewPoseSnapshot | null }) {
-  if (!snapshot?.reachable || snapshot.persons.length === 0) {
+  if (!snapshot?.reachable || !snapshot.camera_aligned || !snapshot.overlay_allowed || snapshot.persons.length === 0) {
     return null;
   }
 
@@ -319,6 +323,27 @@ function RuViewPoseOverlay({ snapshot }: { snapshot: RuViewPoseSnapshot | null }
   );
 }
 
+function readStringField(value: Record<string, unknown> | null | undefined, keys: string[]) {
+  for (const key of keys) {
+    const item = value?.[key];
+    if (typeof item === "string" && item.trim()) {
+      return item.trim();
+    }
+  }
+  return null;
+}
+
+function getRuViewSourceLabel(upstream: RuViewUpstreamStatus | null, pose: RuViewPoseSnapshot | null) {
+  if (pose?.source_kind) return pose.source_kind;
+  const endpoint = upstream?.endpoints.find((item) => item.reachable);
+  return (
+    readStringField(endpoint?.health, ["source", "data_source", "csi_source"]) ||
+    readStringField(endpoint?.stream_status, ["source", "data_source", "csi_source"]) ||
+    readStringField(endpoint?.pose_stats, ["source", "data_source", "csi_source"]) ||
+    null
+  );
+}
+
 const LivePage: React.FC = () => {
   const { token, user } = useAuth();
   const [cameras, setCameras] = useState<CameraSummary[]>([]);
@@ -333,6 +358,8 @@ const LivePage: React.FC = () => {
   const [streamRetryMap, setStreamRetryMap] = useState<Record<number, number>>({});
   const [ruviewOverlayEnabled, setRuviewOverlayEnabled] = useState(true);
   const [ruviewPose, setRuviewPose] = useState<RuViewPoseSnapshot | null>(null);
+  const [ruviewBridgeStatus, setRuviewBridgeStatus] = useState<RuViewBridgeStatus | null>(null);
+  const [ruviewUpstream, setRuviewUpstream] = useState<RuViewUpstreamStatus | null>(null);
   const [ruviewError, setRuviewError] = useState<string | null>(null);
   const [fullscreenCameraId, setFullscreenCameraId] = useState<number | null>(null);
   const [fullscreenDetail, setFullscreenDetail] = useState<CameraDetail | null>(null);
@@ -373,6 +400,8 @@ const LivePage: React.FC = () => {
   useEffect(() => {
     if (!token || !ruviewOverlayEnabled) {
       setRuviewPose(null);
+      setRuviewBridgeStatus(null);
+      setRuviewUpstream(null);
       setRuviewError(null);
       return;
     }
@@ -381,14 +410,30 @@ const LivePage: React.FC = () => {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const snapshot = await getRuViewPose(token);
+        const [poseResult, bridgeResult, upstreamResult] = await Promise.allSettled([
+          getRuViewPose(token),
+          getRuViewStatus(token),
+          getRuViewUpstream(token),
+        ]);
         if (cancelled) return;
+
+        const snapshot = poseResult.status === "fulfilled" ? poseResult.value : null;
+        const bridge = bridgeResult.status === "fulfilled" ? bridgeResult.value : null;
+        const upstream = upstreamResult.status === "fulfilled" ? upstreamResult.value : null;
         setRuviewPose(snapshot);
-        setRuviewError(snapshot.error || (snapshot.reachable ? null : "RuView offline"));
-        timer = window.setTimeout(poll, snapshot.reachable ? RUVIEW_ONLINE_POLL_MS : RUVIEW_OFFLINE_POLL_MS);
+        setRuviewBridgeStatus(bridge);
+        setRuviewUpstream(upstream);
+
+        const failures = [poseResult, bridgeResult, upstreamResult]
+          .filter((result) => result.status === "rejected")
+          .map((result) => (result as PromiseRejectedResult).reason?.message || "RuView request failed");
+        setRuviewError(snapshot?.error || bridge?.last_error || failures[0] || null);
+        timer = window.setTimeout(poll, bridge?.live_csi ? RUVIEW_ONLINE_POLL_MS : RUVIEW_OFFLINE_POLL_MS);
       } catch (event: any) {
         if (cancelled) return;
         setRuviewPose(null);
+        setRuviewBridgeStatus(null);
+        setRuviewUpstream(null);
         setRuviewError(event?.message || "RuView offline");
         timer = window.setTimeout(poll, RUVIEW_OFFLINE_POLL_MS);
       }
@@ -755,11 +800,52 @@ const LivePage: React.FC = () => {
     };
   }, [showPtzPanel]);
 
-  const ruviewStatusText = !ruviewOverlayEnabled
-    ? "RuView off"
-    : ruviewPose?.reachable
-      ? `RuView ${ruviewPose.persons.length} skeleton${ruviewPose.persons.length === 1 ? "" : "s"}`
-      : ruviewError || "RuView offline";
+  const ruviewSummary = useMemo(() => {
+    const nodesTotal = ruviewBridgeStatus?.nodes.length ?? 0;
+    const nodesOnline = ruviewBridgeStatus?.nodes.filter((node) => node.online).length ?? 0;
+    const packetRateHz =
+      ruviewBridgeStatus?.nodes.reduce((total, node) => total + Math.max(0, node.packet_rate_hz || 0), 0) ?? 0;
+    const source = getRuViewSourceLabel(ruviewUpstream, ruviewPose);
+    const sourceIsSimulated = source ? source.toLowerCase().startsWith("simulat") : false;
+    const rfOnline = Boolean(ruviewBridgeStatus?.live_csi && !sourceIsSimulated);
+    const overlayReady = Boolean(
+      ruviewPose?.reachable && ruviewPose.camera_aligned && ruviewPose.overlay_allowed && ruviewPose.persons.length > 0
+    );
+
+    if (!ruviewOverlayEnabled) {
+      return {
+        online: false,
+        overlayReady: false,
+        text: "RuView RF off",
+        title: "RuView RF polling is disabled",
+      };
+    }
+
+    const packetRateText =
+      packetRateHz > 0 ? ` · ${packetRateHz >= 10 ? packetRateHz.toFixed(0) : packetRateHz.toFixed(1)}Hz` : "";
+    const overlayText = overlayReady ? " · overlay" : " · RF only";
+    const text = rfOnline
+      ? `RF ${nodesOnline}/${nodesTotal || 0}${packetRateText}${overlayText}`
+      : ruviewError
+        ? "RuView RF issue"
+        : "RuView RF offline";
+
+    const title = [
+      `RuView RF layer: ${rfOnline ? "online" : "offline"}`,
+      `nodes: ${nodesOnline}/${nodesTotal || 0}`,
+      `CSI: ${ruviewBridgeStatus?.live_csi ? "live" : "stale"}`,
+      packetRateHz > 0 ? `packet rate: ${packetRateHz.toFixed(1)} Hz` : null,
+      source ? `source: ${source}` : null,
+      overlayReady ? "camera overlay: calibrated" : "camera overlay: disabled until CSI-to-camera calibration exists",
+      ruviewError ? `last message: ${ruviewError}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return { online: rfOnline, overlayReady, text, title };
+  }, [ruviewBridgeStatus, ruviewError, ruviewOverlayEnabled, ruviewPose, ruviewUpstream]);
+
+  const ruviewStatusText = ruviewSummary.text;
 
   return (
     <div className="stack">
@@ -791,9 +877,9 @@ const LivePage: React.FC = () => {
               className={ruviewOverlayEnabled ? "btn" : "btn secondary"}
               onClick={() => setRuviewOverlayEnabled((value) => !value)}
             >
-              RuView
+              RuView RF
             </button>
-            <span className={`pill ruview-status${ruviewPose?.reachable ? " is-online" : ""}`}>
+            <span className={`pill ruview-status${ruviewSummary.online ? " is-online" : ""}`} title={ruviewSummary.title}>
               {ruviewStatusText}
             </span>
           </div>
@@ -928,7 +1014,7 @@ const LivePage: React.FC = () => {
                     />
                   ))}
 
-                {ruviewOverlayEnabled && <RuViewPoseOverlay snapshot={ruviewPose} />}
+                {ruviewOverlayEnabled && ruviewSummary.overlayReady && <RuViewPoseOverlay snapshot={ruviewPose} />}
 
                 {isFullscreenCamera && (
                   <div className="live-fullscreen-overlay">
