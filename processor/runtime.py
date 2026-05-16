@@ -62,6 +62,14 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         1,
     )
     normalized["face_scan_interval"] = _frame_divisor_to_interval(normalized["face_scan_divisor"])
+    try:
+        normalized["body_sample_interval_seconds"] = min(
+            2.0,
+            max(0.2, float(normalized.get("body_sample_interval_seconds", 0.5))),
+        )
+    except (TypeError, ValueError):
+        normalized["body_sample_interval_seconds"] = 0.5
+    normalized["body_tracking_always_on"] = bool(normalized.get("body_tracking_always_on", True))
     return normalized
 
 
@@ -78,6 +86,8 @@ def default_config() -> dict[str, Any]:
         "face_scan_divisor": 8,
         "overlay_frame_divisor": 1,
         "face_scan_interval": 0.35,
+        "body_tracking_always_on": True,
+        "body_sample_interval_seconds": 0.5,
         "theme_primary_color": "#49C8E8",
         "theme_secondary_color": "#4C6FFF",
         "recording_segment_seconds": 300,
@@ -107,6 +117,8 @@ def save_config(config: dict[str, Any]) -> None:
 
 
 def _coerce_env_value(raw: str, kind: str) -> Any:
+    if kind == "bool":
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
     if kind == "int":
         return int(raw)
     if kind == "float":
@@ -126,6 +138,8 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "FACE_SCAN_DIVISOR": ("face_scan_divisor", "int"),
         "OVERLAY_FRAME_DIVISOR": ("overlay_frame_divisor", "int"),
         "FACE_SCAN_INTERVAL": ("face_scan_interval", "float"),
+        "BODY_TRACKING_ALWAYS_ON": ("body_tracking_always_on", "bool"),
+        "BODY_SAMPLE_INTERVAL_SECONDS": ("body_sample_interval_seconds", "float"),
         "RECORDING_SEGMENT_SECONDS": ("recording_segment_seconds", "int"),
         "RECORDINGS_DIR": ("recordings_dir", "str"),
         "SNAPSHOTS_DIR": ("snapshots_dir", "str"),
@@ -155,6 +169,8 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
     os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))
     os.environ["FACE_SCAN_INTERVAL"] = str(normalized.get("face_scan_interval", 0.35))
+    os.environ["BODY_TRACKING_ALWAYS_ON"] = "1" if normalized.get("body_tracking_always_on", True) else "0"
+    os.environ["BODY_SAMPLE_INTERVAL_SECONDS"] = str(normalized.get("body_sample_interval_seconds", 0.5))
     os.environ["RECORDING_SEGMENT_SECONDS"] = str(config.get("recording_segment_seconds", 300))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))

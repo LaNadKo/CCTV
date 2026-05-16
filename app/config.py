@@ -111,6 +111,30 @@ class Settings(BaseSettings):
         default=3.0,
         validation_alias="RUVIEW_RF_POSE_HOLD_SECONDS",
     )
+    ruview_auto_training_enabled: bool = Field(
+        default=True,
+        validation_alias="RUVIEW_AUTO_TRAINING_ENABLED",
+    )
+    ruview_auto_training_sample_interval_seconds: float = Field(
+        default=0.5,
+        validation_alias="RUVIEW_AUTO_TRAINING_SAMPLE_INTERVAL_SECONDS",
+    )
+    ruview_auto_training_session_seconds: float = Field(
+        default=600.0,
+        validation_alias="RUVIEW_AUTO_TRAINING_SESSION_SECONDS",
+    )
+    ruview_auto_training_min_keypoints: int = Field(
+        default=10,
+        validation_alias="RUVIEW_AUTO_TRAINING_MIN_KEYPOINTS",
+    )
+    ruview_auto_training_min_keypoint_confidence: float = Field(
+        default=0.3,
+        validation_alias="RUVIEW_AUTO_TRAINING_MIN_KEYPOINT_CONFIDENCE",
+    )
+    ruview_auto_training_min_track_confidence: float = Field(
+        default=0.35,
+        validation_alias="RUVIEW_AUTO_TRAINING_MIN_TRACK_CONFIDENCE",
+    )
 
     @field_validator("debug", mode="before")
     @classmethod

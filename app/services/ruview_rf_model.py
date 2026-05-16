@@ -351,7 +351,10 @@ def _keypoints_from_payload(track: dict[str, Any], sx: float, sy: float) -> list
 
 
 def _latest_camera_anchor(model: _Model) -> RuViewPosePerson | None:
-    sample = get_latest_camera_sample(max_age_seconds=float(settings.ruview_camera_anchor_max_age_seconds))
+    sample = get_latest_camera_sample(
+        max_age_seconds=float(settings.ruview_camera_anchor_max_age_seconds),
+        require_tracks=True,
+    )
     if not sample:
         return None
     try:

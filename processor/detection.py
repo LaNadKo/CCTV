@@ -109,6 +109,14 @@ class CameraWorker:
         self._recognized_track_hold_seconds = 4.5
         self._calibration_active = False
         self._calibration_next_sample_ts = 0.0
+        self._body_tracking_always_on = bool(getattr(settings, "body_tracking_always_on", True))
+        try:
+            self._body_sample_interval = min(
+                2.0,
+                max(0.2, float(getattr(settings, "body_sample_interval_seconds", 0.5))),
+            )
+        except (TypeError, ValueError):
+            self._body_sample_interval = 0.5
         self._body_support_cache: list[dict] | None = None
         self._body_support_ts = 0.0
         self._body_support_interval = max(0.08, min(0.6, self._target_scan_interval * 0.8))
@@ -428,6 +436,7 @@ class CameraWorker:
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
             want_body_support = (
                 self._calibration_active
+                or self._body_tracking_always_on
                 or bool(faces)
                 or (now - self._last_faces_ts) <= self._overlay_ttl
                 or (now - self._last_motion_ts) <= 1.2
@@ -1166,7 +1175,7 @@ class CameraWorker:
         if self._event_loop is None or self.processor_id is None:
             return
         schedule_now = time.monotonic()
-        interval = 0.2 if self._calibration_active else 2.0
+        interval = 0.2 if self._calibration_active else self._body_sample_interval
         if schedule_now < self._calibration_next_sample_ts:
             return
         self._calibration_next_sample_ts = schedule_now + interval
@@ -1191,7 +1200,9 @@ class CameraWorker:
 
         def _remember_status(result: dict) -> None:
             self._calibration_active = bool(result.get("active"))
-            self._calibration_next_sample_ts = time.monotonic() + (0.2 if self._calibration_active else 2.0)
+            self._calibration_next_sample_ts = time.monotonic() + (
+                0.2 if self._calibration_active else self._body_sample_interval
+            )
 
         self._dispatch_future(future, "push calibration sample", on_success=_remember_status)
 

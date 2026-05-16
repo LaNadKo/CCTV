@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     face_scan_divisor: int | None = Field(default=None, validation_alias="FACE_SCAN_DIVISOR")
     overlay_frame_divisor: int = Field(default=1, validation_alias="OVERLAY_FRAME_DIVISOR")
     face_scan_interval: float = Field(default=0.35, validation_alias="FACE_SCAN_INTERVAL")
+    body_tracking_always_on: bool = Field(default=True, validation_alias="BODY_TRACKING_ALWAYS_ON")
+    body_sample_interval_seconds: float = Field(default=0.5, validation_alias="BODY_SAMPLE_INTERVAL_SECONDS")
     face_match_threshold: float = Field(default=0.56, validation_alias="FACE_MATCH_THRESHOLD")
     face_match_margin: float = Field(default=0.1, validation_alias="FACE_MATCH_MARGIN")
     antispoof_small_face_ratio: float = Field(default=0.045, validation_alias="ANTISPOOF_SMALL_FACE_RATIO")
