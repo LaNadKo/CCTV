@@ -56,10 +56,10 @@ constexpr uint16_t kConfigPort = 80;
 constexpr uint16_t kOtaCompatPort = 8032;
 constexpr size_t kMaxCsiBytes = 384;
 constexpr size_t kCsiQueueSize = 48;
-constexpr uint32_t kTdmSlotMs = 120;
-constexpr uint8_t kBurstPerSlot = 4;
+constexpr uint32_t kTdmSlotMs = 160;
+constexpr uint8_t kBurstPerSlot = 2;
 constexpr uint32_t kEspNowCsiInferWindowMs = 320;
-constexpr uint8_t kEspNowCsiInferBudget = 8;
+constexpr uint8_t kEspNowCsiInferBudget = 2;
 constexpr uint32_t kHealthIntervalMs = 1000;
 constexpr uint32_t kStatusLogIntervalMs = 10000;
 constexpr uint8_t kBroadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -461,14 +461,12 @@ void IRAM_ATTR onCsi(void *, wifi_csi_info_t *info) {
 
   uint8_t recent_node_id = 0;
   uint8_t recent_mac[6] = {};
-  if (takeRecentEspNowRxForCsi(recent_node_id, recent_mac, now_ms)) {
-    sample.tx_node_id = recent_node_id;
-    memcpy(sample.tx_mac, recent_mac, sizeof(sample.tx_mac));
-    sample.flags |= kFlagEspNow | kFlagInferredTx;
+  if (!takeRecentEspNowRxForCsi(recent_node_id, recent_mac, now_ms)) {
+    return;
   }
-  if (sample.tx_node_id == 0) {
-    sample.flags |= kFlagUnknownPeer;
-  }
+  sample.tx_node_id = recent_node_id;
+  memcpy(sample.tx_mac, recent_mac, sizeof(sample.tx_mac));
+  sample.flags |= kFlagEspNow | kFlagInferredTx;
 
   sample.csi_len = min(static_cast<size_t>(info->len), kMaxCsiBytes);
   memcpy(sample.csi, info->buf, sample.csi_len);

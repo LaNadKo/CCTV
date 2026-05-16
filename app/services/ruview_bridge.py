@@ -55,9 +55,11 @@ class RuViewBridge:
         self._vitals_packet_count = 0
         self._health_packet_count = 0
         self._unknown_packet_count = 0
+        self._dropped_csi_packet_count = 0
         self._upstream_forward_count = 0
         self._nodes: dict[int, _NodeAggregate] = {}
         self._ip_node_ids: dict[str, int] = {}
+        self._last_csi_accept_by_node: dict[int, float] = {}
 
     def start(self) -> None:
         if not settings.ruview_bridge_enabled:
@@ -102,9 +104,11 @@ class RuViewBridge:
             self._vitals_packet_count = 0
             self._health_packet_count = 0
             self._unknown_packet_count = 0
+            self._dropped_csi_packet_count = 0
             self._upstream_forward_count = 0
             self._nodes.clear()
             self._ip_node_ids.clear()
+            self._last_csi_accept_by_node.clear()
 
     def status(self) -> RuViewBridgeStatus:
         now = datetime.now(timezone.utc)
@@ -142,6 +146,7 @@ class RuViewBridge:
                 vitals_packet_count=self._vitals_packet_count,
                 health_packet_count=self._health_packet_count,
                 unknown_packet_count=self._unknown_packet_count,
+                dropped_csi_packet_count=self._dropped_csi_packet_count,
                 upstream_forward_enabled=settings.ruview_upstream_forward_enabled,
                 upstream_forward_host=settings.ruview_upstream_udp_host,
                 upstream_forward_port=settings.ruview_upstream_udp_port,
@@ -184,6 +189,9 @@ class RuViewBridge:
         packet_monotonic = time.monotonic()
         packet_type, node_id, sequence, rssi, channel, payload_bytes = _parse_packet(data)
         with self._lock:
+            resolved_id = self._resolve_node_id(addr[0], node_id)
+            if not self._accept_packet_locked(packet_type, resolved_id, packet_monotonic):
+                return
             self._packet_count += 1
             self._last_packet_at = now
             if packet_type == "csi":
@@ -196,7 +204,6 @@ class RuViewBridge:
             else:
                 self._unknown_packet_count += 1
 
-            resolved_id = self._resolve_node_id(addr[0], node_id)
             node = self._nodes.get(resolved_id)
             if node is None:
                 node = _NodeAggregate(node_id=resolved_id, label=f"ESP32-{resolved_id}")
@@ -213,6 +220,19 @@ class RuViewBridge:
             node.packet_times.append(packet_monotonic)
 
         self._forward_to_upstream(data, packet_monotonic)
+
+    def _accept_packet_locked(self, packet_type: str, node_id: int, now: float) -> bool:
+        if packet_type != "csi":
+            return True
+        min_interval = max(0.0, float(settings.ruview_csi_min_interval_seconds))
+        if min_interval <= 0:
+            return True
+        last_accept = self._last_csi_accept_by_node.get(node_id, 0.0)
+        if now - last_accept < min_interval:
+            self._dropped_csi_packet_count += 1
+            return False
+        self._last_csi_accept_by_node[node_id] = now
+        return True
 
     def _resolve_node_id(self, source_ip: str, raw_node_id: int | None) -> int:
         configured = _configured_node_ips()

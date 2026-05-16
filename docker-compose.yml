@@ -27,6 +27,7 @@ services:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-cctv}:${POSTGRES_PASSWORD:-cctv}@db:5432/${POSTGRES_DB:-cctv}"
       RUVIEW_UPSTREAM_URLS: "http://ruview-sensing:3000,http://host.docker.internal:3100"
       RUVIEW_REQUIRE_LIVE_CSI_FOR_POSE: "true"
+      RUVIEW_CSI_MIN_INTERVAL_SECONDS: "0.02"
     depends_on:
       db:
         condition: service_healthy

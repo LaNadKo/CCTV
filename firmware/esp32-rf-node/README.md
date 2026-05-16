@@ -2,7 +2,7 @@
 
 PlatformIO firmware for the six ESP32-S3-N16R8 boards used by the CCTV/RuView stand.
 
-The firmware sends two UDP packet types for every CSI capture:
+The firmware sends two UDP packet types for every accepted ESP-NOW sounding CSI capture:
 
 - ADR-018 RuView-compatible CSI packet, magic `0xC5110001`;
 - project RF-link diagnostic packet, magic `0xC5110101`, with `rx_node_id`, inferred `tx_node_id`, RSSI and raw CSI bytes.
@@ -11,7 +11,7 @@ Health is sent once per second as magic `0xC5110102`.
 
 ## Why Broadcast
 
-The earlier firmware needed a preconfigured peer MAC list. This version uses ESP-NOW broadcast sounding in a TDM schedule, so the six boards can generate link CSI without manually entering every peer MAC.
+The earlier firmware needed a preconfigured peer MAC list. This version uses ESP-NOW broadcast sounding in a TDM schedule, so the six boards can generate link CSI without manually entering every peer MAC. CSI frames not tied to a recent ESP-NOW sounding are dropped on-device to keep backend/RuView load stable.
 
 ## Build
 
