@@ -259,6 +259,8 @@ export type RuViewPoseSnapshot = {
   source_kind?: string | null;
   captured_at?: string | null;
   latency_ms?: number | null;
+  frame_width?: number | null;
+  frame_height?: number | null;
   camera_aligned: boolean;
   overlay_allowed: boolean;
   persons: RuViewPosePerson[];

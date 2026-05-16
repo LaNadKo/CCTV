@@ -205,7 +205,7 @@ function clampPercent(value: number) {
   return Math.max(0, Math.min(100, value));
 }
 
-function inferPoseSpace(person: RuViewPosePerson): PoseSpace {
+function inferPoseSpace(person: RuViewPosePerson, frameWidth?: number | null, frameHeight?: number | null): PoseSpace {
   const xs = person.keypoints.map((point) => point.x).filter(Number.isFinite);
   const ys = person.keypoints.map((point) => point.y).filter(Number.isFinite);
   if (person.bbox) {
@@ -220,7 +220,9 @@ function inferPoseSpace(person: RuViewPosePerson): PoseSpace {
   if (maxX <= 100 && maxY <= 100) {
     return { mode: "percent", width: 100, height: 100 };
   }
-  return { mode: "pixel", width: Math.max(640, maxX), height: Math.max(480, maxY) };
+  const width = Number.isFinite(frameWidth ?? NaN) && (frameWidth ?? 0) > 0 ? Number(frameWidth) : 1920;
+  const height = Number.isFinite(frameHeight ?? NaN) && (frameHeight ?? 0) > 0 ? Number(frameHeight) : 1080;
+  return { mode: "pixel", width: Math.max(width, maxX), height: Math.max(height, maxY) };
 }
 
 function poseX(value: number, space: PoseSpace) {
@@ -261,7 +263,7 @@ function RuViewPoseOverlay({ snapshot }: { snapshot: RuViewPoseSnapshot | null }
   return (
     <svg className="ruview-pose-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
       {snapshot.persons.map((person) => {
-        const space = inferPoseSpace(person);
+        const space = inferPoseSpace(person, snapshot.frame_width, snapshot.frame_height);
         const label = poseLabelPosition(person, space);
         const bbox = person.bbox
           ? {
