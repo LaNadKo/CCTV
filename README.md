@@ -140,6 +140,14 @@ docker compose --profile ruview up -d ruview-sensing
 
 По умолчанию `GET /ruview/pose` скрывает симуляцию RuView и отдаёт skeleton только при живом CSI/RF-link потоке от ESP32. Если платы присылают только health-пакеты, в Live будет статус `Нет live CSI от ESP32`.
 
+Прошивка ESP32-S3 для live CSI находится в `firmware/esp32-rf-node`. Она использует ESP-NOW broadcast-sounding и отправляет в backend одновременно RuView ADR-018 CSI (`0xC5110001`) и диагностический RF-link (`0xC5110101`).
+
+```powershell
+.\scripts\flash_ruview_node.ps1 -Port COM3 -NodeId 1 -NoProvision
+```
+
+`-NoProvision` сохраняет текущий `node_id`, WiFi и target из NVS. Если плату нужно настроить заново, задайте `RUVIEW_WIFI_PASSWORD` и запустите без `-NoProvision`.
+
 ### Вариант 2. Готовый shell-скрипт
 
 Shell-скрипт для серверной части. Поднимает тот же стек, что и Вариант 1: `db + backend + mediamtx`.
