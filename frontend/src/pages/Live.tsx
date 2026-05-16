@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, PointerEvent, WheelEvent } from "react";
+import type { CSSProperties, DragEvent, PointerEvent, WheelEvent } from "react";
 import { useAuth } from "../context/AuthContext";
 import {
   API_URL,
@@ -65,12 +65,17 @@ type PoseSpace = {
   width: number;
   height: number;
 };
+type StreamMediaStyle = CSSProperties & {
+  "--stream-aspect"?: string;
+  "--stream-aspect-ratio"?: string;
+};
 
 const DEFAULT_ZOOM: ZoomState = {
   scale: 1,
   originX: 50,
   originY: 50,
 };
+const DEFAULT_STREAM_ASPECT_RATIO = 16 / 9;
 const RUVIEW_ONLINE_POLL_MS = 900;
 const RUVIEW_OFFLINE_POLL_MS = 1800;
 const MIN_POSE_CONFIDENCE = 0.05;
@@ -199,6 +204,24 @@ function getCameraPtzCapabilities(detail: CameraDetail | null): CameraPtzCapabil
 
 function visiblePosePoint(point?: RuViewPoseKeypoint | null) {
   return Boolean(point?.visible && (point.confidence ?? 1) >= MIN_POSE_CONFIDENCE);
+}
+
+function streamMediaStyle(snapshot: RuViewPoseSnapshot | null, isFullscreenCamera: boolean, zoomState: ZoomState): StreamMediaStyle {
+  const frameWidth = Number(snapshot?.frame_width);
+  const frameHeight = Number(snapshot?.frame_height);
+  const ratio =
+    Number.isFinite(frameWidth) && Number.isFinite(frameHeight) && frameWidth > 0 && frameHeight > 0
+      ? frameWidth / frameHeight
+      : DEFAULT_STREAM_ASPECT_RATIO;
+  const style: StreamMediaStyle = {
+    "--stream-aspect": `${ratio}`,
+    "--stream-aspect-ratio": `${ratio}`,
+  };
+  if (isFullscreenCamera && zoomState.scale > 1) {
+    style.transform = `scale(${zoomState.scale})`;
+    style.transformOrigin = `${zoomState.originX}% ${zoomState.originY}%`;
+  }
+  return style;
 }
 
 function clampPercent(value: number) {
@@ -937,6 +960,7 @@ const LivePage: React.FC = () => {
           const { camera, slotIndex } = item;
           const isFullscreenCamera = fullscreenCameraId === camera.camera_id;
           const zoomed = isFullscreenCamera && zoomState.scale > 1;
+          const mediaStyle = streamMediaStyle(ruviewPose, isFullscreenCamera, zoomState);
 
           return (
             <article
@@ -984,8 +1008,9 @@ const LivePage: React.FC = () => {
                 onWheel={(event) => handleDigitalZoom(camera.camera_id, event)}
                 onDoubleClick={() => isFullscreenCamera && resetDigitalZoom()}
               >
-                {token &&
-                  (streamErrorMap[camera.camera_id] ? (
+                <div className="live-stream-media" style={mediaStyle}>
+                  {token &&
+                    (streamErrorMap[camera.camera_id] ? (
                     <div className="live-stream-empty">
                       <div style={{ fontWeight: 700 }}>Нет live-потока</div>
                       <div className="muted" style={{ lineHeight: 1.55 }}>
@@ -1005,19 +1030,11 @@ const LivePage: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                    <img
+                      <img
                       src={`${API_URL}/cameras/${camera.camera_id}/stream?token=${encodeURIComponent(token)}&annotate=1&r=${streamRetryMap[camera.camera_id] || 0}`}
                       alt={camera.name}
                       loading="lazy"
                       decoding="async"
-                      style={
-                        isFullscreenCamera
-                          ? {
-                              transform: `scale(${zoomState.scale})`,
-                              transformOrigin: `${zoomState.originX}% ${zoomState.originY}%`,
-                            }
-                          : undefined
-                      }
                       onLoad={() => {
                         setStreamErrorMap((prev) => (prev[camera.camera_id] ? { ...prev, [camera.camera_id]: false } : prev));
                       }}
@@ -1025,9 +1042,10 @@ const LivePage: React.FC = () => {
                         setStreamErrorMap((prev) => ({ ...prev, [camera.camera_id]: true }));
                       }}
                     />
-                  ))}
+                    ))}
 
-                {ruviewOverlayEnabled && ruviewSummary.overlayReady && <RuViewPoseOverlay snapshot={ruviewPose} />}
+                  {ruviewOverlayEnabled && ruviewSummary.overlayReady && <RuViewPoseOverlay snapshot={ruviewPose} />}
+                </div>
 
                 {isFullscreenCamera && (
                   <div className="live-fullscreen-overlay">
