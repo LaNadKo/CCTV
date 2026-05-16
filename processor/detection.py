@@ -426,7 +426,12 @@ class CameraWorker:
             faces = detect_faces(rgb)
             now = time.time()
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
-            want_body_support = bool(faces) or (now - self._last_faces_ts) <= self._overlay_ttl or (now - self._last_motion_ts) <= 1.2
+            want_body_support = (
+                self._calibration_active
+                or bool(faces)
+                or (now - self._last_faces_ts) <= self._overlay_ttl
+                or (now - self._last_motion_ts) <= 1.2
+            )
             bodies = self._get_body_support(frame, now) if want_body_support else []
             body_tracks = self._update_body_tracks(bodies, now)
 
@@ -1079,19 +1084,22 @@ class CameraWorker:
     ) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
         for state in body_tracks:
-            if not state.get("recognized"):
-                continue
+            recognized = bool(state.get("recognized"))
             box = state.get("tracking_box")
             if not isinstance(box, tuple):
                 box = state.get("box")
-            label = state.get("label")
-            if not isinstance(box, tuple) or not label:
+            if not isinstance(box, tuple):
                 continue
+            if not recognized:
+                hits = int(state.get("hits", 0) or 0)
+                if hits < 2 or not self._track_has_pose_support(state, strict=True):
+                    continue
+            label = state.get("label") if recognized else f"Неизвестно #{state.get('track_id', '?')}"
             items.append(
                 {
                     "box": box,
                     "label": str(label),
-                    "recognized": True,
+                    "recognized": recognized,
                     "keypoints": state.get("keypoints"),
                     "keypoint_conf": state.get("keypoint_conf"),
                 }
@@ -1182,7 +1190,7 @@ class CameraWorker:
 
         def _remember_status(result: dict) -> None:
             self._calibration_active = bool(result.get("active"))
-            self._calibration_next_sample_ts = time.time() + (0.2 if self._calibration_active else 2.0)
+            self._calibration_next_sample_ts = time.monotonic() + (0.2 if self._calibration_active else 2.0)
 
         self._dispatch_future(future, "push calibration sample", on_success=_remember_status)
 
