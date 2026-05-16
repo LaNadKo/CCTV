@@ -114,6 +114,32 @@ rtsp://127.0.0.1:8554
 
 Контейнер `backend` сам ждёт PostgreSQL, применяет `alembic upgrade head` и затем запускает `uvicorn`.
 
+### RuView / WiFi DensePose
+
+RuView подключён как отдельный контур pose/skeleton, без возврата RF Room и координатной карты комнаты.
+
+Запуск sidecar:
+
+```powershell
+.\scripts\start_ruview.ps1
+```
+
+Или через Docker Compose:
+
+```bash
+docker compose --profile ruview up -d ruview-sensing
+```
+
+Рабочие адреса:
+
+- backend UDP для ESP32: `udp://<IP_ноутбука>:5005`;
+- RuView sidecar UI: `http://127.0.0.1:3100/ui/index.html`;
+- backend status: `GET /ruview/status`;
+- upstream status: `GET /ruview/upstream`;
+- pose для Live overlay: `GET /ruview/pose`.
+
+По умолчанию `GET /ruview/pose` скрывает симуляцию RuView и отдаёт skeleton только при живом CSI/RF-link потоке от ESP32. Если платы присылают только health-пакеты, в Live будет статус `Нет live CSI от ESP32`.
+
 ### Вариант 2. Готовый shell-скрипт
 
 Shell-скрипт для серверной части. Поднимает тот же стек, что и Вариант 1: `db + backend + mediamtx`.

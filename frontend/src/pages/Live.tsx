@@ -7,6 +7,7 @@ import {
   deleteCameraPreset,
   getAdminCamera,
   getCameras,
+  getRuViewPose,
   gotoCameraPreset,
   listGroups,
   ptzContinuous,
@@ -18,6 +19,9 @@ import {
   type CameraPtzCapabilities,
   type CameraSummary,
   type GroupOut,
+  type RuViewPoseKeypoint,
+  type RuViewPosePerson,
+  type RuViewPoseSnapshot,
 } from "../lib/api";
 import { loadUiSettings } from "../lib/uiSettings";
 
@@ -52,12 +56,40 @@ type LiveGridItem =
   | { slotIndex: number; camera: CameraSummary }
   | { slotIndex: number; placeholderId: string };
 type PtzMovePayload = { pan?: number; tilt?: number; zoom?: number; timeout_seconds?: number };
+type PoseSpace = {
+  mode: "normalized" | "percent" | "pixel";
+  width: number;
+  height: number;
+};
 
 const DEFAULT_ZOOM: ZoomState = {
   scale: 1,
   originX: 50,
   originY: 50,
 };
+const RUVIEW_ONLINE_POLL_MS = 180;
+const RUVIEW_OFFLINE_POLL_MS = 1200;
+const MIN_POSE_CONFIDENCE = 0.05;
+const RUVIEW_SKELETON_LINKS: Array<[string, string]> = [
+  ["left_shoulder", "right_shoulder"],
+  ["left_shoulder", "left_elbow"],
+  ["left_elbow", "left_wrist"],
+  ["right_shoulder", "right_elbow"],
+  ["right_elbow", "right_wrist"],
+  ["left_shoulder", "left_hip"],
+  ["right_shoulder", "right_hip"],
+  ["left_hip", "right_hip"],
+  ["left_hip", "left_knee"],
+  ["left_knee", "left_ankle"],
+  ["right_hip", "right_knee"],
+  ["right_knee", "right_ankle"],
+  ["nose", "left_eye"],
+  ["nose", "right_eye"],
+  ["left_eye", "left_ear"],
+  ["right_eye", "right_ear"],
+  ["nose", "left_shoulder"],
+  ["nose", "right_shoulder"],
+];
 
 function readGridMode(): LiveGridMode {
   const stored = typeof window !== "undefined" ? localStorage.getItem(GRID_STORAGE_KEY) : null;
@@ -161,6 +193,132 @@ function getCameraPtzCapabilities(detail: CameraDetail | null): CameraPtzCapabil
   );
 }
 
+function visiblePosePoint(point?: RuViewPoseKeypoint | null) {
+  return Boolean(point?.visible && (point.confidence ?? 1) >= MIN_POSE_CONFIDENCE);
+}
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, value));
+}
+
+function inferPoseSpace(person: RuViewPosePerson): PoseSpace {
+  const xs = person.keypoints.map((point) => point.x).filter(Number.isFinite);
+  const ys = person.keypoints.map((point) => point.y).filter(Number.isFinite);
+  if (person.bbox) {
+    xs.push(person.bbox.x, person.bbox.x + person.bbox.width);
+    ys.push(person.bbox.y, person.bbox.y + person.bbox.height);
+  }
+  const maxX = Math.max(1, ...xs);
+  const maxY = Math.max(1, ...ys);
+  if (maxX <= 1.5 && maxY <= 1.5) {
+    return { mode: "normalized", width: 1, height: 1 };
+  }
+  if (maxX <= 100 && maxY <= 100) {
+    return { mode: "percent", width: 100, height: 100 };
+  }
+  return { mode: "pixel", width: Math.max(640, maxX), height: Math.max(480, maxY) };
+}
+
+function poseX(value: number, space: PoseSpace) {
+  if (space.mode === "normalized") return clampPercent(value * 100);
+  if (space.mode === "percent") return clampPercent(value);
+  return clampPercent((value / space.width) * 100);
+}
+
+function poseY(value: number, space: PoseSpace) {
+  if (space.mode === "normalized") return clampPercent(value * 100);
+  if (space.mode === "percent") return clampPercent(value);
+  return clampPercent((value / space.height) * 100);
+}
+
+function keypointByName(person: RuViewPosePerson, name: string) {
+  return person.keypoints.find((point) => point.name === name);
+}
+
+function poseLabelPosition(person: RuViewPosePerson, space: PoseSpace) {
+  if (person.bbox) {
+    return {
+      x: poseX(person.bbox.x, space),
+      y: poseY(person.bbox.y, space),
+    };
+  }
+  const point = person.keypoints.find((item) => visiblePosePoint(item));
+  return {
+    x: point ? poseX(point.x, space) : 4,
+    y: point ? poseY(point.y, space) : 8,
+  };
+}
+
+function RuViewPoseOverlay({ snapshot }: { snapshot: RuViewPoseSnapshot | null }) {
+  if (!snapshot?.reachable || snapshot.persons.length === 0) {
+    return null;
+  }
+
+  return (
+    <svg className="ruview-pose-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      {snapshot.persons.map((person) => {
+        const space = inferPoseSpace(person);
+        const label = poseLabelPosition(person, space);
+        const bbox = person.bbox
+          ? {
+              x1: poseX(person.bbox.x, space),
+              y1: poseY(person.bbox.y, space),
+              x2: poseX(person.bbox.x + person.bbox.width, space),
+              y2: poseY(person.bbox.y + person.bbox.height, space),
+            }
+          : null;
+        return (
+          <g key={person.track_id} className="ruview-pose-person">
+            {bbox && (
+              <rect
+                className="ruview-pose-box"
+                x={Math.min(bbox.x1, bbox.x2)}
+                y={Math.min(bbox.y1, bbox.y2)}
+                width={Math.abs(bbox.x2 - bbox.x1)}
+                height={Math.abs(bbox.y2 - bbox.y1)}
+                rx="1.8"
+              />
+            )}
+
+            {RUVIEW_SKELETON_LINKS.map(([fromName, toName]) => {
+              const from = keypointByName(person, fromName);
+              const to = keypointByName(person, toName);
+              if (!visiblePosePoint(from) || !visiblePosePoint(to)) return null;
+              return (
+                <line
+                  key={`${person.track_id}-${fromName}-${toName}`}
+                  className="ruview-pose-bone"
+                  x1={poseX(from!.x, space)}
+                  y1={poseY(from!.y, space)}
+                  x2={poseX(to!.x, space)}
+                  y2={poseY(to!.y, space)}
+                />
+              );
+            })}
+
+            {person.keypoints.map((point) => {
+              if (!visiblePosePoint(point)) return null;
+              return (
+                <circle
+                  key={`${person.track_id}-${point.name}`}
+                  className="ruview-pose-point"
+                  cx={poseX(point.x, space)}
+                  cy={poseY(point.y, space)}
+                  r="0.85"
+                />
+              );
+            })}
+
+            <text className="ruview-pose-label" x={label.x} y={Math.max(4, label.y - 1.2)}>
+              {person.track_id}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 const LivePage: React.FC = () => {
   const { token, user } = useAuth();
   const [cameras, setCameras] = useState<CameraSummary[]>([]);
@@ -173,6 +331,9 @@ const LivePage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [streamErrorMap, setStreamErrorMap] = useState<Record<number, boolean>>({});
   const [streamRetryMap, setStreamRetryMap] = useState<Record<number, number>>({});
+  const [ruviewOverlayEnabled, setRuviewOverlayEnabled] = useState(true);
+  const [ruviewPose, setRuviewPose] = useState<RuViewPoseSnapshot | null>(null);
+  const [ruviewError, setRuviewError] = useState<string | null>(null);
   const [fullscreenCameraId, setFullscreenCameraId] = useState<number | null>(null);
   const [fullscreenDetail, setFullscreenDetail] = useState<CameraDetail | null>(null);
   const [fullscreenBusy, setFullscreenBusy] = useState(false);
@@ -208,6 +369,38 @@ const LivePage: React.FC = () => {
       })
       .catch((event) => setError(event?.message || "Не удалось загрузить камеры"));
   }, [token]);
+
+  useEffect(() => {
+    if (!token || !ruviewOverlayEnabled) {
+      setRuviewPose(null);
+      setRuviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const snapshot = await getRuViewPose(token);
+        if (cancelled) return;
+        setRuviewPose(snapshot);
+        setRuviewError(snapshot.error || (snapshot.reachable ? null : "RuView offline"));
+        timer = window.setTimeout(poll, snapshot.reachable ? RUVIEW_ONLINE_POLL_MS : RUVIEW_OFFLINE_POLL_MS);
+      } catch (event: any) {
+        if (cancelled) return;
+        setRuviewPose(null);
+        setRuviewError(event?.message || "RuView offline");
+        timer = window.setTimeout(poll, RUVIEW_OFFLINE_POLL_MS);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [ruviewOverlayEnabled, token]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -562,6 +755,12 @@ const LivePage: React.FC = () => {
     };
   }, [showPtzPanel]);
 
+  const ruviewStatusText = !ruviewOverlayEnabled
+    ? "RuView off"
+    : ruviewPose?.reachable
+      ? `RuView ${ruviewPose.persons.length} skeleton${ruviewPose.persons.length === 1 ? "" : "s"}`
+      : ruviewError || "RuView offline";
+
   return (
     <div className="stack">
       <section className="toolbar-card">
@@ -584,6 +783,19 @@ const LivePage: React.FC = () => {
                 {GRID_MODE_LABELS[mode]}
               </button>
             ))}
+          </div>
+
+          <div className="live-ruview-control">
+            <button
+              type="button"
+              className={ruviewOverlayEnabled ? "btn" : "btn secondary"}
+              onClick={() => setRuviewOverlayEnabled((value) => !value)}
+            >
+              RuView
+            </button>
+            <span className={`pill ruview-status${ruviewPose?.reachable ? " is-online" : ""}`}>
+              {ruviewStatusText}
+            </span>
           </div>
 
           {groups.length > 0 && (
@@ -716,6 +928,8 @@ const LivePage: React.FC = () => {
                     />
                   ))}
 
+                {ruviewOverlayEnabled && <RuViewPoseOverlay snapshot={ruviewPose} />}
+
                 {isFullscreenCamera && (
                   <div className="live-fullscreen-overlay">
                     <div className="live-fullscreen-topbar">
@@ -725,6 +939,7 @@ const LivePage: React.FC = () => {
                           <span className="pill">В реальном времени</span>
                           {camera.location && <span className="pill">{camera.location}</span>}
                           {zoomState.scale > 1 && <span className="pill">Цифровой zoom x{zoomState.scale.toFixed(1)}</span>}
+                          {ruviewOverlayEnabled && <span className="pill">{ruviewStatusText}</span>}
                         </div>
                       </div>
 
