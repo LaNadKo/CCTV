@@ -318,6 +318,8 @@ def train(dataset: Path, output: Path, window_seconds: float, bins: int, alpha: 
     report = {
         "dataset": str(dataset),
         "output": str(output),
+        "frame_width": frame_width,
+        "frame_height": frame_height,
         "window_seconds": window_seconds,
         "bins": bins,
         "alpha": alpha,
