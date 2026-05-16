@@ -1,7 +1,7 @@
 """Processor-related Pydantic schemas."""
 from __future__ import annotations
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProcessorRegister(BaseModel):
@@ -121,6 +121,35 @@ class ProcessorEventIn(BaseModel):
 
 class ProcessorEventOut(BaseModel):
     event_id: int
+
+
+class CalibrationTrackIn(BaseModel):
+    track_id: int | str
+    bbox: list[float] | None = None
+    tracking_bbox: list[float] | None = None
+    confidence: float | None = None
+    person_id: int | None = None
+    label: str | None = None
+    recognized: bool = False
+    keypoints: list[list[float]] | None = None
+    keypoint_conf: list[float] | None = None
+    head_only: bool = False
+    age_ms: float | None = None
+
+
+class ProcessorCalibrationSampleIn(BaseModel):
+    camera_id: int
+    frame_ts: datetime
+    frame_width: int
+    frame_height: int
+    tracks: list[CalibrationTrackIn] = Field(default_factory=list)
+
+
+class ProcessorCalibrationSampleOut(BaseModel):
+    active: bool
+    session_id: str | None = None
+    camera_samples: int = 0
+    latest_tracks: int = 0
 
 
 # ── Recordings ──

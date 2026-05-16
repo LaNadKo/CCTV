@@ -45,6 +45,7 @@ services:
     volumes:
       - recordings:/app/recordings
       - snapshots:/app/snapshots
+      - ./calibration_datasets:/app/calibration_datasets
 
   ruview-sensing:
     image: ruvnet/wifi-densepose:latest
