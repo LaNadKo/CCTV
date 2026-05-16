@@ -49,7 +49,7 @@ services:
   ruview-sensing:
     image: ruvnet/wifi-densepose:latest
     environment:
-      CSI_SOURCE: udp://0.0.0.0:5005
+      CSI_SOURCE: esp32
       RUST_LOG: info
       MODELS_DIR: /models
     ports:

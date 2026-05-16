@@ -54,6 +54,10 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="RUVIEW_REQUIRE_LIVE_CSI_FOR_POSE",
     )
+    ruview_allow_uncalibrated_pose_overlay: bool = Field(
+        default=False,
+        validation_alias="RUVIEW_ALLOW_UNCALIBRATED_POSE_OVERLAY",
+    )
     ruview_node_ips: str = Field(default="", validation_alias="RUVIEW_NODE_IPS")
     ruview_upstream_enabled: bool = Field(
         default=True,

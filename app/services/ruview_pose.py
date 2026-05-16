@@ -283,6 +283,17 @@ def _extract_persons(payload: Any) -> list[RuViewPosePerson]:
     return persons
 
 
+def _payload_source(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("source") or "").strip()
+
+
+def _is_simulated_source(source: str) -> bool:
+    lowered = source.lower()
+    return lowered == "simulated" or lowered.startswith("simulate")
+
+
 async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
     if not settings.ruview_upstream_enabled:
         return RuViewPoseSnapshot(reachable=False, error="RuView upstream disabled")
@@ -302,11 +313,29 @@ async def get_ruview_pose_snapshot() -> RuViewPoseSnapshot:
                 response.raise_for_status()
                 payload = response.json()
                 latency_ms = round((time.perf_counter() - started) * 1000, 1)
+                payload_source = _payload_source(payload)
+                captured_at = datetime.now(timezone.utc)
+                if _is_simulated_source(payload_source):
+                    return RuViewPoseSnapshot(
+                        reachable=False,
+                        source_url=base_url,
+                        captured_at=captured_at,
+                        latency_ms=latency_ms,
+                        error="RuView sidecar работает в simulated mode; overlay отключён",
+                    )
+                if not settings.ruview_allow_uncalibrated_pose_overlay:
+                    return RuViewPoseSnapshot(
+                        reachable=False,
+                        source_url=base_url,
+                        captured_at=captured_at,
+                        latency_ms=latency_ms,
+                        error="RuView RF активен, но camera-aligned overlay отключён",
+                    )
                 persons = _extract_persons(payload)
                 return RuViewPoseSnapshot(
                     reachable=True,
                     source_url=base_url,
-                    captured_at=datetime.now(timezone.utc),
+                    captured_at=captured_at,
                     latency_ms=latency_ms,
                     persons=persons,
                 )
