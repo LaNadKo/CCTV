@@ -207,7 +207,11 @@ class ProcessorOut {
     required this.processorId,
     required this.name,
     required this.status,
+    this.nodeUid,
     this.host,
+    this.osInfo,
+    this.version,
+    this.capabilities,
     this.lastHeartbeatAt,
     required this.assignedCameras,
     this.cameraCount = 0,
@@ -220,7 +224,11 @@ class ProcessorOut {
   final int processorId;
   final String name;
   final String status;
+  final String? nodeUid;
   final String? host;
+  final String? osInfo;
+  final String? version;
+  final Map<String, dynamic>? capabilities;
   final DateTime? lastHeartbeatAt;
   final List<AssignedCameraInfo> assignedCameras;
   final int cameraCount;
@@ -236,7 +244,15 @@ class ProcessorOut {
       processorId: json['processor_id'] as int,
       name: json['name'] as String? ?? 'Processor',
       status: json['status'] as String? ?? 'offline',
+      nodeUid: json['node_uid'] as String?,
       host: json['host'] as String? ?? json['ip_address'] as String?,
+      osInfo: json['os_info'] as String?,
+      version: json['version'] as String?,
+      capabilities: json['capabilities'] is Map
+          ? (json['capabilities'] as Map).map(
+              (key, value) => MapEntry('$key', value),
+            )
+          : null,
       lastHeartbeatAt: DateTime.tryParse(
         '${json['last_heartbeat_at'] ?? json['last_heartbeat'] ?? ''}',
       ),

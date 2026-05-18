@@ -15,4 +15,4 @@ RUN python -m pip install --upgrade pip && python -m pip install -r requirements
 COPY processor/ ./processor/
 COPY cctv_ai/ ./cctv_ai/
 
-CMD ["python", "-m", "processor.cli", "run"]
+CMD ["python", "-m", "processor.runtime"]

@@ -54,6 +54,7 @@ SUPPORTED_COMMANDS = {
     "reload_assignments",
     "restart_workers",
     "stop_all_cameras",
+    "resume_cameras",
     "refresh_gallery",
     "shutdown",
 }
@@ -176,13 +177,15 @@ async def _find_processor_for_node(
         found = result.scalar_one_or_none()
         if found is not None:
             return found
-    if api_key_id is not None and name and hostname:
+    if name and hostname:
+        filters = [
+            models.Processor.name == name,
+            models.Processor.hostname == hostname,
+        ]
+        if api_key_id is not None:
+            filters.append(models.Processor.api_key_id == api_key_id)
         result = await session.execute(
-            select(models.Processor).where(
-                models.Processor.api_key_id == api_key_id,
-                models.Processor.name == name,
-                models.Processor.hostname == hostname,
-            )
+            select(models.Processor).where(*filters)
         )
         return result.scalar_one_or_none()
     return None

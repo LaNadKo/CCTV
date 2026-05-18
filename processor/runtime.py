@@ -9,6 +9,7 @@ import os
 import secrets
 import socket
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -260,47 +261,74 @@ def ensure_connected(config: dict[str, Any]) -> dict[str, Any]:
 class RuntimeLock:
     def __init__(self, name: str = "processor.lock") -> None:
         self.path = base_dir() / name
+        self.global_path = Path(tempfile.gettempdir()) / "cctv-processor-global.lock"
         self._handle = None
+        self._global_handle = None
+
+    def _lock_handle(self, handle) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_handle(self, handle) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def acquire(self) -> None:
+        self.global_path.parent.mkdir(parents=True, exist_ok=True)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        global_handle = open(self.global_path, "a+", encoding="utf-8")
         handle = open(self.path, "a+", encoding="utf-8")
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_handle(global_handle)
+            self._lock_handle(handle)
         except OSError as exc:
             handle.close()
-            raise RuntimeError("Another local Processor instance is already running for this runtime directory") from exc
+            global_handle.close()
+            raise RuntimeError("Another local Processor instance is already running on this machine") from exc
+        except Exception:
+            handle.close()
+            global_handle.close()
+            raise
+        global_handle.seek(0)
+        global_handle.truncate()
+        global_handle.write(f"{os.getpid()} {base_dir()}")
+        global_handle.flush()
         handle.seek(0)
         handle.truncate()
         handle.write(str(os.getpid()))
         handle.flush()
+        self._global_handle = global_handle
         self._handle = handle
 
     def release(self) -> None:
         handle = self._handle
-        if handle is None:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-            self._handle = None
+        global_handle = self._global_handle
+        for current in (handle, global_handle):
+            if current is None:
+                continue
+            try:
+                try:
+                    self._unlock_handle(current)
+                except OSError:
+                    pass
+            finally:
+                current.close()
+        self._handle = None
+        self._global_handle = None
 
 
 def configure_headless_logging() -> None:
@@ -346,3 +374,7 @@ def run_headless() -> None:
     from processor.main import main as processor_main
 
     asyncio.run(processor_main())
+
+
+if __name__ == "__main__":
+    run_headless()

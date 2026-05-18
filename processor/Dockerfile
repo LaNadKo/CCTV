@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY processor/ ./processor/
 COPY cctv_ai/ ./cctv_ai/
 
-CMD ["python", "-m", "processor.cli", "run"]
+CMD ["python", "-m", "processor.runtime"]

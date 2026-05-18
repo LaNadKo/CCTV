@@ -8,17 +8,39 @@ x-processor-common: &processor-common
     PROCESSOR_ID: "${PROCESSOR_ID:-}"
     PROCESSOR_CONNECT_CODE: "${PROCESSOR_CONNECT_CODE:-}"
     PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-1}"
+    PROCESSOR_NODE_UID: "${PROCESSOR_NODE_UID:-}"
+    PROCESSOR_ADVERTISED_IP: "${PROCESSOR_ADVERTISED_IP:-}"
     PROCESSOR_RUNTIME_DIR: "/app/processor-runtime"
     MAX_WORKERS: "${PROCESSOR_MAX_WORKERS:-4}"
+    POLL_INTERVAL: "${PROCESSOR_POLL_INTERVAL:-3}"
+    HEARTBEAT_INTERVAL: "${PROCESSOR_HEARTBEAT_INTERVAL:-30}"
+    FACE_SCAN_DIVISOR: "${FACE_SCAN_DIVISOR:-8}"
+    OVERLAY_FRAME_DIVISOR: "${OVERLAY_FRAME_DIVISOR:-1}"
     RECORDING_SEGMENT_SECONDS: "${RECORDING_SEGMENT_SECONDS:-60}"
+    RECORDINGS_DIR: "/app/media/recordings"
+    SNAPSHOTS_DIR: "/app/media/snapshots"
+    MEDIA_PORT: "${PROCESSOR_MEDIA_PORT:-8777}"
+    MEDIA_TOKEN: "${PROCESSOR_MEDIA_TOKEN:-}"
   depends_on:
     backend:
       condition: service_healthy
   restart: unless-stopped
+  ports:
+    - "${PROCESSOR_MEDIA_PORT:-8777}:${PROCESSOR_MEDIA_PORT:-8777}"
   volumes:
     - recordings:/app/media/recordings
     - snapshots:/app/media/snapshots
     - processor_runtime:/app/processor-runtime
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "python -c \"import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('MEDIA_PORT', '8777'), timeout=5).read()\"",
+      ]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 45s
 
 services:
   db:

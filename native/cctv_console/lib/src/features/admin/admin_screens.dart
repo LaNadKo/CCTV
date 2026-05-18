@@ -602,8 +602,7 @@ class ProcessorsManagementScreen extends StatefulWidget {
       _ProcessorsManagementScreenState();
 }
 
-class _ProcessorsManagementScreenState
-    extends State<ProcessorsManagementScreen>
+class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
     with RouteRefreshState<ProcessorsManagementScreen> {
   bool _loading = false;
   String? _error;
@@ -616,6 +615,7 @@ class _ProcessorsManagementScreenState
     'reload_assignments',
     'restart_workers',
     'stop_all_cameras',
+    'resume_cameras',
     'refresh_gallery',
     'shutdown',
   ];
@@ -1650,9 +1650,16 @@ class _ProcessorDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     final processor = this.processor;
     final colors = context.colors;
-    if (processor == null)
+    if (processor == null) {
       return const EmptyPanel(message: 'Выберите Processor.');
+    }
     final metrics = processor.metrics ?? const <String, dynamic>{};
+    final capabilities = processor.capabilities ?? const <String, dynamic>{};
+    final accel = capabilities['acceleration'] is Map
+        ? (capabilities['acceleration'] as Map).map(
+            (key, value) => MapEntry('$key', value),
+          )
+        : const <String, dynamic>{};
     return GlassPanel(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1700,6 +1707,34 @@ class _ProcessorDetail extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InfoChip(
+                icon: Icons.fingerprint_rounded,
+                label: 'UID',
+                value: processor.nodeUid ?? '-',
+              ),
+              _InfoChip(
+                icon: Icons.dns_rounded,
+                label: 'OS',
+                value: processor.osInfo ?? '-',
+              ),
+              _InfoChip(
+                icon: Icons.memory_rounded,
+                label: 'Ускорение',
+                value:
+                    '${accel['selected_device'] ?? accel['preference'] ?? '-'}',
+              ),
+              _InfoChip(
+                icon: Icons.new_releases_rounded,
+                label: 'Версия',
+                value: processor.version ?? '-',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           Text(
             'Удалённые команды',
             style: Theme.of(context).textTheme.titleLarge,
@@ -1743,6 +1778,47 @@ class _ProcessorDetail extends StatelessWidget {
                 command: command,
                 onCancel: () => onCancelCommand(command),
               ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 260),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.surfaceMuted,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: colors.primaryAccent),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              '$label: $value',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: colors.muted, fontSize: 12),
+            ),
+          ),
         ],
       ),
     );
@@ -2581,6 +2657,7 @@ String _commandLabel(String type) {
     'reload_assignments' => 'Перезагрузить назначения',
     'restart_workers' => 'Перезапустить воркеры',
     'stop_all_cameras' => 'Остановить камеры',
+    'resume_cameras' => 'Возобновить камеры',
     'refresh_gallery' => 'Обновить галерею',
     'shutdown' => 'Выключить',
     _ => type,

@@ -1,45 +1,74 @@
 # ============================================================
-#  CCTV Processor — standalone deployment for GPU machines
-#  Run CPU/auto: cp .env.example .env && nano .env && docker compose --profile cpu up -d
-#  Run NVIDIA:  cp .env.example .env && nano .env && docker compose --profile nvidia up -d processor-nvidia
+# CCTV Processor standalone deployment for Windows/Linux hosts.
+#
+# CPU/auto:
+#   cp .env.example .env
+#   docker compose --profile cpu up -d
+#
+# NVIDIA:
+#   cp .env.example .env
+#   docker compose --profile nvidia up -d processor-nvidia
 # ============================================================
+
+x-processor-env: &processor-env
+  BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env, e.g. http://192.168.50.10:8001}
+  API_KEY: ${API_KEY:-}
+  PROCESSOR_ID: ${PROCESSOR_ID:-}
+  PROCESSOR_CONNECT_CODE: ${PROCESSOR_CONNECT_CODE:-}
+  PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-1}
+  PROCESSOR_NODE_UID: ${PROCESSOR_NODE_UID:-}
+  PROCESSOR_ADVERTISED_IP: ${PROCESSOR_ADVERTISED_IP:-}
+  PROCESSOR_RUNTIME_DIR: /app/processor-runtime
+  PROCESSOR_ACCEL: ${PROCESSOR_ACCEL:-auto}
+  MAX_WORKERS: ${MAX_WORKERS:-4}
+  POLL_INTERVAL: ${POLL_INTERVAL:-3}
+  HEARTBEAT_INTERVAL: ${HEARTBEAT_INTERVAL:-30}
+  MOTION_THRESHOLD: ${MOTION_THRESHOLD:-25}
+  MOTION_MIN_AREA: ${MOTION_MIN_AREA:-500}
+  FACE_SCAN_DIVISOR: ${FACE_SCAN_DIVISOR:-8}
+  OVERLAY_FRAME_DIVISOR: ${OVERLAY_FRAME_DIVISOR:-1}
+  FACE_MATCH_THRESHOLD: ${FACE_MATCH_THRESHOLD:-0.56}
+  RECORDING_SEGMENT_SECONDS: ${RECORDING_SEGMENT_SECONDS:-60}
+  MEDIA_PORT: ${MEDIA_PORT:-8777}
+  MEDIA_TOKEN: ${MEDIA_TOKEN:-}
+
+x-processor-common: &processor-common
+  volumes:
+    - ${PROCESSOR_RUNTIME_VOLUME:-processor_runtime}:/app/processor-runtime
+  ports:
+    - "${MEDIA_BIND:-0.0.0.0}:${MEDIA_PORT:-8777}:${MEDIA_PORT:-8777}"
+  restart: unless-stopped
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "python -c \"import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('MEDIA_PORT', '8777'), timeout=5).read()\"",
+      ]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 45s
 
 services:
   processor:
+    <<: *processor-common
     build:
       context: ..
       dockerfile: processor/Dockerfile
     environment:
-      BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
-      API_KEY: ${API_KEY:-}
-      PROCESSOR_ID: ${PROCESSOR_ID:-}
-      PROCESSOR_CONNECT_CODE: ${PROCESSOR_CONNECT_CODE:-}
-      PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-1}
-      PROCESSOR_RUNTIME_DIR: /app/processor-runtime
-      PROCESSOR_ACCEL: ${PROCESSOR_ACCEL:-auto}
-      MAX_WORKERS: ${MAX_WORKERS:-4}
-    volumes:
-      - processor_runtime:/app/processor-runtime
-    restart: always
+      <<: *processor-env
     profiles:
       - cpu
 
   processor-nvidia:
+    <<: *processor-common
     build:
       context: ..
       dockerfile: processor/Dockerfile.nvidia
     environment:
-      BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
-      API_KEY: ${API_KEY:-}
-      PROCESSOR_ID: ${PROCESSOR_ID:-}
-      PROCESSOR_CONNECT_CODE: ${PROCESSOR_CONNECT_CODE:-}
+      <<: *processor-env
       PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-nvidia-1}
-      PROCESSOR_RUNTIME_DIR: /app/processor-runtime
       PROCESSOR_ACCEL: nvidia
-      MAX_WORKERS: ${MAX_WORKERS:-4}
-    volumes:
-      - processor_runtime:/app/processor-runtime
-    restart: always
     deploy:
       resources:
         reservations:
