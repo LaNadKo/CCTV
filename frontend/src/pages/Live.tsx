@@ -40,6 +40,8 @@ const GRID_MODE_CAPACITY: Record<Exclude<LiveGridMode, "auto">, number> = {
 const GRID_STORAGE_KEY = "cctv_live_grid_mode";
 const ORDER_STORAGE_KEY = "cctv_live_camera_order";
 const GRID_LAYOUT_STORAGE_KEY = "cctv_live_grid_layouts";
+const PTZ_HOLD_REPEAT_MS = 250;
+const PTZ_HOLD_TIMEOUT_SECONDS = 0.6;
 
 type ZoomState = {
   scale: number;
@@ -199,6 +201,8 @@ const LivePage: React.FC = () => {
   const [zoomState, setZoomState] = useState<ZoomState>(DEFAULT_ZOOM);
   const containerRefs = useRef<Record<number, HTMLElement | null>>({});
   const activePtzMoveRef = useRef<string | null>(null);
+  const activePtzRepeatRef = useRef<number | null>(null);
+  const activePtzKeyRef = useRef<string | null>(null);
   const uiSettings = loadUiSettings();
   const isAdmin = user?.role_id === 1;
 
@@ -432,6 +436,11 @@ const LivePage: React.FC = () => {
     }
   };
 
+  const normalizePtzMovePayload = (payload: PtzMovePayload): PtzMovePayload => ({
+    ...payload,
+    timeout_seconds: payload.timeout_seconds ?? PTZ_HOLD_TIMEOUT_SECONDS,
+  });
+
   const getMoveKey = (payload: PtzMovePayload) => JSON.stringify(payload);
 
   const sendContinuousMove = async (payload: PtzMovePayload) => {
@@ -445,7 +454,12 @@ const LivePage: React.FC = () => {
 
   const stopMove = async (force = false) => {
     if (!force && !activePtzMoveRef.current) return;
+    if (activePtzRepeatRef.current !== null) {
+      window.clearInterval(activePtzRepeatRef.current);
+      activePtzRepeatRef.current = null;
+    }
     activePtzMoveRef.current = null;
+    activePtzKeyRef.current = null;
     if (!token || !fullscreenCameraId) return;
     try {
       await ptzStop(token, fullscreenCameraId);
@@ -455,13 +469,53 @@ const LivePage: React.FC = () => {
   };
 
   const startHoldMove = async (payload: PtzMovePayload) => {
-    const moveKey = getMoveKey(payload);
+    const movePayload = normalizePtzMovePayload(payload);
+    const moveKey = getMoveKey(movePayload);
     if (activePtzMoveRef.current === moveKey) return;
     if (activePtzMoveRef.current) {
       await stopMove(true);
     }
     activePtzMoveRef.current = moveKey;
-    await sendContinuousMove(payload);
+    await sendContinuousMove(movePayload);
+    activePtzRepeatRef.current = window.setInterval(() => {
+      void sendContinuousMove(movePayload);
+    }, PTZ_HOLD_REPEAT_MS);
+  };
+
+  const normalizePtzKey = (key: string) => (key.length === 1 ? key.toLowerCase() : key);
+
+  const movementPayloadForKey = (key: string): PtzMovePayload | null => {
+    switch (normalizePtzKey(key)) {
+      case "ArrowUp":
+      case "w":
+        return { tilt: 0.7 };
+      case "ArrowDown":
+      case "s":
+        return { tilt: -0.7 };
+      case "ArrowLeft":
+      case "a":
+        return { pan: -0.7 };
+      case "ArrowRight":
+      case "d":
+        return { pan: 0.7 };
+      case "+":
+      case "=":
+      case "e":
+        return { zoom: 0.45 };
+      case "-":
+      case "_":
+      case "q":
+        return { zoom: -0.45 };
+      default:
+        return null;
+    }
+  };
+
+  const isTextInputActive = () => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement)) return false;
+    const tagName = element.tagName.toLowerCase();
+    return tagName === "input" || tagName === "textarea" || tagName === "select" || element.isContentEditable;
   };
 
   const bindHoldMove = (payload: PtzMovePayload) => ({
@@ -567,15 +621,41 @@ const LivePage: React.FC = () => {
     const handlePointerRelease = () => {
       void stopMove();
     };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (isTextInputActive()) return;
+      if (event.key === " " || event.code === "Space") {
+        event.preventDefault();
+        void stopMove(true);
+        return;
+      }
+      const payload = movementPayloadForKey(event.key);
+      if (!payload) return;
+      event.preventDefault();
+      const key = normalizePtzKey(event.key);
+      if (event.repeat && activePtzKeyRef.current === key) return;
+      activePtzKeyRef.current = key;
+      void startHoldMove(payload);
+    };
+    const handleKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (!movementPayloadForKey(event.key)) return;
+      const key = normalizePtzKey(event.key);
+      if (activePtzKeyRef.current && activePtzKeyRef.current !== key) return;
+      event.preventDefault();
+      void stopMove();
+    };
 
     window.addEventListener("pointerup", handlePointerRelease);
     window.addEventListener("pointercancel", handlePointerRelease);
     window.addEventListener("blur", handlePointerRelease);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
 
     return () => {
       window.removeEventListener("pointerup", handlePointerRelease);
       window.removeEventListener("pointercancel", handlePointerRelease);
       window.removeEventListener("blur", handlePointerRelease);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
       void stopMove(true);
     };
   }, [showPtzPanel]);
@@ -830,7 +910,8 @@ const LivePage: React.FC = () => {
                         )}
 
                         <div className="live-ptz-hint">
-                          Цифровой zoom: удерживайте <strong>Ctrl</strong> и крутите колесо мыши по кадру. Масштабирование идёт в точку под курсором.
+                          ONVIF: удерживайте кнопки или используйте стрелки/WASD, Q/E для zoom и Space для стопа.
+                          Цифровой zoom: удерживайте <strong>Ctrl</strong> и крутите колесо мыши по кадру.
                         </div>
 
                         {(Boolean(fullscreenDetail?.supports_ptz) || (fullscreenDetail?.presets?.length ?? 0) > 0) && (

@@ -101,24 +101,24 @@ class CameraProbeResultOut(BaseModel):
 
 
 class PtzRelativeMoveIn(BaseModel):
-    pan: float = 0.0
-    tilt: float = 0.0
-    zoom: float = 0.0
-    speed: Optional[float] = None
+    pan: float = Field(default=0.0, ge=-1.0, le=1.0)
+    tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
+    zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
+    speed: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class PtzContinuousMoveIn(BaseModel):
-    pan: float = 0.0
-    tilt: float = 0.0
-    zoom: float = 0.0
-    timeout_seconds: Optional[float] = Field(default=0.4, ge=0.1, le=10.0)
+    pan: float = Field(default=0.0, ge=-1.0, le=1.0)
+    tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
+    zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
+    timeout_seconds: Optional[float] = Field(default=0.6, ge=0.1, le=10.0)
 
 
 class PtzAbsoluteMoveIn(BaseModel):
-    pan: Optional[float] = None
-    tilt: Optional[float] = None
-    zoom: Optional[float] = None
-    speed: Optional[float] = None
+    pan: Optional[float] = Field(default=None, ge=-1.0, le=1.0)
+    tilt: Optional[float] = Field(default=None, ge=-1.0, le=1.0)
+    zoom: Optional[float] = Field(default=None, ge=-1.0, le=1.0)
+    speed: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class VideoStreamCreate(BaseModel):

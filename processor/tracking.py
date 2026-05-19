@@ -11,6 +11,10 @@ from onvif import ONVIFClient
 logger = logging.getLogger(__name__)
 
 
+def _clamp_unit(value: float | None) -> float:
+    return max(-1.0, min(1.0, float(value or 0.0)))
+
+
 class PIDController:
     def __init__(self, kp: float = 0.45, kd: float = 0.08, deadzone: float = 0.06):
         self.kp = kp
@@ -90,19 +94,35 @@ class OnvifController:
                     password=password,
                     use_https=use_https,
                     timeout=5,
+                    verify_ssl=False,
                 )
                 self._client_key = key
         return self._client, profile_token
 
     def continuous_move(self, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0, timeout_seconds: float = 0.35) -> bool:
         client, profile_token = self._get_client()
-        velocity = {"PanTilt": {"x": float(pan), "y": float(tilt)}, "Zoom": {"x": float(zoom)}}
-        client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity, Timeout=f"PT{max(timeout_seconds, 0.1):.1f}S")
+        pan = _clamp_unit(pan)
+        tilt = _clamp_unit(tilt)
+        zoom = _clamp_unit(zoom)
+        velocity = {}
+        if pan or tilt:
+            velocity["PanTilt"] = {"x": pan, "y": tilt}
+        if zoom:
+            velocity["Zoom"] = {"x": zoom}
+        if not velocity:
+            return self.stop()
+        try:
+            client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity, Timeout=f"PT{max(timeout_seconds, 0.1):.1f}S")
+        except Exception:
+            client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity)
         return True
 
     def stop(self) -> bool:
         client, profile_token = self._get_client()
-        client.ptz().Stop(ProfileToken=profile_token, PanTilt=True, Zoom=True)
+        try:
+            client.ptz().Stop(ProfileToken=profile_token, PanTilt=True, Zoom=True)
+        except Exception:
+            client.ptz().Stop(ProfileToken=profile_token)
         return True
 
     def goto_preset(self, preset_token: str) -> bool:
