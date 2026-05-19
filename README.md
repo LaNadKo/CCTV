@@ -108,10 +108,20 @@ Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-2. Поднять базовый стек:
+2. Поднять нужный профиль:
 
 ```bash
-docker compose up -d --build db backend mediamtx
+# Только backend + DB + MediaMTX, без Processor и отдельного frontend-контейнера
+docker compose --profile core up -d --build
+
+# Полный сервер без Processor: backend + DB + MediaMTX + web-console
+docker compose --profile server up -d --build
+
+# Полный сервер + CPU/auto Processor
+docker compose --profile server-cpu up -d --build
+
+# Полный сервер + NVIDIA Processor
+docker compose --profile server-gpu up -d --build
 ```
 
 3. Проверить backend:
@@ -131,10 +141,12 @@ Processor можно поднимать отдельно выбранным пр
 docker compose --profile with-processor up -d --build processor
 
 # NVIDIA GPU через NVIDIA Container Toolkit
-docker compose --profile with-gpu up -d --build processor-nvidia
+docker compose --profile gpu-nvidia up -d --build processor-nvidia
 ```
 
 В контейнере Processor использует `PROCESSOR_ACCEL`. Для NVIDIA нужен установленный NVIDIA Container Toolkit на хосте; без него GPU внутрь контейнера не попадёт.
+
+Профиль `server-gpu` сейчас означает именно NVIDIA GPU. Общий термин `GPU` удобен для демонстрации, но технически NVIDIA, Intel и AMD требуют разных Docker-настроек. Поэтому конкретный профиль называется `gpu-nvidia`; позже можно добавить `gpu-intel` и `gpu-amd`, не ломая команды запуска.
 
 ### Вариант 2. Готовый shell-скрипт
 
