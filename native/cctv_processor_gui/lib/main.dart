@@ -253,19 +253,28 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   Future<void> _readLogTail() async {
     final bridge = _bridge;
     if (bridge == null) return;
-    final file = File(bridge.logPath);
-    if (!await file.exists()) return;
     try {
-      final text = await file.readAsString();
+      final guiText = await _readTail(bridge.processOutputLogPath);
+      final processorText = await _readTail(bridge.logPath);
+      final parts = [
+        if (guiText.trim().isNotEmpty)
+          '--- processor_gui_output.log ---\n$guiText',
+        if (processorText.trim().isNotEmpty)
+          '--- processor.log ---\n$processorText',
+      ];
+      if (parts.isEmpty) return;
       if (!mounted) return;
-      setState(() {
-        _diskLog = text.length > 32000
-            ? text.substring(text.length - 32000)
-            : text;
-      });
+      setState(() => _diskLog = parts.join('\n'));
     } catch (_) {
       // Log file can be locked while processor writes to it.
     }
+  }
+
+  Future<String> _readTail(String path) async {
+    final file = File(path);
+    if (!await file.exists()) return '';
+    final text = await file.readAsString(encoding: utf8);
+    return text.length > 32000 ? text.substring(text.length - 32000) : text;
   }
 
   Future<void> _saveSettings() async {
@@ -1325,7 +1334,13 @@ class _ProcessorHomeState extends State<ProcessorHome> {
               OutlinedButton.icon(
                 onPressed: () => _openRuntimePath(bridge.logPath),
                 icon: const Icon(Icons.open_in_new_rounded),
-                label: const Text('Открыть файл'),
+                label: const Text('processor.log'),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () => _openRuntimePath(bridge.processOutputLogPath),
+                icon: const Icon(Icons.terminal_rounded),
+                label: const Text('stdout/stderr'),
               ),
               const SizedBox(width: 10),
               OutlinedButton.icon(
@@ -1402,6 +1417,8 @@ class RuntimeBridge {
 
   String get configPath => joinPath(runtimeDir.path, 'processor_config.json');
   String get logPath => joinPath(runtimeDir.path, 'processor.log');
+  String get processOutputLogPath =>
+      joinPath(runtimeDir.path, 'processor_gui_output.log');
 
   static Future<RuntimeBridge> detect() async {
     final appDir = File(Platform.resolvedExecutable).parent;
@@ -1496,7 +1513,9 @@ class RuntimeBridge {
       _executable,
       commandArgs,
       workingDirectory: _workingDirectory.path,
-      environment: {'PROCESSOR_RUNTIME_DIR': runtimeDir.path},
+      environment: _processEnvironment(),
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
     ).timeout(timeout);
     final commandResult = CommandResult(
       exitCode: result.exitCode,
@@ -1529,11 +1548,31 @@ class RuntimeBridge {
       _executable,
       args,
       workingDirectory: _workingDirectory.path,
-      environment: {'PROCESSOR_RUNTIME_DIR': runtimeDir.path},
+      environment: _processEnvironment(),
     );
-    process.stdout.transform(utf8.decoder).listen(onOutput);
-    process.stderr.transform(utf8.decoder).listen(onOutput);
+    final sink = File(
+      processOutputLogPath,
+    ).openWrite(mode: FileMode.append, encoding: utf8);
+    void attach(Stream<List<int>> stream, String source) {
+      stream.transform(const Utf8Decoder(allowMalformed: true)).listen((chunk) {
+        final entry = '${DateTime.now().toIso8601String()} [$source] $chunk';
+        sink.write(entry);
+        onOutput(entry);
+      });
+    }
+
+    attach(process.stdout, 'stdout');
+    attach(process.stderr, 'stderr');
+    unawaited(process.exitCode.whenComplete(sink.close));
     return process;
+  }
+
+  Map<String, String> _processEnvironment() {
+    return {
+      'PROCESSOR_RUNTIME_DIR': runtimeDir.path,
+      'PYTHONUTF8': '1',
+      'PYTHONIOENCODING': 'utf-8',
+    };
   }
 
   Future<LocalMetrics> localMetrics() async {

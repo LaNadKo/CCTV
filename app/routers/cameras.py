@@ -1,6 +1,10 @@
 ﻿from typing import List, Optional
+import asyncio
 import logging
+import os
+from urllib.parse import quote
 
+import cv2
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -12,7 +16,8 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
 from app.permissions import check_permission, user_camera_permission_sync
-from app.processor_media import get_processor_media_base_url, get_processor_media_headers
+from app.processor_media import get_processor_media_base_urls, get_processor_media_headers
+from app.security import decrypt_secret
 from app.schemas.cameras import CameraEndpointInfo, CameraOut, CameraPermissionOut
 from app.services.onvif import (
     endpoint_has_onvif,
@@ -32,10 +37,30 @@ async def _proxy_processor_camera_stream(
     camera_id: int,
     overlay: bool,
 ) -> StreamingResponse:
+    errors: list[str] = []
+    for base_url in get_processor_media_base_urls(proc):
+        try:
+            return await _proxy_processor_camera_stream_url(
+                base_url,
+                proc,
+                camera_id,
+                overlay,
+            )
+        except Exception as exc:
+            errors.append(f"{base_url}: {exc!r}")
+    raise RuntimeError("; ".join(errors) or "processor media endpoint is unknown")
+
+
+async def _proxy_processor_camera_stream_url(
+    base_url: str,
+    proc: models.Processor,
+    camera_id: int,
+    overlay: bool,
+) -> StreamingResponse:
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=3, read=10, write=10, pool=10))
     stream_cm = client.stream(
         "GET",
-        f"{get_processor_media_base_url(proc)}/cameras/{camera_id}/stream.mjpeg",
+        f"{base_url}/cameras/{camera_id}/stream.mjpeg",
         headers=get_processor_media_headers(proc),
         params={"overlay": "1" if overlay else "0"},
     )
@@ -60,6 +85,118 @@ async def _proxy_processor_camera_stream(
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace; boundary=frame"),
     )
+
+
+def _inject_credentials(url: str, username: str | None, password: str | None) -> str:
+    if not username or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if "@" in rest:
+        return url
+    host_part, sep, path_part = rest.partition("/")
+    user = quote(username, safe="")
+    pwd = quote(password or "", safe="")
+    return f"{scheme}://{user}:{pwd}@{host_part}{sep}{path_part}"
+
+
+def _decrypt_endpoint_password(endpoint: models.CameraEndpoint) -> str | None:
+    if not endpoint.password_secret:
+        return None
+    try:
+        return decrypt_secret(endpoint.password_secret)
+    except Exception:
+        return None
+
+
+def _resolve_direct_camera_source(camera: models.Camera) -> str | int | None:
+    candidates: list[tuple[int, str]] = []
+    for endpoint in camera.endpoints:
+        kind = endpoint.endpoint_kind
+        url = endpoint.endpoint_url
+        if not kind or not url:
+            continue
+        weight = 100 if endpoint.is_primary else 0
+        if kind == "rtsp":
+            weight += 100
+        elif kind == "http":
+            weight += 50
+        else:
+            continue
+        candidates.append(
+            (
+                weight,
+                _inject_credentials(
+                    url,
+                    endpoint.username,
+                    _decrypt_endpoint_password(endpoint),
+                ),
+            )
+        )
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+    if camera.stream_url:
+        return int(camera.stream_url) if camera.stream_url.isdigit() else camera.stream_url
+    if camera.ip_address:
+        return f"rtsp://{camera.ip_address}:554/stream"
+    return None
+
+
+def _open_direct_capture(source: str | int) -> cv2.VideoCapture:
+    if isinstance(source, str) and source.lower().startswith("rtsp://"):
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
+        )
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+    else:
+        cap = cv2.VideoCapture(source)
+    for prop, value in (
+        (getattr(cv2, "CAP_PROP_BUFFERSIZE", None), 1),
+        (getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None), 5000),
+        (getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None), 5000),
+    ):
+        if prop is not None:
+            cap.set(prop, value)
+    return cap
+
+
+def _read_direct_jpeg(cap: cv2.VideoCapture) -> bytes | None:
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        return None
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    if not ok:
+        return None
+    return buf.tobytes()
+
+
+async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
+    source = _resolve_direct_camera_source(camera)
+    if source is None:
+        raise RuntimeError("camera stream source is not configured")
+    cap = await asyncio.to_thread(_open_direct_capture, source)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError("cannot open camera stream directly")
+
+    async def gen():
+        failures = 0
+        try:
+            while True:
+                frame = await asyncio.to_thread(_read_direct_jpeg, cap)
+                if frame is None:
+                    failures += 1
+                    if failures >= 30:
+                        break
+                    await asyncio.sleep(0.1)
+                    continue
+                failures = 0
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                await asyncio.sleep(1 / 15)
+        finally:
+            cap.release()
+
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @router.get("", response_model=List[CameraOut])
@@ -152,7 +289,12 @@ async def stream_camera(
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user_allow_query),
 ):
-    camera = await session.get(models.Camera, camera_id)
+    result = await session.execute(
+        select(models.Camera)
+        .where(models.Camera.camera_id == camera_id)
+        .options(selectinload(models.Camera.endpoints))
+    )
+    camera = result.scalar_one_or_none()
     if camera is None or camera.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
 
@@ -171,10 +313,13 @@ async def stream_camera(
     )
     assignment_row = assignment_result.first()
     if assignment_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Live stream is available only through an assigned processor",
-        )
+        try:
+            return await _stream_direct_camera(camera)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Live stream is unavailable: no online processor and direct stream failed ({exc})",
+            ) from exc
 
     _, processor = assignment_row
     try:
@@ -184,9 +329,15 @@ async def stream_camera(
             "camera.stream.processor_proxy_failed camera=%s processor=%s reason=%s",
             camera_id,
             processor.processor_id,
-            exc,
+            repr(exc),
         )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Processor stream is unavailable: {exc}",
-        ) from exc
+        try:
+            return await _stream_direct_camera(camera)
+        except Exception as fallback_exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Live stream is unavailable: "
+                    f"processor proxy failed ({exc!r}); direct stream failed ({fallback_exc})"
+                ),
+            ) from fallback_exc

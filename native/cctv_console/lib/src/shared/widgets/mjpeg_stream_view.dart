@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -80,11 +81,14 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
     unawaited(
       client
           .send(request)
-          .then<void>((response) {
+          .then<void>((response) async {
             if (!mounted || generation != _generation) return;
             if (response.statusCode < 200 || response.statusCode >= 300) {
+              final body = await response.stream.bytesToString();
               throw http.ClientException(
-                'HTTP ${response.statusCode}',
+                body.trim().isEmpty
+                    ? 'HTTP ${response.statusCode}'
+                    : 'HTTP ${response.statusCode}: ${_compactErrorBody(body)}',
                 widget.uri,
               );
             }
@@ -177,4 +181,17 @@ bool _sameHeaders(Map<String, String> left, Map<String, String> right) {
     if (right[entry.key] != entry.value) return false;
   }
   return true;
+}
+
+String _compactErrorBody(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] != null) {
+      return '${decoded['detail']}';
+    }
+  } catch (_) {
+    // Plain text body.
+  }
+  final compact = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return compact.length > 240 ? '${compact.substring(0, 240)}...' : compact;
 }
