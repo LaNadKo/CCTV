@@ -1,4 +1,4 @@
-"""Build processor desktop app as a standalone .exe using PyInstaller."""
+"""Build Processor runtime artifacts used by the Flutter GUI."""
 from __future__ import annotations
 
 import os
@@ -16,7 +16,7 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=str(HERE.parent), check=True)
 
 
-def _gui_cmd() -> list[str]:
+def _runtime_cmd() -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -32,7 +32,7 @@ def _gui_cmd() -> list[str]:
         "--distpath",
         str(HERE / "dist"),
         "--name",
-        "CCTV-Processor",
+        "CCTV-Processor-Runtime",
         "--icon",
         str(ASSETS_DIR / "icon.ico"),
         "--add-data",
@@ -74,11 +74,9 @@ def _gui_cmd() -> list[str]:
         "--hidden-import",
         "cctv_ai.face_onnx",
         "--hidden-import",
-        "processor.gui",
+        "mmdeploy_runtime",
         "--hidden-import",
-        "processor.gui.app",
-        "--hidden-import",
-        "customtkinter",
+        "pydantic_settings",
         "--hidden-import",
         "pynvml",
         "--hidden-import",
@@ -101,9 +99,7 @@ def _gui_cmd() -> list[str]:
         "zeep",
         "--collect-data",
         "onvif",
-        "--collect-data",
-        "customtkinter",
-        str(HERE / "run_gui.py"),
+        str(HERE / "run_runtime.py"),
     ]
 
 
@@ -114,7 +110,7 @@ def _cli_cmd() -> list[str]:
         "PyInstaller",
         "--clean",
         "--noconfirm",
-        "--onefile",
+        "--onedir",
         "--console",
         "--specpath",
         str(HERE),
@@ -145,13 +141,23 @@ def _cli_cmd() -> list[str]:
         "--hidden-import",
         "processor.vision",
         "--hidden-import",
+        "processor.body_detector",
+        "--hidden-import",
         "cctv_ai.face_onnx",
         "--hidden-import",
+        "mmdeploy_runtime",
+        "--hidden-import",
         "cv2",
+        "--hidden-import",
+        "pydantic_settings",
         "--collect-binaries",
         "onnxruntime",
         "--collect-data",
         "onnxruntime",
+        "--collect-binaries",
+        "mmdeploy_runtime",
+        "--collect-data",
+        "mmdeploy_runtime",
         "--collect-binaries",
         "nvidia",
         "--collect-data",
@@ -161,11 +167,11 @@ def _cli_cmd() -> list[str]:
 
 
 def build() -> None:
-    _run(_gui_cmd())
+    _run(_runtime_cmd())
     skip_cli = os.environ.get("SKIP_PROCESSOR_CLI", "").strip().lower() in {"1", "true", "yes"}
     if not skip_cli:
         _run(_cli_cmd())
-    print(f"\nBuild complete: {HERE / 'dist' / 'CCTV-Processor'}")
+    print(f"\nBuild complete: {HERE / 'dist' / 'CCTV-Processor-Runtime'}")
 
 
 if __name__ == "__main__":

@@ -444,7 +444,7 @@ class ApiClient {
     double pan = 0,
     double tilt = 0,
     double zoom = 0,
-    double timeoutSeconds = 0.6,
+    double? timeoutSeconds = 0.45,
   }) {
     return postVoid(
       '/admin/cameras/$cameraId/onvif/ptz/continuous',
@@ -453,7 +453,7 @@ class ApiClient {
         'pan': pan,
         'tilt': tilt,
         'zoom': zoom,
-        'timeout_seconds': timeoutSeconds,
+        if (timeoutSeconds != null) 'timeout_seconds': timeoutSeconds,
       },
     );
   }
@@ -564,6 +564,12 @@ class ApiClient {
     });
   }
 
+  Uri cameraSnapshotUri(int cameraId, {bool annotate = false}) {
+    return uri('/cameras/$cameraId/snapshot', {
+      'annotate': annotate ? 'true' : 'false',
+    });
+  }
+
   Uri recordingFileUri(int recordingId, String mediaToken) {
     return uri('/recordings/file/$recordingId', {'token': mediaToken});
   }
@@ -583,9 +589,9 @@ class ApiClient {
   }) async {
     final request = http.Request(
       'GET',
-      cameraStreamUri(cameraId, annotate: annotate),
+      cameraSnapshotUri(cameraId, annotate: annotate),
     );
-    request.headers['Accept'] = 'multipart/x-mixed-replace,image/jpeg,*/*';
+    request.headers['Accept'] = 'image/jpeg,*/*';
     request.headers['Authorization'] = 'Bearer $token';
 
     late http.StreamedResponse response;

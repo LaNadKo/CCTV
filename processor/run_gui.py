@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+
+os.environ.setdefault("ORT_LOGGING_LEVEL", "3")
+os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
+os.environ.setdefault("GLOG_minloglevel", "2")
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):

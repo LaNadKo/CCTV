@@ -3,6 +3,7 @@
 import json
 import logging
 import socket
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
@@ -24,6 +25,8 @@ ONVIF_PORT_CANDIDATES: tuple[tuple[int, bool], ...] = (
 )
 RTSP_PORT_CANDIDATES = (554, 8554)
 HTTP_PORT_CANDIDATES: tuple[tuple[int, bool], ...] = ((80, False), (8080, False), (443, True), (8443, True))
+PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS = 0.45
+PTZ_CONTINUOUS_MAX_TIMEOUT_SECONDS = 1.5
 
 
 class ONVIFServiceError(RuntimeError):
@@ -652,22 +655,29 @@ def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: 
     if not velocity:
         return ptz_stop(camera)
     client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
-    if timeout_seconds is not None:
-        duration = max(float(timeout_seconds or 0.1), 0.1)
-        try:
-            client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
-            return {"ok": True}
-        except Exception as exc:
-            log.debug(
-                "PTZ ContinuousMove with Timeout failed for camera %s, retrying without Timeout: %s",
-                getattr(camera, "camera_id", "?"),
-                exc,
-            )
-            client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    duration = max(
+        min(float(timeout_seconds or PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS), PTZ_CONTINUOUS_MAX_TIMEOUT_SECONDS),
+        0.1,
+    )
     try:
-        client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity)
+        client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
+        return {"ok": True}
     except Exception as exc:
-        raise _normalize_onvif_operation_error("Не удалось выполнить непрерывное PTZ-перемещение", exc) from exc
+        log.debug(
+            "PTZ ContinuousMove with Timeout failed for camera %s, retrying with explicit Stop: %s",
+            getattr(camera, "camera_id", "?"),
+            exc,
+        )
+        client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+        try:
+            client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity)
+            time.sleep(duration)
+            try:
+                client.ptz().Stop(ProfileToken=camera.onvif_profile_token, PanTilt=bool(pan or tilt), Zoom=bool(zoom))
+            except Exception:
+                client.ptz().Stop(ProfileToken=camera.onvif_profile_token)
+        except Exception as fallback_exc:
+            raise _normalize_onvif_operation_error("Не удалось выполнить непрерывное PTZ-перемещение", fallback_exc) from fallback_exc
     return {"ok": True}
 
 

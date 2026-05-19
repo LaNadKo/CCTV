@@ -25,4 +25,4 @@
 | Диагностика ускорения и прогрев моделей | Расширено | `acceleration --json --prewarm` |
 | Галерея персон | Расширено | `gallery --json` |
 
-Логика обнаружения, записи, media server, ONNX/MMDeploy, CUDA/DirectML/CPU выбор, heartbeat, назначения камер и отправка событий не перенесены в Dart. Новый GUI управляет существующим Processor runtime через конфиг, CLI и headless-запуск.
+Логика обнаружения, записи, media server, ONNXRuntime, CUDA/DirectML/CPU выбор, heartbeat, назначения камер и отправка событий не перенесены в Dart. Новый GUI управляет существующим Processor runtime через конфиг, CLI и headless-запуск.

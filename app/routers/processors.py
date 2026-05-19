@@ -243,6 +243,22 @@ def _command_to_out(command: models.ProcessorCommand) -> ProcessorCommandOut:
     )
 
 
+def _queue_processor_command(
+    session: AsyncSession,
+    processor_id: int,
+    command_type: str,
+    requested_by_user_id: int | None = None,
+) -> None:
+    session.add(
+        models.ProcessorCommand(
+            processor_id=processor_id,
+            command_type=command_type,
+            status="pending",
+            requested_by_user_id=requested_by_user_id,
+        )
+    )
+
+
 # ── Connection code flow (universal: LAN + WAN) ──
 
 @router.post("/generate-code", response_model=GenerateCodeOut)
@@ -888,6 +904,7 @@ async def assign_cameras(
     proc = await session.get(models.Processor, processor_id)
     if not proc:
         raise HTTPException(status_code=404, detail="Processor not found")
+    changed = False
     for cid in payload.camera_ids:
         cam = await session.get(models.Camera, cid)
         if not cam or cam.deleted_at is not None:
@@ -901,6 +918,9 @@ async def assign_cameras(
         if existing.scalar_one_or_none():
             continue
         session.add(models.ProcessorCameraAssignment(processor_id=processor_id, camera_id=cid))
+        changed = True
+    if changed:
+        _queue_processor_command(session, processor_id, "reload_assignments", current_user.user_id)
     await session.commit()
     return {"ok": True}
 
@@ -922,6 +942,7 @@ async def unassign_camera(
     assignment = result.scalar_one_or_none()
     if assignment:
         await session.delete(assignment)
+        _queue_processor_command(session, processor_id, "reload_assignments", current_user.user_id)
         await session.commit()
     return {}
 

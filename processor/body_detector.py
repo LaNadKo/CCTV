@@ -1,8 +1,10 @@
 """Body detection and tracking based on MMDeploy RTMDet + RTMPose."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import sys
 import threading
 import urllib.request
 import zipfile
@@ -20,6 +22,36 @@ _tracker = None
 _states: dict[str, object] = {}
 _device = "cpu"
 _model_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _suppress_native_output():
+    if os.environ.get("CCTV_PROCESSOR_DEBUG_NATIVE_OUTPUT"):
+        yield
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        stdout_fd = os.dup(1)
+        stderr_fd = os.dup(2)
+    except OSError:
+        yield
+        return
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        try:
+            os.dup2(stdout_fd, 1)
+            os.dup2(stderr_fd, 2)
+        finally:
+            os.close(stdout_fd)
+            os.close(stderr_fd)
 
 
 def _runtime_dir() -> Path:
@@ -60,18 +92,17 @@ def _load_tracker():
     pose_model = target_dir / "rtmpose-m"
     preferred_device = _want_device()
     if _tracker is None or _device != preferred_device:
-        import mmdeploy_runtime as mmdeploy
+        with _suppress_native_output():
+            import mmdeploy_runtime as mmdeploy
 
         try:
-            _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), preferred_device)
+            with _suppress_native_output():
+                _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), preferred_device)
             _device = preferred_device
         except Exception:
             if preferred_device != "cpu":
-                logger.warning("Falling back to CPU MMDeploy runtime", exc_info=True)
-                _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), "cpu")
-                _device = "cpu"
-            else:
-                raise
+                logger.exception("MMDeploy PoseTracker failed to start on CUDA")
+            raise
     return _tracker
 
 
@@ -108,7 +139,11 @@ def detect_bodies(frame_bgr: np.ndarray, conf: float = 0.5, camera_key: object |
 
     keypoints_arr = np.asarray(keypoints_arr)
     boxes_arr = np.asarray(boxes_arr)
-    track_ids_arr = np.asarray(track_ids_arr) if track_ids_arr is not None else np.zeros((len(boxes_arr),), dtype=np.int32)
+    raw_track_ids = np.asarray(track_ids_arr).reshape(-1) if track_ids_arr is not None else None
+    use_track_ids = False
+    if raw_track_ids is not None and len(raw_track_ids) >= len(boxes_arr):
+        current_ids = [int(value) for value in raw_track_ids[: len(boxes_arr)]]
+        use_track_ids = len(set(current_ids)) == len(current_ids)
 
     for idx, box in enumerate(boxes_arr):
         if idx >= len(keypoints_arr):
@@ -121,14 +156,14 @@ def detect_bodies(frame_bgr: np.ndarray, conf: float = 0.5, camera_key: object |
         mean_conf = float(np.mean(keypoint_conf[:17])) if keypoint_conf.size else 0.0
         if mean_conf < max(conf * 0.4, 0.08):
             continue
-        detections.append(
-            {
-                "box": [float(v) for v in box[:4]],
-                "confidence": mean_conf,
-                "keypoints": keypoint_xy.tolist(),
-                "keypoint_conf": keypoint_conf.tolist(),
-                "track_id": int(track_ids_arr[idx]) if idx < len(track_ids_arr) else idx,
-            }
-        )
+        payload = {
+            "box": [float(v) for v in box[:4]],
+            "confidence": mean_conf,
+            "keypoints": keypoint_xy.tolist(),
+            "keypoint_conf": keypoint_conf.tolist(),
+        }
+        if use_track_ids and raw_track_ids is not None:
+            payload["track_id"] = int(raw_track_ids[idx])
+        detections.append(payload)
 
     return detections

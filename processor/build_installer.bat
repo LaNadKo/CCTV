@@ -7,11 +7,11 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Installing dependencies...
-set GPU_PACKAGES=
+set GPU_REQUIREMENTS=
 where nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
-    echo Detected NVIDIA GPU. Installing CUDA runtimes for ONNX/MMDeploy...
-    set GPU_PACKAGES=onnxruntime-gpu==1.15.1 mmdeploy-runtime-gpu==1.3.1 nvidia-cuda-runtime-cu11==11.8.89 nvidia-cublas-cu11==11.11.3.6 nvidia-cudnn-cu11==8.9.5.29 nvidia-cuda-nvrtc-cu11==11.8.89 nvidia-cufft-cu11==10.9.0.58 nvidia-curand-cu11==10.3.0.86
+    echo Detected NVIDIA GPU. Installing CUDA runtimes for ONNXRuntime...
+    set "GPU_REQUIREMENTS=%~dp0requirements-nvidia.txt"
 ) else (
     echo NVIDIA GPU not detected. Building CPU-only runtime...
 )
@@ -22,17 +22,11 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-if defined GPU_PACKAGES (
+if defined GPU_REQUIREMENTS (
     echo [1.5/3] Installing GPU runtimes...
-    pip install %GPU_PACKAGES% --quiet
+    pip install -r "%GPU_REQUIREMENTS%" --quiet
     if errorlevel 1 (
         echo ERROR: Failed to install GPU runtimes
-        pause
-        exit /b 1
-    )
-    python prepare_gpu_runtime.py
-    if errorlevel 1 (
-        echo ERROR: Failed to prepare MMDeploy GPU runtime
         pause
         exit /b 1
     )

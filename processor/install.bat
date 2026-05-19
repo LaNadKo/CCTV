@@ -19,13 +19,13 @@ for /f "tokens=*" %%v in ('python -c "import sys; print(f'{sys.version_info.majo
 echo Python: %PY_VERSION%
 
 :: ── Check GPU ──
-set GPU_PACKAGES=
+set GPU_REQUIREMENTS=
 where nvidia-smi >nul 2>&1
 if %errorlevel%==0 (
     for /f "tokens=*" %%g in ('nvidia-smi --query-gpu=name --format=csv,noheader 2^>nul') do set GPU_NAME=%%g
     echo GPU:    !GPU_NAME!
-    echo         Installing CUDA runtimes for ONNX/MMDeploy
-    set GPU_PACKAGES=onnxruntime-gpu==1.15.1 mmdeploy-runtime-gpu==1.3.1 nvidia-cuda-runtime-cu11==11.8.89 nvidia-cublas-cu11==11.11.3.6 nvidia-cudnn-cu11==8.9.5.29 nvidia-cuda-nvrtc-cu11==11.8.89 nvidia-cufft-cu11==10.9.0.58 nvidia-curand-cu11==10.3.0.86
+    echo         Installing CUDA runtimes for ONNXRuntime
+    set "GPU_REQUIREMENTS=%~dp0requirements-nvidia.txt"
 ) else (
     echo GPU:    not detected ^(CPU mode^)
 )
@@ -37,15 +37,14 @@ python -m venv "%~dp0venv"
 call "%~dp0venv\Scripts\activate.bat"
 pip install --upgrade pip -q
 
-:: ── Install PyTorch ──
+:: ── Install runtime dependencies ──
 echo [2/3] Installing dependencies...
 
 :: ── Install dependencies ──
 pip install -r "%~dp0requirements.txt" -q
-if defined GPU_PACKAGES (
+if defined GPU_REQUIREMENTS (
     echo [3/3] Installing GPU runtimes...
-    pip install %GPU_PACKAGES% -q
-    python "%~dp0prepare_gpu_runtime.py"
+    pip install -r "%GPU_REQUIREMENTS%" -q
 ) else (
     echo [3/3] GPU runtimes skipped
 )

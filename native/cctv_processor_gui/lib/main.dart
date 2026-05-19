@@ -63,7 +63,10 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   String _sessionLog = '';
   String _accelPreference = 'auto';
   bool _busy = false;
+  bool _refreshing = false;
   bool _running = false;
+  DateTime? _lastFullRefresh;
+  DateTime? _lastMetricsRefresh;
   DateTime? _startedAt;
   Process? _process;
   Timer? _pollTimer;
@@ -186,35 +189,58 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return normalizeProcessorConfig(next, _bridge?.runtimeDir.path);
   }
 
-  Future<void> _refreshAll() async {
+  Future<void> _refreshAll({
+    bool forceFull = false,
+    bool allowWhileBusy = false,
+  }) async {
     final bridge = _bridge;
-    if (bridge == null || _busy) return;
+    if (bridge == null || (_busy && !allowWhileBusy) || _refreshing) return;
+    _refreshing = true;
     try {
-      final results = await Future.wait<Object?>([
-        bridge.localMetrics(),
-        bridge.runCliJson([
-          'status',
-          '--json',
-        ], timeout: const Duration(seconds: 18)),
-        bridge.runCliJson([
-          'system-info',
-          '--json',
-        ], timeout: const Duration(seconds: 18)),
-        bridge.runCliJson([
-          'acceleration',
-          '--json',
-          '--processor-accel',
-          _accelPreference,
-        ], timeout: const Duration(seconds: 30)),
-      ]);
-      final status = _asMap(results[1]);
+      final now = DateTime.now();
+      final includeMetricsRefresh =
+          forceFull ||
+          _lastMetricsRefresh == null ||
+          now.difference(_lastMetricsRefresh!) >= const Duration(seconds: 30);
+      final includeFullRefresh =
+          forceFull &&
+          (_lastFullRefresh == null ||
+              now.difference(_lastFullRefresh!) >= const Duration(minutes: 5));
+      final config = await bridge.readConfig();
+      final metrics = includeMetricsRefresh
+          ? await bridge.localMetrics()
+          : _metrics;
+      if (includeMetricsRefresh) {
+        _lastMetricsRefresh = DateTime.now();
+      }
+      final status = await bridge.readBackendStatus(config);
+      var systemInfo = _systemInfo;
+      var acceleration = _acceleration;
+      if (includeFullRefresh && !bridge.cliIsSlowBundle) {
+        systemInfo = _asMap(
+          await bridge.runCliJson([
+            'system-info',
+            '--json',
+          ], timeout: const Duration(seconds: 45)),
+        );
+        acceleration = _asMap(
+          await bridge.runCliJson([
+            'acceleration',
+            '--json',
+            '--processor-accel',
+            _accelPreference,
+          ], timeout: const Duration(seconds: 45)),
+        );
+        _lastFullRefresh = DateTime.now();
+      }
       final assignments = status['assignments'];
       if (!mounted) return;
       setState(() {
-        _metrics = results[0] as LocalMetrics;
+        _config = config;
+        _metrics = metrics;
         _status = status;
-        _systemInfo = _asMap(results[2]);
-        _acceleration = _asMap(results[3]);
+        _systemInfo = systemInfo;
+        _acceleration = acceleration;
         _assignments = assignments is List ? assignments : const [];
         _storageText = _stringifyStorage(
           status['storage'],
@@ -224,11 +250,15 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             ? 'Processor запущен локально. PID: ${_process?.pid ?? '-'}'
             : _statusMessage;
       });
-      await _readGallery();
+      if (includeFullRefresh || _gallery.isEmpty) {
+        await _readGallery();
+      }
       await _readLogTail();
     } catch (error) {
       if (!mounted) return;
       setState(() => _statusMessage = 'Ошибка обновления статуса: $error');
+    } finally {
+      _refreshing = false;
     }
   }
 
@@ -236,14 +266,11 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     final bridge = _bridge;
     if (bridge == null || _status['connected'] != true) return;
     try {
-      final payload = await bridge.runCliJson([
-        'gallery',
-        '--json',
-        '--limit',
-        '100',
-      ], timeout: const Duration(seconds: 18));
+      final payload = await bridge.readBackendGallery(
+        await bridge.readConfig(),
+      );
       if (!mounted) return;
-      setState(() => _gallery = payload is List ? payload : const []);
+      setState(() => _gallery = payload);
     } catch (_) {
       if (!mounted) return;
       setState(() => _gallery = const []);
@@ -273,8 +300,12 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   Future<String> _readTail(String path) async {
     final file = File(path);
     if (!await file.exists()) return '';
-    final text = await file.readAsString(encoding: utf8);
-    return text.length > 32000 ? text.substring(text.length - 32000) : text;
+    final bytes = await file.readAsBytes();
+    final text = const Utf8Decoder(allowMalformed: true).convert(bytes);
+    final tail = text.length > 32000
+        ? text.substring(text.length - 32000)
+        : text;
+    return sanitizeProcessOutput(tail);
   }
 
   Future<void> _saveSettings() async {
@@ -295,7 +326,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             : 'Настройки сохранены.';
       });
       _syncControllersFromConfig();
-      await _refreshAll();
+      await _refreshAll(allowWhileBusy: true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _statusMessage = 'Ошибка сохранения: $error');
@@ -318,7 +349,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _statusMessage = 'Конфигурация сброшена.';
       });
       _syncControllersFromConfig();
-      await _refreshAll();
+      await _refreshAll(allowWhileBusy: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -372,41 +403,18 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       _statusMessage = 'Подключение Processor к backend...';
     });
     try {
-      final args = [
-        'connect',
-        '--backend-url',
-        _backendController.text.trim().replaceAll(RegExp(r'/+$'), ''),
-        '--code',
-        code,
-        '--name',
-        _nameController.text.trim().isEmpty
-            ? Platform.localHostname
-            : _nameController.text.trim(),
-        '--processor-accel',
-        _accelPreference,
-        '--max-workers',
-        '${connectConfig['max_workers']}',
-        '--motion-threshold',
-        '${connectConfig['motion_threshold']}',
-        '--face-scan-interval',
-        '${connectConfig['face_scan_interval']}',
-        '--recording-segment-seconds',
-        '${connectConfig['recording_segment_seconds']}',
-        '--recordings-dir',
-        '${connectConfig['recordings_dir']}',
-        '--snapshots-dir',
-        '${connectConfig['snapshots_dir']}',
-        '--media-port',
-        '${connectConfig['media_port']}',
-        '--media-token',
-        '${connectConfig['media_token']}',
-        '--json',
-      ];
-      final payload = await bridge.runCliJson(
-        args,
-        timeout: const Duration(seconds: 35),
-      );
-      final config = await bridge.readConfig();
+      final payload = await bridge.connectProcessor(connectConfig, code);
+      final config = normalizeProcessorConfig({
+        ...connectConfig,
+        'backend_url': '${connectConfig['backend_url'] ?? ''}'.replaceAll(
+          RegExp(r'/+$'),
+          '',
+        ),
+        'api_key': '${payload['api_key'] ?? ''}',
+        'processor_id': payload['processor_id'],
+        'processor_name': payload['name'] ?? connectConfig['processor_name'],
+      }, bridge.runtimeDir.path);
+      await bridge.writeConfig(config);
       if (!mounted) return;
       setState(() {
         _config = config;
@@ -416,7 +424,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _selectedTab = 'dashboard';
       });
       _syncControllersFromConfig();
-      await _refreshAll();
+      await _refreshAll(allowWhileBusy: true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _statusMessage = 'Ошибка подключения: $error');
@@ -433,15 +441,17 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       _statusMessage = 'Удаление локального API-ключа...';
     });
     try {
-      await bridge.runCli(['disconnect'], timeout: const Duration(seconds: 15));
-      final config = await bridge.readConfig();
+      final config = Map<String, dynamic>.from(await bridge.readConfig());
+      config['api_key'] = '';
+      config['processor_id'] = null;
+      await bridge.writeConfig(config);
       if (!mounted) return;
       setState(() {
         _config = config;
         _statusMessage = 'Локальная привязка удалена.';
       });
       _syncControllersFromConfig();
-      await _refreshAll();
+      await _refreshAll(allowWhileBusy: true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _statusMessage = 'Ошибка отключения: $error');
@@ -701,8 +711,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             eyebrow: 'PROCESSOR CONTROL',
             title:
                 '${_config['processor_name'] ?? Platform.localHostname} · ID ${_config['processor_id'] ?? 'не назначен'}',
-            subtitle:
-                'Единая нативная панель для запуска Python Processor, мониторинга и локальной диагностики.',
             trailing: Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -802,7 +810,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                   child: _Section(
                     title: 'Назначенные камеры',
                     subtitle: _status['assignments_error'] == null
-                        ? 'Берётся из backend через существующий Processor CLI.'
+                        ? null
                         : '${_status['assignments_error']}',
                     child: _assignments.isEmpty
                         ? const _EmptyState(
@@ -823,7 +831,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 child: _GlassPanel(
                   child: _Section(
                     title: 'Быстрые действия',
-                    subtitle: 'Открытие локальных файлов runtime.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -870,8 +877,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           _HeroPanel(
             eyebrow: 'PROCESSOR LINK',
             title: 'Подключение к backend',
-            subtitle:
-                'Используется тот же код подключения и тот же API-ключ, что в старом GUI. Секреты сохраняются локально в processor_config.json.',
             trailing: _ConnectionBadge(connected: _status['connected'] == true),
           ),
           const SizedBox(height: 14),
@@ -883,7 +888,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 child: _GlassPanel(
                   child: _Section(
                     title: 'Данные подключения',
-                    subtitle: 'Код создаётся в Console на сервере.',
                     child: Column(
                       children: [
                         _TextField(
@@ -937,7 +941,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 child: _GlassPanel(
                   child: _Section(
                     title: 'Локальная сводка',
-                    subtitle: 'Данные из config/status CLI.',
                     child: Column(
                       children: [
                         _InfoRow('Runtime', bridge.runtimeDir.path),
@@ -976,8 +979,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           _HeroPanel(
             eyebrow: 'PROCESSOR SETUP',
             title: 'Настройки runtime',
-            subtitle:
-                'Поля пишутся в тот же processor_config.json. Изменения частот, ускорения и папок применяются после перезапуска Processor.',
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1037,7 +1038,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return _GlassPanel(
       child: _Section(
         title: 'Производительность',
-        subtitle: 'Аналог старых пресетов и частот сканирования.',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1141,7 +1141,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return _GlassPanel(
       child: _Section(
         title: 'Локальное хранилище',
-        subtitle: 'Пути остаются локальными для текущего Processor.',
         child: Column(
           children: [
             _TextField(
@@ -1205,7 +1204,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return _GlassPanel(
       child: _Section(
         title: 'Media runtime',
-        subtitle: 'Параметры внутреннего media server Processor.',
         child: Column(
           children: [
             _TextField(
@@ -1232,7 +1230,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return _GlassPanel(
       child: _Section(
         title: 'Тема GUI',
-        subtitle: 'Сохраняется в конфиг для совместимости со старым GUI.',
         child: Column(
           children: [
             Row(
@@ -1295,8 +1292,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           _HeroPanel(
             eyebrow: 'RUNTIME DIAGNOSTICS',
             title: 'Диагностика Processor',
-            subtitle:
-                'Проверка CLI, ускорения, локальной системы, галереи персон и назначений камер.',
             trailing: ElevatedButton.icon(
               onPressed: _busy ? null : _runPrewarm,
               icon: const Icon(Icons.model_training_rounded),
@@ -1324,7 +1319,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 child: _GlassPanel(
                   child: _Section(
                     title: 'Галерея персон',
-                    subtitle: 'Данные берутся из backend через CLI gallery.',
                     child: _gallery.isEmpty
                         ? const _EmptyState(
                             text: 'Галерея пуста или Processor не подключён.',
@@ -1365,8 +1359,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _HeroPanel(
           eyebrow: 'SERVICE LOG',
           title: 'Журнал работы',
-          subtitle:
-              'Сюда попадает live-вывод запущенного headless-процесса и хвост processor.log.',
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1417,8 +1409,6 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           _HeroPanel(
             eyebrow: 'PROCESSOR GUIDE',
             title: 'Справка по нативному GUI',
-            subtitle:
-                'Новая нативка заменяет только оболочку. Python runtime, детект, запись, media server и обмен с backend остаются прежними.',
           ),
           SizedBox(height: 14),
           _HelpGrid(),
@@ -1443,15 +1433,23 @@ class RuntimeBridge {
     required this.launcherDescription,
     required String executable,
     required List<String> baseArgs,
+    required String cliExecutable,
+    required List<String> cliBaseArgs,
     required Directory workingDirectory,
+    this.cliIsSlowBundle = false,
   }) : _executable = executable,
        _baseArgs = baseArgs,
+       _cliExecutable = cliExecutable,
+       _cliBaseArgs = cliBaseArgs,
        _workingDirectory = workingDirectory;
 
   final Directory runtimeDir;
   final String launcherDescription;
+  final bool cliIsSlowBundle;
   final String _executable;
   final List<String> _baseArgs;
+  final String _cliExecutable;
+  final List<String> _cliBaseArgs;
   final Directory _workingDirectory;
 
   String get configPath => joinPath(runtimeDir.path, 'processor_config.json');
@@ -1461,54 +1459,91 @@ class RuntimeBridge {
 
   static Future<RuntimeBridge> detect() async {
     final appDir = File(Platform.resolvedExecutable).parent;
-    final processorBinary = Platform.isWindows
-        ? 'CCTV-Processor.exe'
-        : 'CCTV-Processor';
+    final processorRuntimeBinaries = Platform.isWindows
+        ? const ['CCTV-Processor-Runtime.exe', 'CCTV-Processor.exe']
+        : const ['CCTV-Processor-Runtime', 'CCTV-Processor'];
+    final processorCliBinary = Platform.isWindows
+        ? 'CCTV-Processor-CLI.exe'
+        : 'CCTV-Processor-CLI';
     final pythonExecutable = Platform.isWindows ? 'python' : 'python3';
     final bundledDir = Directory(joinPath(appDir.path, 'processor'));
-    final bundledExe = File(joinPath(bundledDir.path, processorBinary));
-    if (await bundledExe.exists()) {
+    final bundledExe = await _firstExistingFile(
+      bundledDir,
+      processorRuntimeBinaries,
+    );
+    if (bundledExe != null) {
+      final bundledCli = File(joinPath(bundledDir.path, processorCliBinary));
+      final hasCli = await bundledCli.exists();
       return RuntimeBridge(
         runtimeDir: bundledDir,
-        launcherDescription: 'bundled PyInstaller runtime',
+        launcherDescription: 'bundled Python Processor runtime',
         executable: bundledExe.path,
         baseArgs: const [],
+        cliExecutable: hasCli ? bundledCli.path : bundledExe.path,
+        cliBaseArgs: hasCli ? const [] : const ['--cli'],
         workingDirectory: bundledDir,
+        cliIsSlowBundle: hasCli,
       );
     }
 
-    final localExe = File(joinPath(appDir.path, processorBinary));
-    if (await localExe.exists()) {
+    final localExe = await _firstExistingFile(appDir, processorRuntimeBinaries);
+    if (localExe != null) {
+      final localCli = File(joinPath(appDir.path, processorCliBinary));
+      final hasCli = await localCli.exists();
       return RuntimeBridge(
         runtimeDir: appDir,
-        launcherDescription: 'local PyInstaller runtime',
+        launcherDescription: 'local Python Processor runtime',
         executable: localExe.path,
         baseArgs: const [],
+        cliExecutable: hasCli ? localCli.path : localExe.path,
+        cliBaseArgs: hasCli ? const [] : const ['--cli'],
         workingDirectory: appDir,
+        cliIsSlowBundle: hasCli,
       );
     }
 
     final repo = findRepoRoot([Directory.current, appDir]);
     if (repo != null) {
-      final distDir = Directory(
-        joinPath(repo.path, 'processor', 'dist', 'CCTV-Processor'),
-      );
-      final distExe = File(joinPath(distDir.path, processorBinary));
-      if (await distExe.exists()) {
-        return RuntimeBridge(
-          runtimeDir: distDir,
-          launcherDescription: 'repository PyInstaller runtime',
-          executable: distExe.path,
-          baseArgs: const [],
-          workingDirectory: distDir,
+      final distRoot = Directory(joinPath(repo.path, 'processor', 'dist'));
+      for (final dirName in const [
+        'CCTV-Processor-Runtime',
+        'CCTV-Processor',
+      ]) {
+        final distDir = Directory(joinPath(distRoot.path, dirName));
+        final distExe = await _firstExistingFile(
+          distDir,
+          processorRuntimeBinaries,
         );
+        if (distExe != null) {
+          final distLocalCli = File(joinPath(distDir.path, processorCliBinary));
+          final distRootCli = File(joinPath(distRoot.path, processorCliBinary));
+          final cli = await distLocalCli.exists()
+              ? distLocalCli
+              : (await distRootCli.exists() ? distRootCli : distExe);
+          final hasCli = cli.path != distExe.path;
+          return RuntimeBridge(
+            runtimeDir: distDir,
+            launcherDescription: 'repository Python Processor runtime',
+            executable: distExe.path,
+            baseArgs: const [],
+            cliExecutable: cli.path,
+            cliBaseArgs: hasCli ? const [] : const ['--cli'],
+            workingDirectory: distDir,
+            cliIsSlowBundle: hasCli,
+          );
+        }
       }
-      final runGui = File(joinPath(repo.path, 'processor', 'run_gui.py'));
+      final runRuntime = File(
+        joinPath(repo.path, 'processor', 'run_runtime.py'),
+      );
+      final cliPy = File(joinPath(repo.path, 'processor', 'cli.py'));
       return RuntimeBridge(
         runtimeDir: Directory(joinPath(repo.path, 'processor')),
         launcherDescription: 'source Python runtime',
         executable: pythonExecutable,
-        baseArgs: [runGui.path],
+        baseArgs: [runRuntime.path],
+        cliExecutable: pythonExecutable,
+        cliBaseArgs: [cliPy.path],
         workingDirectory: repo,
       );
     }
@@ -1516,6 +1551,17 @@ class RuntimeBridge {
     throw StateError(
       'Не найден Processor runtime. Положите папку processor рядом с GUI или запускайте из репозитория.',
     );
+  }
+
+  static Future<File?> _firstExistingFile(
+    Directory directory,
+    List<String> names,
+  ) async {
+    for (final name in names) {
+      final file = File(joinPath(directory.path, name));
+      if (await file.exists()) return file;
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>> readConfig() async {
@@ -1543,13 +1589,184 @@ class RuntimeBridge {
     );
   }
 
+  Future<Map<String, dynamic>> connectProcessor(
+    Map<String, dynamic> config,
+    String code, {
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    final baseUrl = _backendBaseUrl(config);
+    if (baseUrl.isEmpty) {
+      throw StateError('Backend URL is empty');
+    }
+    final payload = {
+      'code': code,
+      'name': '${config['processor_name'] ?? Platform.localHostname}',
+      'node_uid': '${config['processor_node_uid'] ?? ''}',
+      'hostname': Platform.localHostname,
+      'os_info': Platform.operatingSystemVersion,
+      'version': '1.0.0',
+      'capabilities': {
+        'max_workers': config['max_workers'],
+        'processor_accel': config['processor_accel'],
+        'media_port': config['media_port'],
+        'media_token': config['media_token'],
+        'runtime': 'flutter-gui',
+      },
+    };
+    return _asMap(
+      await _postJson(
+        _backendUri(baseUrl, '/processors/connect'),
+        payload,
+        timeout: timeout,
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>> readBackendStatus(
+    Map<String, dynamic> config, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final baseUrl = _backendBaseUrl(config);
+    final apiKey = '${config['api_key'] ?? ''}'.trim();
+    final processorId = _nullableInt(config['processor_id']);
+    final payload = <String, dynamic>{
+      'base_dir': runtimeDir.path,
+      'config_file': configPath,
+      'log_file': logPath,
+      'configured': baseUrl.isNotEmpty,
+      'connected': apiKey.isNotEmpty && processorId != null,
+      'processor_name': config['processor_name'],
+      'processor_id': processorId,
+      'backend_url': baseUrl,
+    };
+    if (baseUrl.isEmpty) return payload;
+
+    try {
+      payload['health'] = await _getJson(
+        _backendUri(baseUrl, '/health'),
+        timeout: timeout,
+      );
+    } catch (error) {
+      payload['health_error'] = '$error';
+    }
+
+    if (apiKey.isEmpty || processorId == null) return payload;
+
+    try {
+      final assignments = await _getJson(
+        _backendUri(baseUrl, '/processors/$processorId/assignments'),
+        apiKey: apiKey,
+        timeout: timeout,
+      );
+      final list = assignments is List ? assignments : const [];
+      payload['assignments_count'] = list.length;
+      payload['assignments'] = list;
+    } catch (error) {
+      payload['assignments_error'] = '$error';
+    }
+
+    try {
+      payload['storage'] = await _getJson(
+        _backendUri(baseUrl, '/processors/$processorId/storage-config'),
+        apiKey: apiKey,
+        timeout: timeout,
+      );
+    } catch (error) {
+      payload['storage_error'] = '$error';
+    }
+
+    return payload;
+  }
+
+  Future<List<dynamic>> readBackendGallery(
+    Map<String, dynamic> config, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final baseUrl = _backendBaseUrl(config);
+    final apiKey = '${config['api_key'] ?? ''}'.trim();
+    final processorId = _nullableInt(config['processor_id']);
+    if (baseUrl.isEmpty || apiKey.isEmpty || processorId == null) {
+      return const [];
+    }
+    final payload = await _getJson(
+      _backendUri(baseUrl, '/processors/$processorId/gallery'),
+      apiKey: apiKey,
+      timeout: timeout,
+    );
+    return payload is List ? payload : const [];
+  }
+
+  String _backendBaseUrl(Map<String, dynamic> config) {
+    return '${config['backend_url'] ?? ''}'.trim().replaceAll(
+      RegExp(r'/+$'),
+      '',
+    );
+  }
+
+  Uri _backendUri(
+    String baseUrl,
+    String path, {
+    Map<String, String>? queryParameters,
+  }) {
+    return Uri.parse('$baseUrl$path').replace(queryParameters: queryParameters);
+  }
+
+  Future<Object?> _getJson(
+    Uri uri, {
+    String? apiKey,
+    required Duration timeout,
+  }) async {
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final request = await client.getUrl(uri).timeout(timeout);
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      if (apiKey != null && apiKey.isNotEmpty) {
+        request.headers.set('X-Api-Key', apiKey);
+      }
+      final response = await request.close().timeout(timeout);
+      final body = await utf8.decodeStream(response).timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('HTTP ${response.statusCode}: $body');
+      }
+      return body.trim().isEmpty ? null : jsonDecode(body);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<Object?> _postJson(
+    Uri uri,
+    Map<String, dynamic> payload, {
+    String? apiKey,
+    required Duration timeout,
+  }) async {
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final request = await client.postUrl(uri).timeout(timeout);
+      request.headers.contentType = ContentType.json;
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      if (apiKey != null && apiKey.isNotEmpty) {
+        request.headers.set('X-Api-Key', apiKey);
+      }
+      request.write(jsonEncode(payload));
+      final response = await request.close().timeout(timeout);
+      final body = await utf8.decodeStream(response).timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('HTTP ${response.statusCode}: $body');
+      }
+      return body.trim().isEmpty ? null : jsonDecode(body);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<CommandResult> runCli(
     List<String> args, {
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    final commandArgs = [..._baseArgs, '--cli', ...args];
+    final commandArgs = [..._cliBaseArgs, ...args];
     final result = await Process.run(
-      _executable,
+      _cliExecutable,
       commandArgs,
       workingDirectory: _workingDirectory.path,
       environment: _processEnvironment(),
@@ -1558,8 +1775,8 @@ class RuntimeBridge {
     ).timeout(timeout);
     final commandResult = CommandResult(
       exitCode: result.exitCode,
-      stdout: '${result.stdout}',
-      stderr: '${result.stderr}',
+      stdout: sanitizeProcessOutput('${result.stdout}'),
+      stderr: sanitizeProcessOutput('${result.stderr}'),
     );
     if (commandResult.exitCode != 0) {
       throw StateError(
@@ -1593,11 +1810,34 @@ class RuntimeBridge {
       processOutputLogPath,
     ).openWrite(mode: FileMode.append, encoding: utf8);
     void attach(Stream<List<int>> stream, String source) {
-      stream.transform(const Utf8Decoder(allowMalformed: true)).listen((chunk) {
-        final entry = '${DateTime.now().toIso8601String()} [$source] $chunk';
+      var pending = '';
+      void emit(String text) {
+        final clean = sanitizeProcessOutput(text);
+        if (clean.trim().isEmpty) return;
+        final entry = '${DateTime.now().toIso8601String()} [$source] $clean';
         sink.write(entry);
         onOutput(entry);
-      });
+      }
+
+      stream
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .listen(
+            (chunk) {
+              pending += chunk;
+              final lines = pending.split('\n');
+              pending = lines.removeLast();
+              for (final line in lines) {
+                emit('$line\n');
+              }
+              if (pending.length > 8192) {
+                emit(pending);
+                pending = '';
+              }
+            },
+            onDone: () {
+              if (pending.trim().isNotEmpty) emit(pending);
+            },
+          );
     }
 
     attach(process.stdout, 'stdout');
@@ -1611,6 +1851,9 @@ class RuntimeBridge {
       'PROCESSOR_RUNTIME_DIR': runtimeDir.path,
       'PYTHONUTF8': '1',
       'PYTHONIOENCODING': 'utf-8',
+      'ORT_LOGGING_LEVEL': '3',
+      'ORT_LOG_SEVERITY_LEVEL': '3',
+      'GLOG_minloglevel': '2',
     };
   }
 
@@ -1704,6 +1947,53 @@ if (\$dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-O
     final selected = '${result.stdout}'.trim();
     return selected.isEmpty ? null : selected;
   }
+}
+
+String sanitizeProcessOutput(String chunk) {
+  var text = chunk
+      .replaceAll('\uFEFF', '')
+      .replaceAll('\u0000', '')
+      .replaceAll('\uFFFD', '')
+      .replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '')
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n');
+  final lines = text
+      .split('\n')
+      .where((line) => !_isNoisyProcessLine(line))
+      .join('\n');
+  if (lines.isEmpty) return '';
+  return lines.endsWith('\n') ? lines : '$lines\n';
+}
+
+bool _isNoisyProcessLine(String line) {
+  final trimmed = line.trim();
+  if (trimmed.isEmpty) return true;
+  if (trimmed == '----------------------------------------') return true;
+  final lower = trimmed.toLowerCase();
+  if (lower.contains('verifyoutputsizes')) return true;
+  if (lower.contains('expected shape from model')) return true;
+  if (lower.contains('actual shape of') && lower.contains('for output')) {
+    return true;
+  }
+  if (lower.contains('onnxruntime') && lower.contains('execution_frame.cc')) {
+    return true;
+  }
+  if (lower.contains('exception occurred during processing of request from')) {
+    return true;
+  }
+  if (lower.contains('during handling of the above exception')) return true;
+  if (lower.contains('connectionabortederror')) return true;
+  if (lower.contains('connectionreseterror')) return true;
+  if (lower.contains('brokenpipeerror')) return true;
+  if (lower.contains('socketserver.py')) return true;
+  if (lower.contains('http\\server.py') || lower.contains('http/server.py')) {
+    return true;
+  }
+  if (lower.contains('processor\\media_server.py') ||
+      lower.contains('processor/media_server.py')) {
+    return true;
+  }
+  return false;
 }
 
 class CommandResult {
@@ -2045,16 +2335,10 @@ class _TopStatusBar extends StatelessWidget {
 }
 
 class _HeroPanel extends StatelessWidget {
-  const _HeroPanel({
-    required this.eyebrow,
-    required this.title,
-    required this.subtitle,
-    this.trailing,
-  });
+  const _HeroPanel({required this.eyebrow, required this.title, this.trailing});
 
   final String eyebrow;
   final String title;
-  final String subtitle;
   final Widget? trailing;
 
   @override
@@ -2076,11 +2360,6 @@ class _HeroPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(title, style: Theme.of(context).textTheme.displaySmall),
-                const SizedBox(height: 8),
-                Text(
-                  subtitle,
-                  style: TextStyle(color: AppPalette.muted, height: 1.35),
-                ),
               ],
             ),
           ),
@@ -2176,24 +2455,26 @@ class _MetricCard extends StatelessWidget {
 }
 
 class _Section extends StatelessWidget {
-  const _Section({
-    required this.title,
-    required this.subtitle,
-    required this.child,
-  });
+  const _Section({required this.title, required this.child, this.subtitle});
 
   final String title;
-  final String subtitle;
   final Widget child;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
+    final sectionSubtitle = subtitle?.trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(title, style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 4),
-        Text(subtitle, style: TextStyle(color: AppPalette.muted, fontSize: 13)),
+        if (sectionSubtitle != null && sectionSubtitle.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            sectionSubtitle,
+            style: TextStyle(color: AppPalette.muted, fontSize: 13),
+          ),
+        ],
         const SizedBox(height: 16),
         child,
       ],
@@ -2419,7 +2700,6 @@ class _JsonCard extends StatelessWidget {
     return _GlassPanel(
       child: _Section(
         title: title,
-        subtitle: 'Сырые данные для быстрой проверки.',
         child: SelectableText(
           const JsonEncoder.withIndent('  ').convert(payload),
           style: GoogleFonts.jetBrainsMono(fontSize: 12, height: 1.35),
@@ -2552,7 +2832,7 @@ class _HelpGrid extends StatelessWidget {
       ),
       (
         'Portable',
-        'Для портативной сборки рядом с GUI кладётся папка processor с бинарником CCTV-Processor и Python runtime.',
+        'Для портативной сборки рядом с GUI кладётся папка processor с CCTV-Processor-Runtime и CCTV-Processor-CLI.',
       ),
     ];
     return GridView.count(
@@ -2715,6 +2995,8 @@ Map<String, dynamic> defaultProcessorConfig({String? runtimeDir}) {
     'processor_name': Platform.localHostname,
     'processor_node_uid': randomHex(32),
     'advertised_ip': '',
+    'poll_interval': 1,
+    'heartbeat_interval': 10,
     'max_workers': 4,
     'processor_accel': 'auto',
     'motion_threshold': 25.0,
@@ -2755,6 +3037,18 @@ Map<String, dynamic> normalizeProcessorConfig(
       ].contains(config['processor_accel'])
       ? config['processor_accel']
       : 'auto';
+  config['poll_interval'] = _intFrom(
+    '${config['poll_interval'] ?? 1}',
+    1,
+    min: 1,
+    max: 60,
+  );
+  config['heartbeat_interval'] = _intFrom(
+    '${config['heartbeat_interval'] ?? 10}',
+    10,
+    min: 5,
+    max: 300,
+  );
   config['max_workers'] = _intFrom(
     '${config['max_workers'] ?? 4}',
     4,
@@ -2897,7 +3191,7 @@ Directory? findRepoRoot(List<Directory> starts) {
     var current = start.absolute;
     for (var depth = 0; depth < 10; depth++) {
       if (File(
-            joinPath(current.path, 'processor', 'run_gui.py'),
+            joinPath(current.path, 'processor', 'run_runtime.py'),
           ).existsSync() &&
           File(joinPath(current.path, 'processor', 'main.py')).existsSync()) {
         return current;
@@ -2911,7 +3205,7 @@ Directory? findRepoRoot(List<Directory> starts) {
 }
 
 Object? decodeLooseJson(String text) {
-  final trimmed = text.trim();
+  final trimmed = sanitizeProcessOutput(text).trim();
   if (trimmed.isEmpty) return null;
   try {
     return jsonDecode(trimmed);

@@ -354,10 +354,12 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
     final ptzCount = _cameras
         .where((item) => item['supports_ptz'] == true)
         .length;
+    final cameraSections = _cameraLocationSections(_cameras);
 
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverToBoxAdapter(
             child: Column(
@@ -418,23 +420,133 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
                 ),
               ),
             )
-          else
-            SliverList.separated(
-              itemCount: _cameras.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 10),
-              itemBuilder: (context, index) {
-                final camera = _cameras[index];
-                return _CameraCard(
-                  camera: camera,
-                  onEdit: () => _editCamera(camera),
-                  onManageRoi: () => _manageRoiZones(camera),
-                  onRefreshOnvif: () =>
-                      _refreshOnvif(camera['camera_id'] as int),
-                  onDelete: () => _deleteCamera(camera['camera_id'] as int),
-                );
-              },
-            ),
+          else ...[
+            for (final section in cameraSections) ...[
+              SliverToBoxAdapter(
+                child: _CameraLocationHeader(section: section),
+              ),
+              SliverList.separated(
+                itemCount: section.cameras.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 10),
+                itemBuilder: (context, index) {
+                  final camera = section.cameras[index];
+                  return _CameraCard(
+                    camera: camera,
+                    onEdit: () => _editCamera(camera),
+                    onManageRoi: () => _manageRoiZones(camera),
+                    onRefreshOnvif: () =>
+                        _refreshOnvif(camera['camera_id'] as int),
+                    onDelete: () => _deleteCamera(camera['camera_id'] as int),
+                  );
+                },
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 14)),
+            ],
+          ],
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ],
+      ),
+    );
+  }
+}
+
+class _CameraLocationSection {
+  const _CameraLocationSection({
+    required this.label,
+    required this.isFallback,
+    required this.cameras,
+  });
+
+  final String label;
+  final bool isFallback;
+  final List<Map<String, dynamic>> cameras;
+}
+
+List<_CameraLocationSection> _cameraLocationSections(
+  List<Map<String, dynamic>> cameras,
+) {
+  final grouped = <String, List<Map<String, dynamic>>>{};
+  for (final camera in cameras) {
+    final label = _cameraLocationLabel(camera);
+    grouped.putIfAbsent(label, () => <Map<String, dynamic>>[]).add(camera);
+  }
+
+  final sections =
+      grouped.entries
+          .map(
+            (entry) => _CameraLocationSection(
+              label: entry.key,
+              isFallback: entry.key == 'Без локации',
+              cameras: [...entry.value]..sort(_compareCameraNames),
+            ),
+          )
+          .toList()
+        ..sort((left, right) {
+          if (left.isFallback != right.isFallback) {
+            return left.isFallback ? 1 : -1;
+          }
+          return _compareText(left.label, right.label);
+        });
+  return sections;
+}
+
+String _cameraLocationLabel(Map<String, dynamic> camera) {
+  final raw = '${camera['location'] ?? ''}'.trim();
+  return raw.isEmpty ? 'Без локации' : raw;
+}
+
+int _compareCameraNames(Map<String, dynamic> left, Map<String, dynamic> right) {
+  final byName = _compareText(
+    '${left['name'] ?? ''}',
+    '${right['name'] ?? ''}',
+  );
+  if (byName != 0) return byName;
+  return _compareText(
+    '${left['ip_address'] ?? ''}',
+    '${right['ip_address'] ?? ''}',
+  );
+}
+
+int _compareText(String left, String right) {
+  return left.trim().toLowerCase().compareTo(right.trim().toLowerCase());
+}
+
+class _CameraLocationHeader extends StatelessWidget {
+  const _CameraLocationHeader({required this.section});
+
+  final _CameraLocationSection section;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Icon(
+            section.isFallback
+                ? Icons.location_off_rounded
+                : Icons.location_on_rounded,
+            color: section.isFallback ? colors.muted : colors.primaryAccent,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              section.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colors.textStrong,
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          _Badge(
+            label: '${section.cameras.length}',
+            color: section.isFallback ? colors.muted : colors.primaryAccent,
+          ),
         ],
       ),
     );
@@ -1243,10 +1355,11 @@ class _RoiZonesSheetState extends State<_RoiZonesSheet> {
       );
       await _load();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$error')));
+      }
     }
   }
 
@@ -1266,10 +1379,11 @@ class _RoiZonesSheetState extends State<_RoiZonesSheet> {
       );
       await _load();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('$error')));
+      }
     }
   }
 

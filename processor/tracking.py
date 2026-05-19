@@ -16,7 +16,7 @@ def _clamp_unit(value: float | None) -> float:
 
 
 class PIDController:
-    def __init__(self, kp: float = 0.45, kd: float = 0.08, deadzone: float = 0.06):
+    def __init__(self, kp: float = 0.28, kd: float = 0.0, deadzone: float = 0.16):
         self.kp = kp
         self.kd = kd
         self.deadzone = deadzone
@@ -36,7 +36,9 @@ class PIDController:
         output = self.kp * error + self.kd * derivative
         self._prev_error = error
         self._prev_time = now
-        return max(-1.0, min(1.0, output))
+        if abs(output) < 0.10:
+            return 0.0
+        return max(-0.45, min(0.45, output))
 
 
 def _preferred_onvif_endpoint(assignment: dict) -> dict | None:
@@ -111,10 +113,13 @@ class OnvifController:
             velocity["Zoom"] = {"x": zoom}
         if not velocity:
             return self.stop()
+        duration = max(min(float(timeout_seconds or 0.45), 1.0), 0.1)
         try:
-            client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity, Timeout=f"PT{max(timeout_seconds, 0.1):.1f}S")
+            client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
         except Exception:
             client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity)
+            time.sleep(duration)
+            self.stop()
         return True
 
     def stop(self) -> bool:
@@ -132,7 +137,7 @@ class OnvifController:
 
 
 class AutoTracker:
-    def __init__(self, controller: OnvifController, command_interval: float = 0.35, idle_stop_after: float = 1.0):
+    def __init__(self, controller: OnvifController, command_interval: float = 0.9, idle_stop_after: float = 0.8):
         self.controller = controller
         self.command_interval = max(command_interval, 0.1)
         self.idle_stop_after = max(idle_stop_after, 0.5)
@@ -162,6 +167,8 @@ class AutoTracker:
         now = time.monotonic()
         self._last_target_at = now
 
+        if abs(err_x) < 0.16 and abs(err_y) < 0.16:
+            return self.stop(force=False)
         if abs(pan) < 0.01 and abs(tilt) < 0.01:
             return self.stop(force=False)
         if now - self._last_command_at < self.command_interval:

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -55,10 +57,17 @@ class _LiveScreenState extends State<LiveScreen>
     });
 
     try {
+      final camerasFuture = api.listCameras(token);
+      final processorsFuture = (auth.user?.isAdmin ?? false)
+          ? api.listProcessors(token)
+          : Future<List<ProcessorOut>>.value(const []);
+      final pendingFuture = (auth.user?.canReview ?? false)
+          ? api.listPendingEvents(token)
+          : Future<List<PendingEvent>>.value(const []);
       final result = await Future.wait([
-        api.listCameras(token),
-        api.listProcessors(token),
-        api.listPendingEvents(token),
+        camerasFuture,
+        processorsFuture,
+        pendingFuture,
       ]);
       if (!mounted) return;
       setState(() {
@@ -504,7 +513,17 @@ class _CameraTile extends StatefulWidget {
 }
 
 class _CameraTileState extends State<_CameraTile> {
+  static const _ptzSafetyStopDelay = Duration(milliseconds: 900);
+
   bool _ptzBusy = false;
+  Timer? _ptzSafetyStopTimer;
+  String? _activePtzMoveKey;
+
+  @override
+  void dispose() {
+    _ptzSafetyStopTimer?.cancel();
+    super.dispose();
+  }
 
   Future<void> _ptz({
     double pan = 0,
@@ -543,7 +562,7 @@ class _CameraTileState extends State<_CameraTile> {
     }
   }
 
-  Future<void> _ptzContinuous({
+  Future<void> _startPtzHold({
     double pan = 0,
     double tilt = 0,
     double zoom = 0,
@@ -552,6 +571,13 @@ class _CameraTileState extends State<_CameraTile> {
     final api = context.read<ApiClient>();
     final token = auth.accessToken;
     if (token == null) return;
+    final moveKey = '$pan:$tilt:$zoom';
+    if (_activePtzMoveKey == moveKey) return;
+    _ptzSafetyStopTimer?.cancel();
+    if (_activePtzMoveKey != null) {
+      unawaited(_stopPtzHold());
+    }
+    _activePtzMoveKey = moveKey;
     try {
       await api.ptzContinuous(
         token,
@@ -559,14 +585,24 @@ class _CameraTileState extends State<_CameraTile> {
         pan: pan,
         tilt: tilt,
         zoom: zoom,
-        timeoutSeconds: 2.0,
       );
+      _ptzSafetyStopTimer = Timer(_ptzSafetyStopDelay, () {
+        if (!mounted) return;
+        unawaited(_stopPtzHold());
+      });
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('$error')));
     }
+  }
+
+  Future<void> _stopPtzHold() async {
+    _ptzSafetyStopTimer?.cancel();
+    _ptzSafetyStopTimer = null;
+    _activePtzMoveKey = null;
+    await _ptz(stop: true);
   }
 
   Future<void> _openPresets() async {
@@ -710,14 +746,14 @@ class _CameraTileState extends State<_CameraTile> {
                     busy: _ptzBusy,
                     canZoom: camera.ptzCapabilities.zoom,
                     canHome: camera.ptzCapabilities.home,
-                    onUp: () => _ptzContinuous(tilt: 0.35),
-                    onDown: () => _ptzContinuous(tilt: -0.35),
-                    onLeft: () => _ptzContinuous(pan: -0.35),
-                    onRight: () => _ptzContinuous(pan: 0.35),
-                    onZoomIn: () => _ptzContinuous(zoom: 0.28),
-                    onZoomOut: () => _ptzContinuous(zoom: -0.28),
+                    onUp: () => _startPtzHold(tilt: 0.35),
+                    onDown: () => _startPtzHold(tilt: -0.35),
+                    onLeft: () => _startPtzHold(pan: -0.35),
+                    onRight: () => _startPtzHold(pan: 0.35),
+                    onZoomIn: () => _startPtzHold(zoom: 0.28),
+                    onZoomOut: () => _startPtzHold(zoom: -0.28),
                     onHome: () => _ptz(home: true),
-                    onStop: () => _ptz(stop: true),
+                    onStop: _stopPtzHold,
                     onPresets: _openPresets,
                   ),
                 ],
@@ -808,34 +844,34 @@ class _PtzControls extends StatelessWidget {
         _PtzButton(
           icon: Icons.keyboard_arrow_up_rounded,
           onPressed: busy ? null : onUp,
-          onReleased: busy ? null : onStop,
+          onReleased: onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_down_rounded,
           onPressed: busy ? null : onDown,
-          onReleased: busy ? null : onStop,
+          onReleased: onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_left_rounded,
           onPressed: busy ? null : onLeft,
-          onReleased: busy ? null : onStop,
+          onReleased: onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_right_rounded,
           onPressed: busy ? null : onRight,
-          onReleased: busy ? null : onStop,
+          onReleased: onStop,
         ),
         if (canZoom)
           _PtzButton(
             icon: Icons.zoom_in_rounded,
             onPressed: busy ? null : onZoomIn,
-            onReleased: busy ? null : onStop,
+            onReleased: onStop,
           ),
         if (canZoom)
           _PtzButton(
             icon: Icons.zoom_out_rounded,
             onPressed: busy ? null : onZoomOut,
-            onReleased: busy ? null : onStop,
+            onReleased: onStop,
           ),
         if (canHome)
           _PtzButton(icon: Icons.home_rounded, onPressed: busy ? null : onHome),
@@ -849,7 +885,7 @@ class _PtzControls extends StatelessWidget {
   }
 }
 
-class _PtzButton extends StatelessWidget {
+class _PtzButton extends StatefulWidget {
   const _PtzButton({
     required this.icon,
     required this.onPressed,
@@ -861,39 +897,71 @@ class _PtzButton extends StatelessWidget {
   final VoidCallback? onReleased;
 
   @override
+  State<_PtzButton> createState() => _PtzButtonState();
+}
+
+class _PtzButtonState extends State<_PtzButton> {
+  bool _holding = false;
+
+  @override
+  void dispose() {
+    if (_holding) {
+      widget.onReleased?.call();
+    }
+    super.dispose();
+  }
+
+  void _press() {
+    if (widget.onPressed == null) return;
+    _holding = true;
+    widget.onPressed!();
+  }
+
+  void _release() {
+    if (!_holding) return;
+    _holding = false;
+    widget.onReleased?.call();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    if (onReleased == null) {
+    if (widget.onReleased == null) {
       return SizedBox(
         width: 38,
         height: 34,
         child: OutlinedButton(
-          onPressed: onPressed,
+          onPressed: widget.onPressed,
           style: OutlinedButton.styleFrom(
             padding: EdgeInsets.zero,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
           ),
-          child: Icon(icon, size: 19),
+          child: Icon(widget.icon, size: 19),
         ),
       );
     }
-    return GestureDetector(
-      onTapDown: onPressed == null ? null : (_) => onPressed!(),
-      onTapUp: onPressed == null ? null : (_) => onReleased!(),
-      onTapCancel: onPressed == null ? null : onReleased,
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: widget.onPressed == null ? null : (_) => _press(),
+      onPointerUp: (_) => _release(),
+      onPointerCancel: (_) => _release(),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         width: 38,
         height: 34,
         decoration: BoxDecoration(
-          color: onPressed == null ? colors.surfaceMuted : Colors.transparent,
+          color: widget.onPressed == null
+              ? colors.surfaceMuted
+              : (_holding
+                    ? colors.primaryAccent.withValues(alpha: 0.18)
+                    : Colors.transparent),
           border: Border.all(color: colors.border),
           borderRadius: BorderRadius.circular(12),
         ),
         alignment: Alignment.center,
-        child: Icon(icon, size: 19, color: colors.text),
+        child: Icon(widget.icon, size: 19, color: colors.text),
       ),
     );
   }
@@ -970,7 +1038,10 @@ class _FullscreenCameraDialog extends StatefulWidget {
 }
 
 class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
+  static const _ptzSafetyStopDelay = Duration(milliseconds: 900);
+
   final _focusNode = FocusNode();
+  Timer? _ptzSafetyStopTimer;
 
   @override
   void initState() {
@@ -982,6 +1053,8 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
 
   @override
   void dispose() {
+    unawaited(_stop());
+    _ptzSafetyStopTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -989,6 +1062,7 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
   Future<void> _move({double pan = 0, double tilt = 0, double zoom = 0}) async {
     final token = context.read<AuthController>().accessToken;
     if (token == null) return;
+    _ptzSafetyStopTimer?.cancel();
     try {
       await context.read<ApiClient>().ptzContinuous(
         token,
@@ -996,14 +1070,19 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
         pan: pan,
         tilt: tilt,
         zoom: zoom,
-        timeoutSeconds: 2.0,
       );
+      _ptzSafetyStopTimer = Timer(_ptzSafetyStopDelay, () {
+        if (!mounted) return;
+        unawaited(_stop());
+      });
     } catch (_) {
       // В fullscreen не спамим snackbar на каждое нажатие клавиши.
     }
   }
 
   Future<void> _stop() async {
+    _ptzSafetyStopTimer?.cancel();
+    _ptzSafetyStopTimer = null;
     final token = context.read<AuthController>().accessToken;
     if (token == null) return;
     try {

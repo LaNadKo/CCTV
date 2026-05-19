@@ -154,6 +154,7 @@ def _open_capture(source: str | int) -> cv2.VideoCapture:
     if isinstance(source, str) and source.lower().startswith("rtsp://"):
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
             "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
+            "|analyzeduration;0|probesize;32768|flush_packets;1"
         )
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     else:

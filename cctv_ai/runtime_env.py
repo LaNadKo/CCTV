@@ -10,6 +10,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+os.environ.setdefault("ORT_LOGGING_LEVEL", "3")
+os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
+os.environ.setdefault("GLOG_minloglevel", "2")
+
 _DLL_DIR_HANDLES: list[object] = []
 _REGISTERED_DLL_DIRS: list[Path] = []
 
@@ -354,12 +358,12 @@ def prepare_onnxruntime_cuda_env() -> dict[str, Path | list[Path] | None]:
     }
 
 
-def _copy_onnxruntime_provider_dlls() -> None:
+def _copy_onnxruntime_runtime_dlls() -> None:
     ort_capi = _find_onnxruntime_capi_dir()
     mmdeploy_dir = _find_mmdeploy_runtime_dir()
     if ort_capi is None or mmdeploy_dir is None:
         return
-    for dll_name in ("onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"):
+    for dll_name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll", "onnxruntime_providers_cuda.dll"):
         src = ort_capi / dll_name
         dst = mmdeploy_dir / dll_name
         if not src.exists():
@@ -386,6 +390,6 @@ def prepare_mmdeploy_cuda_env() -> Path | None:
         dll_dirs.insert(0, mmdeploy_dir)
     if torch_lib is not None:
         dll_dirs.append(torch_lib)
-    _copy_onnxruntime_provider_dlls()
+    _copy_onnxruntime_runtime_dlls()
     register_dll_dirs(dll_dirs)
     return cuda_root

@@ -40,8 +40,8 @@ const GRID_MODE_CAPACITY: Record<Exclude<LiveGridMode, "auto">, number> = {
 const GRID_STORAGE_KEY = "cctv_live_grid_mode";
 const ORDER_STORAGE_KEY = "cctv_live_camera_order";
 const GRID_LAYOUT_STORAGE_KEY = "cctv_live_grid_layouts";
-const PTZ_HOLD_REPEAT_MS = 250;
-const PTZ_HOLD_TIMEOUT_SECONDS = 0.6;
+const PTZ_HOLD_SAFETY_STOP_MS = 900;
+const PTZ_HOLD_TIMEOUT_SECONDS = 0.45;
 
 type ZoomState = {
   scale: number;
@@ -53,7 +53,7 @@ type LiveGridLayouts = Partial<Record<FixedGridMode, Array<number | null>>>;
 type LiveGridItem =
   | { slotIndex: number; camera: CameraSummary }
   | { slotIndex: number; placeholderId: string };
-type PtzMovePayload = { pan?: number; tilt?: number; zoom?: number; timeout_seconds?: number };
+type PtzMovePayload = { pan?: number; tilt?: number; zoom?: number; timeout_seconds?: number | null };
 type StreamMediaStyle = CSSProperties & {
   "--stream-aspect"?: string;
   "--stream-aspect-ratio"?: string;
@@ -201,7 +201,7 @@ const LivePage: React.FC = () => {
   const [zoomState, setZoomState] = useState<ZoomState>(DEFAULT_ZOOM);
   const containerRefs = useRef<Record<number, HTMLElement | null>>({});
   const activePtzMoveRef = useRef<string | null>(null);
-  const activePtzRepeatRef = useRef<number | null>(null);
+  const activePtzSafetyStopRef = useRef<number | null>(null);
   const activePtzKeyRef = useRef<string | null>(null);
   const uiSettings = loadUiSettings();
   const isAdmin = user?.role_id === 1;
@@ -437,10 +437,7 @@ const LivePage: React.FC = () => {
     }
   };
 
-  const normalizePtzMovePayload = (payload: PtzMovePayload): PtzMovePayload => ({
-    ...payload,
-    timeout_seconds: payload.timeout_seconds ?? PTZ_HOLD_TIMEOUT_SECONDS,
-  });
+  const normalizePtzMovePayload = (payload: PtzMovePayload): PtzMovePayload => ({ ...payload, timeout_seconds: PTZ_HOLD_TIMEOUT_SECONDS });
 
   const getMoveKey = (payload: PtzMovePayload) => JSON.stringify(payload);
 
@@ -455,9 +452,9 @@ const LivePage: React.FC = () => {
 
   const stopMove = async (force = false) => {
     if (!force && !activePtzMoveRef.current) return;
-    if (activePtzRepeatRef.current !== null) {
-      window.clearInterval(activePtzRepeatRef.current);
-      activePtzRepeatRef.current = null;
+    if (activePtzSafetyStopRef.current !== null) {
+      window.clearTimeout(activePtzSafetyStopRef.current);
+      activePtzSafetyStopRef.current = null;
     }
     activePtzMoveRef.current = null;
     activePtzKeyRef.current = null;
@@ -478,9 +475,9 @@ const LivePage: React.FC = () => {
     }
     activePtzMoveRef.current = moveKey;
     await sendContinuousMove(movePayload);
-    activePtzRepeatRef.current = window.setInterval(() => {
-      void sendContinuousMove(movePayload);
-    }, PTZ_HOLD_REPEAT_MS);
+    activePtzSafetyStopRef.current = window.setTimeout(() => {
+      void stopMove(true);
+    }, PTZ_HOLD_SAFETY_STOP_MS);
   };
 
   const normalizePtzKey = (key: string) => (key.length === 1 ? key.toLowerCase() : key);

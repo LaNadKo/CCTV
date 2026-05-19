@@ -33,16 +33,13 @@ if command -v nvidia-smi &>/dev/null; then
     GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
     echo "GPU:    $GPU"
     GPU_PACKAGES=(
-        "onnxruntime-gpu==1.15.1"
-        "mmdeploy-runtime-gpu==1.3.1"
-        "nvidia-cuda-runtime-cu11==11.8.89"
-        "nvidia-cublas-cu11==11.11.3.6"
-        "nvidia-cudnn-cu11==8.9.5.29"
-        "nvidia-cuda-nvrtc-cu11==11.8.89"
-        "nvidia-cufft-cu11==10.9.0.58"
-        "nvidia-curand-cu11==10.3.0.86"
+        "onnxruntime-gpu>=1.18.1,<1.24"
+        "nvidia-cuda-runtime-cu12>=12,<13"
+        "nvidia-cublas-cu12>=12,<13"
+        "nvidia-cufft-cu12>=11,<12"
+        "nvidia-cudnn-cu12>=9,<10"
     )
-    echo "        → Installing CUDA-enabled PyTorch"
+    echo "        -> Installing CUDA-enabled ONNXRuntime"
 else
     echo "GPU:    not detected (CPU mode)"
     GPU_PACKAGES=()
@@ -55,7 +52,7 @@ echo "[1/3] Creating virtual environment..."
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip -q
 
-# ── Install PyTorch ───────────────────────────────────────
+# ── Install runtime dependencies ──────────────────────────
 echo "[2/3] Installing dependencies..."
 
 # ── Install remaining dependencies ────────────────────────
@@ -63,7 +60,6 @@ pip install -r "$SCRIPT_DIR/requirements.txt" -q
 if [ ${#GPU_PACKAGES[@]} -gt 0 ]; then
     echo "[3/3] Installing GPU runtimes..."
     pip install "${GPU_PACKAGES[@]}" -q
-    "$VENV_DIR/bin/python" "$SCRIPT_DIR/prepare_gpu_runtime.py"
 else
     echo "[3/3] GPU runtimes skipped"
 fi

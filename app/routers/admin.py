@@ -266,6 +266,8 @@ async def set_user_role(
     current_user: models.User = Depends(get_current_user),
 ):
     _ensure_admin(current_user)
+    if user_id == current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot change your own role")
     if role_id not in (1, 2, 3):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role_id must be 1, 2 or 3")
     user = await session.get(models.User, user_id)
