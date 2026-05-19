@@ -1555,28 +1555,6 @@ select.input optgroup {
   gap: 8px;
 }
 
-.live-ruview-control {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.ruview-status {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.ruview-status.is-online {
-  border-color: rgba(230, 255, 255, 0.44);
-  background: rgba(168, 255, 244, 0.12);
-  color: color-mix(in srgb, var(--text-strong) 92%, #a8fff4);
-}
-
 .live-toolbar-meta {
   flex: 1 1 320px;
 }
@@ -1656,50 +1634,6 @@ select.input optgroup {
   object-fit: contain;
   border-radius: inherit;
   background: var(--surface-muted);
-}
-
-.ruview-pose-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  pointer-events: none;
-  filter: drop-shadow(0 0 8px rgba(0, 0, 0, 0.82));
-  mix-blend-mode: screen;
-}
-
-.ruview-pose-bone {
-  fill: none;
-  stroke: rgba(248, 252, 255, 0.94);
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.ruview-pose-point {
-  fill: #ffffff;
-  stroke: rgba(0, 0, 0, 0.88);
-  stroke-width: 0.45;
-  vector-effect: non-scaling-stroke;
-}
-
-.ruview-pose-box {
-  fill: transparent;
-  stroke: rgba(190, 255, 248, 0.64);
-  stroke-width: 1.2;
-  stroke-dasharray: 5 4;
-  vector-effect: non-scaling-stroke;
-}
-
-.ruview-pose-label {
-  fill: #ffffff;
-  font-size: 3px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  paint-order: stroke;
-  stroke: rgba(0, 0, 0, 0.86);
-  stroke-width: 0.7;
-  vector-effect: non-scaling-stroke;
 }
 
 .live-stream-card:fullscreen,

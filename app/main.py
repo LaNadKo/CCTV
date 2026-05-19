@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.config import settings
-from app.routers import auth, groups, cameras, admin, detections, api_keys, recordings, ruview
+from app.routers import auth, groups, cameras, admin, detections, api_keys, recordings
 from app.routers import processors as processors_router
 from app.routers import persons as persons_router
 from app.routers import reports as reports_router
@@ -100,7 +100,6 @@ app.include_router(recordings.router)
 app.include_router(processors_router.router)
 app.include_router(persons_router.router)
 app.include_router(reports_router.router)
-app.include_router(ruview.router)
 
 RECORDINGS_STATIC_DIR = Path("recordings")
 SNAPSHOTS_STATIC_DIR = Path("snapshots")
@@ -223,8 +222,6 @@ async def startup_tasks():
     await _seed_default_admin()
     await _seed_event_types()
     await _ensure_processor_api_key()
-    from app.services.ruview_bridge import start_ruview_bridge
-    start_ruview_bridge()
     if settings.enable_embedded_detector:
         from app.detector import DetectionManager
         detector_manager = DetectionManager()
@@ -234,8 +231,6 @@ async def startup_tasks():
 @app.on_event("shutdown")
 async def shutdown_tasks():
     global detector_manager
-    from app.services.ruview_bridge import stop_ruview_bridge
-    stop_ruview_bridge()
     if detector_manager:
         await detector_manager.stop()
         detector_manager = None

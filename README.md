@@ -114,43 +114,6 @@ rtsp://127.0.0.1:8554
 
 Контейнер `backend` сам ждёт PostgreSQL, применяет `alembic upgrade head` и затем запускает `uvicorn`.
 
-### RuView / WiFi DensePose
-
-RuView подключён как отдельный контур pose/skeleton, без возврата RF Room и координатной карты комнаты.
-
-Запуск sidecar:
-
-```powershell
-.\scripts\start_ruview.ps1
-```
-
-Или через Docker Compose:
-
-```bash
-docker compose --profile ruview up -d ruview-sensing
-```
-
-Рабочие адреса:
-
-- backend UDP для ESP32: `udp://<IP_ноутбука>:5005`;
-- RuView sidecar UI: `http://127.0.0.1:3100/ui/index.html`;
-- backend status: `GET /ruview/status`;
-- upstream status: `GET /ruview/upstream`;
-- pose для Live overlay: `GET /ruview/pose`.
-
-По умолчанию `GET /ruview/pose` скрывает симуляцию RuView и отдаёт skeleton только при живом CSI/RF-link потоке от ESP32. Если платы присылают только health-пакеты, в Live будет статус `Нет live CSI от ESP32`.
-
-Прошивка ESP32-S3 для live CSI находится в `firmware/esp32-rf-node`. Она использует ESP-NOW broadcast-sounding и отправляет в backend одновременно RuView ADR-018 CSI (`0xC5110001`) и диагностический RF-link (`0xC5110101`).
-Backend дополнительно ограничивает приём CSI параметром `RUVIEW_CSI_MIN_INTERVAL_SECONDS`, чтобы RuView/Live не перегружались при плотном радиопотоке.
-
-RuView sidecar must run with `CSI_SOURCE=esp32`; values like `udp://0.0.0.0:5005` are treated by the current upstream image as simulated mode. Backend also keeps `RUVIEW_ALLOW_UNCALIBRATED_POSE_OVERLAY=false` by default, so uncalibrated RuView pose data is not drawn over camera video as a real skeleton.
-
-```powershell
-.\scripts\flash_ruview_node.ps1 -Port COM3 -NodeId 1 -NoProvision
-```
-
-`-NoProvision` сохраняет текущий `node_id`, WiFi и target из NVS. Если плату нужно настроить заново, задайте `RUVIEW_WIFI_PASSWORD` и запустите без `-NoProvision`.
-
 ### Вариант 2. Готовый shell-скрипт
 
 Shell-скрипт для серверной части. Поднимает тот же стек, что и Вариант 1: `db + backend + mediamtx`.
