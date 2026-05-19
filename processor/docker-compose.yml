@@ -1,15 +1,33 @@
 # ============================================================
 #  CCTV Processor — standalone deployment for GPU machines
-#  Run: cp .env.example .env && nano .env && docker compose up -d
+#  Run CPU/auto: cp .env.example .env && nano .env && docker compose --profile cpu up -d
+#  Run NVIDIA:  cp .env.example .env && nano .env && docker compose --profile nvidia up -d processor-nvidia
 # ============================================================
 
 services:
   processor:
-    build: .
+    build:
+      context: ..
+      dockerfile: processor/Dockerfile
     environment:
       BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
       API_KEY: ${API_KEY:?Set API_KEY in .env}
       PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-1}
+      PROCESSOR_ACCEL: ${PROCESSOR_ACCEL:-auto}
+      MAX_WORKERS: ${MAX_WORKERS:-4}
+    restart: always
+    profiles:
+      - cpu
+
+  processor-nvidia:
+    build:
+      context: ..
+      dockerfile: processor/Dockerfile.nvidia
+    environment:
+      BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-nvidia-1}
+      PROCESSOR_ACCEL: nvidia
       MAX_WORKERS: ${MAX_WORKERS:-4}
     restart: always
     deploy:
@@ -19,3 +37,5 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    profiles:
+      - nvidia

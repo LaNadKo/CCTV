@@ -11,6 +11,7 @@ from processor.media_server import ProcessorMediaServer
 from processor.monitor import SystemMonitor, get_system_info
 from processor.networking import detect_advertised_ip
 from processor.paths import ensure_media_dirs
+from cctv_ai.runtime_env import log_acceleration_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -25,6 +26,16 @@ class ProcessorService:
         self._prewarm_task: asyncio.Task | None = None
         self._monitor = SystemMonitor()
         self._system_info = get_system_info()
+        self._acceleration_report = log_acceleration_report(logger, settings.processor_accel)
+        self._system_info["acceleration"] = {
+            "preference": self._acceleration_report.get("preference"),
+            "selected_device": self._acceleration_report.get("selected_device"),
+            "selected_provider": self._acceleration_report.get("selected_provider"),
+            "onnxruntime_providers": self._acceleration_report.get("onnxruntime_providers"),
+            "cuda_root": self._acceleration_report.get("cuda_root"),
+            "nvidia_smi_available": bool(self._acceleration_report.get("nvidia_smi")),
+        }
+        self._system_info["inference_device"] = self._acceleration_report.get("selected_device") or self._system_info.get("inference_device", "cpu")
         self._advertised_ip = detect_advertised_ip(settings.advertised_ip, backend_url=settings.backend_url)
         if self._advertised_ip:
             self._system_info["advertised_ip"] = self._advertised_ip

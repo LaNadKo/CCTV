@@ -74,6 +74,7 @@ def default_config() -> dict[str, Any]:
         "processor_name": socket.gethostname(),
         "advertised_ip": "",
         "max_workers": 4,
+        "processor_accel": "auto",
         "motion_threshold": 25.0,
         "face_scan_divisor": 8,
         "overlay_frame_divisor": 1,
@@ -124,6 +125,7 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "PROCESSOR_NAME": ("processor_name", "str"),
         "PROCESSOR_ADVERTISED_IP": ("advertised_ip", "str"),
         "MAX_WORKERS": ("max_workers", "int"),
+        "PROCESSOR_ACCEL": ("processor_accel", "str"),
         "MOTION_THRESHOLD": ("motion_threshold", "float"),
         "FACE_SCAN_DIVISOR": ("face_scan_divisor", "int"),
         "OVERLAY_FRAME_DIVISOR": ("overlay_frame_divisor", "int"),
@@ -153,6 +155,7 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["PROCESSOR_NAME"] = str(config.get("processor_name") or socket.gethostname())
     os.environ["PROCESSOR_ADVERTISED_IP"] = str(config.get("advertised_ip") or "")
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
+    os.environ["PROCESSOR_ACCEL"] = str(config.get("processor_accel") or "auto")
     os.environ["MOTION_THRESHOLD"] = str(config.get("motion_threshold", 25.0))
     os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
     os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))

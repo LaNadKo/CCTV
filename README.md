@@ -12,6 +12,15 @@
   - `mobile/react-capacitor` — отдельный React + Capacitor клиент для Android/iOS.
 - Основной производственный контур сейчас: `backend + frontend/desktop + processor`.
 - Мобильная адаптация идёт отдельно и не должна ломать основной `frontend`.
+- План целевой архитектуры: оставить web-консоль для серверного администрирования, а операторские desktop/mobile-клиенты и GUI Processor постепенно перенести на `Flutter`.
+
+## Целевая архитектура
+
+- `Backend` остаётся центральным API и отдаёт web-консоль для локального управления сервером.
+- `Processor` запускается как Windows portable-приложение или как Docker-контейнер на Linux/ПК с GPU.
+- `Flutter Console` будет отдельным операторским клиентом для Windows, Linux и Android поверх текущего backend API.
+- `Flutter Processor GUI` будет отдельной оболочкой настройки Processor; headless/runtime-часть Processor остаётся Python-модулем.
+- `React/Vite frontend` остаётся серверной web-консолью и fallback-интерфейсом.
 
 ## Состав проекта
 
@@ -44,6 +53,7 @@
 - MMDeploy Runtime
 - MediaMTX
 - Docker Compose
+- Flutter — целевой стек для новых native-клиентов
 - Capacitor
 - Expo / React Native
 
@@ -113,6 +123,18 @@ rtsp://127.0.0.1:8554
 ```
 
 Контейнер `backend` сам ждёт PostgreSQL, применяет `alembic upgrade head` и затем запускает `uvicorn`.
+
+Processor можно поднимать отдельно выбранным профилем:
+
+```bash
+# CPU / auto fallback
+docker compose --profile with-processor up -d --build processor
+
+# NVIDIA GPU через NVIDIA Container Toolkit
+docker compose --profile with-gpu up -d --build processor-nvidia
+```
+
+В контейнере Processor использует `PROCESSOR_ACCEL`. Для NVIDIA нужен установленный NVIDIA Container Toolkit на хосте; без него GPU внутрь контейнера не попадёт.
 
 ### Вариант 2. Готовый shell-скрипт
 
@@ -190,6 +212,21 @@ CLI:
 ```bash
 python -m processor.cli run
 ```
+
+Диагностика ускорения:
+
+```bash
+python -m processor.cli acceleration --json
+python -m processor.cli acceleration --processor-accel nvidia --prewarm
+```
+
+Переменная `PROCESSOR_ACCEL` управляет выбором runtime-провайдера:
+
+```text
+auto | cpu | nvidia | intel | amd | directml
+```
+
+На текущем этапе стабильными считаются `auto`, `cpu` и `nvidia`. Intel/OpenVINO, AMD/ROCm и DirectML заложены как целевые профили, но требуют отдельной проверки на соответствующем железе и образах.
 
 ## Камеры и потоки
 

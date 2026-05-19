@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     poll_interval: int = Field(default=3, validation_alias="POLL_INTERVAL")
     heartbeat_interval: int = Field(default=30, validation_alias="HEARTBEAT_INTERVAL")
     max_workers: int = Field(default=4, validation_alias="MAX_WORKERS")
+    processor_accel: str = Field(default="auto", validation_alias="PROCESSOR_ACCEL")
     motion_threshold: float = Field(default=25.0, validation_alias="MOTION_THRESHOLD")
     motion_min_area: int = Field(default=500, validation_alias="MOTION_MIN_AREA")
     face_scan_divisor: int | None = Field(default=None, validation_alias="FACE_SCAN_DIVISOR")
