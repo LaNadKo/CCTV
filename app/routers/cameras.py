@@ -16,7 +16,11 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
 from app.permissions import check_permission, user_camera_permission_sync
-from app.processor_media import get_processor_media_base_urls, get_processor_media_headers
+from app.processor_media import (
+    get_processor_media_base_urls,
+    get_processor_media_headers,
+    is_processor_effectively_online,
+)
 from app.security import decrypt_secret
 from app.schemas.cameras import CameraEndpointInfo, CameraOut, CameraPermissionOut
 from app.services.onvif import (
@@ -309,9 +313,12 @@ async def stream_camera(
             models.ProcessorCameraAssignment.camera_id == camera_id,
             models.Processor.status == "online",
         )
-        .limit(1)
     )
-    assignment_row = assignment_result.first()
+    assignment_row = None
+    for row in assignment_result.all():
+        if is_processor_effectively_online(row[1]):
+            assignment_row = row
+            break
     if assignment_row is None:
         try:
             return await _stream_direct_camera(camera)

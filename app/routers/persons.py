@@ -13,7 +13,11 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
 from app.permissions import is_admin, is_at_least_user
-from app.processor_media import get_processor_media_base_url, get_processor_media_headers
+from app.processor_media import (
+    get_processor_media_base_url,
+    get_processor_media_headers,
+    is_processor_effectively_online,
+)
 from app.schemas.persons import PersonCreate, PersonOut, PersonUpdate
 from app.routers.face import _extract_best_face_embedding
 
@@ -98,19 +102,20 @@ async def _pick_processor_for_embedding(
                 models.Processor.last_heartbeat.desc(),
                 models.Processor.processor_id.desc(),
             )
-            .limit(1)
         )
-        assigned = res.scalar_one_or_none()
-        if assigned is not None:
-            return assigned
+        for assigned in res.scalars().all():
+            if is_processor_effectively_online(assigned):
+                return assigned
 
     res = await session.execute(
         select(models.Processor)
         .where(models.Processor.status == "online")
         .order_by(models.Processor.last_heartbeat.desc(), models.Processor.processor_id.desc())
-        .limit(1)
     )
-    return res.scalar_one_or_none()
+    for proc in res.scalars().all():
+        if is_processor_effectively_online(proc):
+            return proc
+    return None
 
 
 async def _extract_best_face_embedding_via_processor(

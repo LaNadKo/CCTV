@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app import models
 
 PROCESSOR_MEDIA_SCHEME = "processor://"
 DEFAULT_PROCESSOR_MEDIA_PORT = 8777
+PROCESSOR_HEARTBEAT_GRACE_SECONDS = 90
 
 
 def build_processor_file_path(processor_id: int, relative_path: str) -> str:
@@ -38,6 +40,21 @@ def get_processor_capabilities(proc: models.Processor) -> dict:
         return json.loads(proc.capabilities)
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def effective_processor_status(proc: models.Processor) -> str:
+    status = (proc.status or "offline").lower()
+    if status != "online":
+        return status
+    if proc.last_heartbeat is None:
+        return "offline"
+    if proc.last_heartbeat < datetime.utcnow() - timedelta(seconds=PROCESSOR_HEARTBEAT_GRACE_SECONDS):
+        return "offline"
+    return "online"
+
+
+def is_processor_effectively_online(proc: models.Processor) -> bool:
+    return effective_processor_status(proc) == "online"
 
 
 def get_processor_media_port(proc: models.Processor) -> int:

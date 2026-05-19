@@ -97,6 +97,22 @@ class ProcessorService:
         for w in self.workers.values():
             w.stop()
         self._media_server.stop()
+        if self.processor_id is not None:
+            try:
+                await self.client.heartbeat(
+                    self.processor_id,
+                    "offline",
+                    stats={"active_cameras": 0},
+                    ip_address=self._advertised_ip,
+                    hostname=self._system_info.get("hostname"),
+                    os_info=self._system_info.get("os"),
+                    version="1.0.0",
+                    capabilities=self._system_info,
+                    media_port=settings.media_port,
+                    media_token=settings.media_token,
+                )
+            except Exception:
+                logger.exception("Failed to publish offline heartbeat")
         await self.client.close()
         self._runtime_lock.release()
 

@@ -483,6 +483,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       unawaited(
         process.exitCode.then((code) {
           if (!mounted) return;
+          unawaited(_markProcessorOffline());
           setState(() {
             _running = false;
             _process = null;
@@ -501,6 +502,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   Future<void> _stopProcessor() async {
     final process = _process;
     if (process == null) {
+      await _markProcessorOffline();
       setState(() => _running = false);
       return;
     }
@@ -513,12 +515,49 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         await Process.run('taskkill', ['/PID', '${process.pid}', '/T', '/F']);
       }
     }
+    await _markProcessorOffline();
     if (!mounted) return;
     setState(() {
       _running = false;
       _process = null;
       _statusMessage = 'Processor остановлен.';
     });
+  }
+
+  Future<void> _markProcessorOffline() async {
+    final config = _configFromControllers();
+    final backendUrl = '${config['backend_url'] ?? ''}'.replaceAll(
+      RegExp(r'/+$'),
+      '',
+    );
+    final apiKey = '${config['api_key'] ?? ''}'.trim();
+    final processorId = _nullableInt(config['processor_id']);
+    if (backendUrl.isEmpty || apiKey.isEmpty || processorId == null) {
+      return;
+    }
+
+    final client = HttpClient();
+    try {
+      final request = await client
+          .postUrl(Uri.parse('$backendUrl/processors/$processorId/heartbeat'))
+          .timeout(const Duration(seconds: 5));
+      request.headers.contentType = ContentType.json;
+      request.headers.set('X-Api-Key', apiKey);
+      request.write(jsonEncode({'status': 'offline', 'stats': {}}));
+      final response = await request.close().timeout(
+        const Duration(seconds: 5),
+      );
+      await response.drain<void>();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        _appendSessionLog(
+          'Failed to mark Processor offline: HTTP ${response.statusCode}\n',
+        );
+      }
+    } catch (error) {
+      _appendSessionLog('Failed to mark Processor offline: $error\n');
+    } finally {
+      client.close(force: true);
+    }
   }
 
   void _appendSessionLog(String line) {
@@ -2792,6 +2831,12 @@ int _intFrom(String text, int fallback, {int? min, int? max}) {
   if (min != null && value < min) value = min;
   if (max != null && value > max) value = max;
   return value;
+}
+
+int? _nullableInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse('${value ?? ''}'.trim());
 }
 
 double _doubleFrom(String text, double fallback, {double? min, double? max}) {
