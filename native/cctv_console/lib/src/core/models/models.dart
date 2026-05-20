@@ -49,7 +49,6 @@ class CurrentUser {
     this.firstName,
     this.lastName,
     this.middleName,
-    required this.faceLoginEnabled,
     required this.mustChangePassword,
     required this.totpEnabled,
   });
@@ -60,7 +59,6 @@ class CurrentUser {
   final String? firstName;
   final String? lastName;
   final String? middleName;
-  final bool faceLoginEnabled;
   final bool mustChangePassword;
   final bool totpEnabled;
 
@@ -89,7 +87,6 @@ class CurrentUser {
       firstName: json['first_name'] as String?,
       lastName: json['last_name'] as String?,
       middleName: json['middle_name'] as String?,
-      faceLoginEnabled: json['face_login_enabled'] as bool? ?? false,
       mustChangePassword: json['must_change_password'] as bool? ?? false,
       totpEnabled: json['totp_enabled'] as bool? ?? false,
     );

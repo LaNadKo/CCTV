@@ -33,7 +33,6 @@ class UserOut(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     middle_name: str | None = None
-    face_login_enabled: bool
     must_change_password: bool = False
     totp_enabled: bool = False
 

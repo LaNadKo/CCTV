@@ -59,7 +59,6 @@ def upgrade() -> None:
         sa.Column('user_id', sa.Integer(), primary_key=True),
         sa.Column('login', sa.String(80), unique=True, nullable=False),
         sa.Column('password_hash', sa.String(255), nullable=False),
-        sa.Column('face_login_enabled', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('must_change_password', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('role_id', sa.Integer(), sa.ForeignKey('roles.role_id', ondelete='RESTRICT'), nullable=False),
         sa.Column('profile_id', sa.Integer(), sa.ForeignKey('profiles.profile_id', ondelete='SET NULL'), unique=True),
@@ -403,22 +402,6 @@ def upgrade() -> None:
     op.create_index('audit_log_changed_at_idx', 'audit_log', ['changed_at'])
     op.create_index('audit_log_changed_by_idx', 'audit_log', ['changed_by'])
 
-    # ── User Face Templates ──
-
-    op.create_table('user_face_templates',
-        sa.Column('user_face_id', sa.Integer(), primary_key=True),
-        sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False),
-        sa.Column('embedding', sa.LargeBinary(), nullable=False),
-        sa.Column('model', sa.String(50)),
-        sa.Column('distance_metric', sa.String(20), nullable=False, server_default='cosine'),
-        sa.Column('threshold', sa.Numeric(5, 3)),
-        sa.Column('quality_score', sa.Numeric(5, 2)),
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
-        sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.CheckConstraint("distance_metric IN ('cosine', 'l2')", name='user_face_templates_metric_chk'),
-    )
-    op.create_index('user_face_templates_user_idx', 'user_face_templates', ['user_id'])
-
     # ── Camera Presets (Phase 2) ──
 
     op.create_table('camera_presets',
@@ -539,7 +522,6 @@ def downgrade() -> None:
     op.drop_table('homes')
     op.drop_table('camera_roi_zones')
     op.drop_table('camera_presets')
-    op.drop_table('user_face_templates')
     op.drop_table('audit_log')
     op.drop_table('auth_events')
     op.drop_table('event_reviews')

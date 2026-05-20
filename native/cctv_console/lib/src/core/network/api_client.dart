@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import '../models/models.dart';
 
@@ -76,6 +78,39 @@ class ApiClient {
 
   Future<void> deleteVoid(String path, {String? token}) {
     return _request<void>(path, 'DELETE', token: token, decoder: (_) {});
+  }
+
+  Future<File> downloadFile(
+    String path, {
+    required String token,
+    Map<String, String?> query = const {},
+    required String filename,
+  }) async {
+    late http.Response response;
+    try {
+      response = await _client
+          .get(
+            uri(path, query),
+            headers: {
+              'Accept': 'application/octet-stream',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(const Duration(seconds: 120));
+    } catch (_) {
+      throw ApiException(
+        'Не удалось скачать файл с backend (${baseUrlProvider()})',
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    final directory = await _downloadDirectory();
+    await directory.create(recursive: true);
+    final safeName = filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final file = File('${directory.path}${Platform.pathSeparator}$safeName');
+    await file.writeAsBytes(response.bodyBytes, flush: true);
+    return file;
   }
 
   Future<Object?> getJson(
@@ -235,6 +270,60 @@ class ApiClient {
     );
   }
 
+  Future<CurrentUser> updateProfile(
+    String token, {
+    String? firstName,
+    String? lastName,
+    String? middleName,
+  }) {
+    return patch(
+      '/auth/profile',
+      token: token,
+      body: {
+        'first_name': _nullableText(firstName),
+        'last_name': _nullableText(lastName),
+        'middle_name': _nullableText(middleName),
+      },
+      decoder: (json) => CurrentUser.fromJson(json as Map<String, dynamic>),
+    );
+  }
+
+  Future<void> changePassword(
+    String token, {
+    required String currentPassword,
+    required String newPassword,
+  }) {
+    return postVoid(
+      '/auth/change-password',
+      token: token,
+      body: {'current_password': currentPassword, 'new_password': newPassword},
+    );
+  }
+
+  Future<bool> getTotpEnabled(String token) async {
+    final status = await getJson('/auth/totp/status', token: token);
+    final map = _asMap(status);
+    return map['enabled'] == true;
+  }
+
+  Future<Map<String, dynamic>> setupTotp(String token) {
+    return postJson('/auth/totp/setup', token: token);
+  }
+
+  Future<bool> activateTotp(String token, String code) async {
+    final status = await postJson(
+      '/auth/totp/activate',
+      token: token,
+      body: {'code': code},
+    );
+    return status['enabled'] == true;
+  }
+
+  Future<bool> disableTotp(String token) async {
+    final status = await postJson('/auth/totp/disable', token: token);
+    return status['enabled'] == true;
+  }
+
   Future<List<CameraSummary>> listCameras(String token) {
     return get(
       '/cameras',
@@ -303,6 +392,69 @@ class ApiClient {
   }
 
   Uri cameraStreamUri(int cameraId) => uri('/cameras/$cameraId/stream');
+
+  Future<File> downloadReportSection(
+    String token, {
+    required String section,
+    required String format,
+    String? dateFrom,
+    String? dateTo,
+  }) {
+    return downloadFile(
+      '/reports/export',
+      token: token,
+      query: {
+        'section': section,
+        'format': format,
+        'date_from': dateFrom,
+        'date_to': dateTo,
+      },
+      filename: 'cctv-$section.$format',
+    );
+  }
+
+  Future<File> downloadAppearanceReport(
+    String token, {
+    required String format,
+    int? personId,
+    String? dateFrom,
+    String? dateTo,
+  }) {
+    return downloadFile(
+      '/reports/appearances/export',
+      token: token,
+      query: {
+        'format': format,
+        if (personId != null) 'person_id': '$personId',
+        'date_from': dateFrom,
+        'date_to': dateTo,
+      },
+      filename: 'cctv-appearances.$format',
+    );
+  }
+
+  static String? _nullableText(String? value) {
+    final text = value?.trim() ?? '';
+    return text.isEmpty ? null : text;
+  }
+
+  static Future<Directory> _downloadDirectory() async {
+    if (Platform.isWindows) {
+      final home = Platform.environment['USERPROFILE'];
+      if (home != null && home.isNotEmpty) {
+        final downloads = Directory('$home${Platform.pathSeparator}Downloads');
+        if (await downloads.exists()) return downloads;
+      }
+    }
+    if (Platform.isLinux || Platform.isMacOS) {
+      final home = Platform.environment['HOME'];
+      if (home != null && home.isNotEmpty) {
+        final downloads = Directory('$home${Platform.pathSeparator}Downloads');
+        if (await downloads.exists()) return downloads;
+      }
+    }
+    return getApplicationDocumentsDirectory();
+  }
 
   static Map<String, dynamic> _asMap(Object? json) {
     if (json == null) return <String, dynamic>{};

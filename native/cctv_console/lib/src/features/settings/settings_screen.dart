@@ -6,6 +6,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
+import 'profile_security_panel.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -60,6 +61,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         SliverList.list(
           children: [
+            const ProfileSecurityPanel(),
+            const SizedBox(height: 14),
             GlassPanel(
               padding: const EdgeInsets.all(18),
               child: Column(

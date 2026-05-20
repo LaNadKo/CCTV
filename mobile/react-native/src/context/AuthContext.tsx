@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { getToken, setToken as saveToken, clearToken, getUser, setUser as saveUser, clearUser } from "../lib/storage";
 import { meApi, initApiUrl } from "../lib/api";
 
-type User = { user_id: number; login: string; role_id: number; face_login_enabled: boolean; must_change_password: boolean };
+type User = { user_id: number; login: string; role_id: number; must_change_password: boolean };
 
 type AuthCtx = {
   token: string | null;

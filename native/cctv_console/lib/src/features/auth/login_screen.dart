@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
@@ -17,17 +18,17 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _apiUrlController;
-  final _loginController = TextEditingController();
+  final _loginController = TextEditingController(text: 'admin');
   final _passwordController = TextEditingController();
-  final _totpController = TextEditingController();
   bool _obscurePassword = true;
   bool _serverSettingsOpen = false;
 
   @override
   void initState() {
     super.initState();
-    final settings = context.read<ThemeController>();
-    _apiUrlController = TextEditingController(text: settings.apiBaseUrl);
+    _apiUrlController = TextEditingController(
+      text: context.read<ThemeController>().apiBaseUrl,
+    );
   }
 
   @override
@@ -35,11 +36,10 @@ class _LoginScreenState extends State<LoginScreen> {
     _apiUrlController.dispose();
     _loginController.dispose();
     _passwordController.dispose();
-    _totpController.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
+  Future<void> _submit({String? totpCode}) async {
     if (!_formKey.currentState!.validate()) return;
     final settings = context.read<ThemeController>();
     final auth = context.read<AuthController>();
@@ -51,14 +51,33 @@ class _LoginScreenState extends State<LoginScreen> {
       await auth.login(
         login: _loginController.text.trim(),
         password: _passwordController.text,
-        totpCode: _totpController.text.trim(),
+        totpCode: totpCode,
       );
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      if (error.statusCode == 400 &&
+          error.message.toLowerCase().contains('totp')) {
+        final code = await showDialog<String>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => const _TwoFactorDialog(),
+        );
+        if (code != null && code.isNotEmpty) {
+          await _submit(totpCode: code);
+        }
+        return;
+      }
+      _showError(error.message);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
+      _showError('$error');
     }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   @override
@@ -73,7 +92,7 @@ class _LoginScreenState extends State<LoginScreen> {
             constraints: const BoxConstraints(maxWidth: 460),
             child: GlassPanel(
               radius: 28,
-              padding: const EdgeInsets.all(32),
+              padding: const EdgeInsets.all(30),
               child: Form(
                 key: _formKey,
                 child: Column(
@@ -87,10 +106,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       autofocus: true,
                       textInputAction: TextInputAction.next,
                       decoration: const InputDecoration(labelText: 'Логин'),
-                      validator: (value) {
-                        if ((value ?? '').trim().isEmpty) return 'Укажи логин';
-                        return null;
-                      },
+                      validator: (value) =>
+                          (value ?? '').trim().isEmpty ? 'Укажите логин' : null,
                     ),
                     const SizedBox(height: 14),
                     TextFormField(
@@ -99,11 +116,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: InputDecoration(
                         labelText: 'Пароль',
                         suffixIcon: IconButton(
-                          onPressed: () {
-                            setState(
-                              () => _obscurePassword = !_obscurePassword,
-                            );
-                          },
+                          tooltip: _obscurePassword
+                              ? 'Показать пароль'
+                              : 'Скрыть пароль',
+                          onPressed: () => setState(
+                            () => _obscurePassword = !_obscurePassword,
+                          ),
                           icon: Icon(
                             _obscurePassword
                                 ? Icons.visibility_rounded
@@ -112,21 +130,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       onFieldSubmitted: (_) => _submit(),
-                      validator: (value) {
-                        if ((value ?? '').isEmpty) return 'Укажи пароль';
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _totpController,
-                      decoration: const InputDecoration(
-                        labelText: 'TOTP код',
-                        hintText: 'Если включён',
-                      ),
-                      keyboardType: TextInputType.number,
-                      textInputAction: TextInputAction.done,
-                      onFieldSubmitted: (_) => _submit(),
+                      validator: (value) =>
+                          (value ?? '').isEmpty ? 'Укажите пароль' : null,
                     ),
                     if (auth.error != null) ...[
                       const SizedBox(height: 14),
@@ -146,11 +151,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 14),
                     _ServerSettingsToggle(
                       open: _serverSettingsOpen,
-                      onTap: () {
-                        setState(
-                          () => _serverSettingsOpen = !_serverSettingsOpen,
-                        );
-                      },
+                      onTap: () => setState(
+                        () => _serverSettingsOpen = !_serverSettingsOpen,
+                      ),
                     ),
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 180),
@@ -162,7 +165,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 controller: _apiUrlController,
                                 decoration: const InputDecoration(
                                   labelText: 'URL backend',
-                                  hintText: 'http://127.0.0.1:8000',
+                                  hintText: 'http://127.0.0.1:8001',
                                 ),
                                 validator: (value) {
                                   final text = value?.trim() ?? '';
@@ -183,6 +186,69 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _TwoFactorDialog extends StatefulWidget {
+  const _TwoFactorDialog();
+
+  @override
+  State<_TwoFactorDialog> createState() => _TwoFactorDialogState();
+}
+
+class _TwoFactorDialogState extends State<_TwoFactorDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      title: const Text('Двухфакторная аутентификация'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Введите код из приложения-аутентификатора.',
+              style: TextStyle(color: colors.muted, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 8,
+              decoration: const InputDecoration(
+                labelText: 'Код двухфакторной аутентификации',
+                counterText: '',
+              ),
+              onSubmitted: (_) =>
+                  Navigator.of(context).pop(_controller.text.trim()),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Подтвердить'),
+        ),
+      ],
     );
   }
 }

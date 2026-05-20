@@ -39,7 +39,6 @@ class User(Base):
     last_name: Mapped[Optional[str]] = mapped_column(String(100))
     first_name: Mapped[Optional[str]] = mapped_column(String(100))
     middle_name: Mapped[Optional[str]] = mapped_column(String(100))
-    face_login_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.role_id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
@@ -404,25 +403,6 @@ class AuditLog(Base):
     changed_by_user: Mapped[Optional[User]] = relationship()
 
 
-class UserFaceTemplate(Base):
-    __tablename__ = "user_face_templates"
-    __table_args__ = (
-        CheckConstraint("distance_metric IN ('cosine', 'l2')", name="user_face_templates_metric_chk"),
-    )
-
-    user_face_id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    model: Mapped[Optional[str]] = mapped_column(String(50))
-    distance_metric: Mapped[str] = mapped_column(String(20), nullable=False, default="cosine", server_default="cosine")
-    threshold: Mapped[Optional[Numeric]] = mapped_column(Numeric(5, 3))
-    quality_score: Mapped[Optional[Numeric]] = mapped_column(Numeric(5, 2))
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
-
-    user: Mapped[User] = relationship()
-
-
 # Indexes (including partials)
 Index("users_role_idx", User.role_id)
 Index("cameras_status_idx", Camera.status_id)
@@ -448,7 +428,6 @@ Index("auth_events_user_idx", AuthEvent.user_id)
 Index("auth_events_method_idx", AuthEvent.method)
 Index("auth_events_ts_idx", AuthEvent.occurred_at)
 Index("persons_category_idx", Person.category_id)
-Index("user_face_templates_user_idx", UserFaceTemplate.user_id)
 Index("event_reviews_status_idx", EventReview.status)
 Index("event_reviews_reviewer_idx", EventReview.reviewer_user_id)
 Index("audit_log_table_idx", AuditLog.table_name)
