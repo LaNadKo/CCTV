@@ -91,11 +91,25 @@ async function request<T>(
 }
 
 export async function loginApi(login: string, password: string, totp_code?: string) {
-  return request<{ access_token: string; token_type: string; must_change_password: boolean }>(
+  return request<{
+    access_token: string;
+    token_type: string;
+    must_change_password: boolean;
+    media_access_token?: string | null;
+    media_token_expires_seconds?: number | null;
+  }>(
     "/auth/login",
     "POST",
     undefined,
     { login, password, totp_code }
+  );
+}
+
+export async function createMediaToken(token: string) {
+  return request<{ media_access_token: string; token_type: string; media_token_expires_seconds: number }>(
+    "/auth/media-token",
+    "POST",
+    token
   );
 }
 

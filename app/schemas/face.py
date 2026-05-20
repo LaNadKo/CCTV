@@ -24,4 +24,5 @@ class FaceLoginRequest(BaseModel):
 class FaceLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    media_access_token: Optional[str] = None
     user_id: int

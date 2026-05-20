@@ -154,7 +154,7 @@ function collectEventBadges(events: TimelineEvent[]): EventVisual[] {
 }
 
 const RecordingsPage: React.FC = () => {
-  const { token } = useAuth();
+  const { token, mediaToken } = useAuth();
   const [records, setRecords] = useState<DbRec[]>([]);
   const [cameras, setCameras] = useState<CameraOption[]>([]);
   const [cameraId, setCameraId] = useState<number | null>(null);
@@ -267,16 +267,17 @@ const RecordingsPage: React.FC = () => {
     () => records.find((record) => record.recording_file_id === selectedRecordingId) || null,
     [records, selectedRecordingId]
   );
+  const mediaQueryToken = mediaToken || "";
 
   const selectedRecordingUrl = selectedRecording
-    ? `${API_URL}/recordings/file/${selectedRecording.recording_file_id}?token=${encodeURIComponent(token || "")}`
+    ? `${API_URL}/recordings/file/${selectedRecording.recording_file_id}?token=${encodeURIComponent(mediaQueryToken)}`
     : null;
 
   const selectedRecordingSnapshotUrl = selectedRecording
-    ? recordingSnapshotUrl(selectedRecording.recording_file_id, token || "", getSnapshotTimestamp(selectedRecording))
+    ? recordingSnapshotUrl(selectedRecording.recording_file_id, mediaQueryToken, getSnapshotTimestamp(selectedRecording))
     : null;
   const selectedRecordingMjpegUrl =
-    selectedRecording && token ? recordingMjpegUrl(selectedRecording.recording_file_id, token) : null;
+    selectedRecording && mediaQueryToken ? recordingMjpegUrl(selectedRecording.recording_file_id, mediaQueryToken) : null;
 
   const selectedRecordingEvents = selectedRecording ? recordingEventsMap[selectedRecording.recording_file_id] || [] : [];
 
@@ -632,7 +633,7 @@ const RecordingsPage: React.FC = () => {
                 >
                   {preview ? (
                     <img
-                      src={recordingSnapshotUrl(preview.recording_file_id, token || "", getSnapshotTimestamp(preview))}
+                      src={recordingSnapshotUrl(preview.recording_file_id, mediaQueryToken, getSnapshotTimestamp(preview))}
                       alt={`hour-${hour}`}
                       className="recordings-hour-thumb"
                       loading="lazy"
@@ -788,7 +789,7 @@ const RecordingsPage: React.FC = () => {
                         <div className="recordings-thumb recordings-thumb-empty">Нет превью</div>
                       ) : (
                         <img
-                          src={recordingSnapshotUrl(record.recording_file_id, token || "", getSnapshotTimestamp(record))}
+                          src={recordingSnapshotUrl(record.recording_file_id, mediaQueryToken, getSnapshotTimestamp(record))}
                           alt={`record-${record.recording_file_id}`}
                           className="recordings-thumb"
                           loading="lazy"

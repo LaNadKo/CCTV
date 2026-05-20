@@ -2,6 +2,7 @@ from typing import Union
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from app import models
+from app.security import decrypt_secret
 
 
 def _inject_credentials(url: str, username: str | None, password: str | None) -> str:
@@ -29,7 +30,8 @@ def resolve_source(cam: models.Camera) -> Union[int, str]:
         url = getattr(endpoint, "endpoint_url", None)
         if not url:
             continue
-        return _inject_credentials(url, getattr(endpoint, "username", None), getattr(endpoint, "password_secret", None))
+        password = getattr(endpoint, "password_secret", None)
+        return _inject_credentials(url, getattr(endpoint, "username", None), decrypt_secret(password) if password else None)
 
     if cam.stream_url:
         if cam.stream_url.startswith("local"):

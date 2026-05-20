@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
 from app.db import get_session
-from app.dependencies import get_current_user
+from app.dependencies import clear_service_scope_cache, get_current_user
 from app.permissions import is_admin
 from app.schemas.api_keys import ApiKeyCreate, ApiKeyOut, ApiKeyPlain, ApiKeyUpdate
 from app.security import hash_api_key, verify_api_key
@@ -37,6 +37,15 @@ def _serialize_key(obj: models.ApiKey) -> ApiKeyOut:
     )
 
 
+def _parse_expires_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid expires_at ISO datetime") from exc
+
+
 @router.post("", response_model=ApiKeyPlain, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     payload: ApiKeyCreate,
@@ -47,7 +56,7 @@ async def create_api_key(
     raw_key = secrets.token_urlsafe(32)
     key_hash = hash_api_key(raw_key)
     scopes = ",".join(_normalize_scopes(payload.scopes))
-    expires_at = datetime.fromisoformat(payload.expires_at) if payload.expires_at else None
+    expires_at = _parse_expires_at(payload.expires_at)
     obj = models.ApiKey(
         key_hash=key_hash,
         description=payload.description,
@@ -56,6 +65,7 @@ async def create_api_key(
     )
     session.add(obj)
     await session.commit()
+    clear_service_scope_cache()
     await session.refresh(obj)
     return ApiKeyPlain(api_key=raw_key, api_key_id=obj.api_key_id)
 
@@ -89,8 +99,9 @@ async def update_api_key(
     if payload.is_active is not None:
         obj.is_active = payload.is_active
     if payload.expires_at is not None:
-        obj.expires_at = datetime.fromisoformat(payload.expires_at) if payload.expires_at else None
+        obj.expires_at = _parse_expires_at(payload.expires_at)
     await session.commit()
+    clear_service_scope_cache()
     await session.refresh(obj)
     return _serialize_key(obj)
 
@@ -107,4 +118,5 @@ async def delete_api_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
     await session.delete(obj)
     await session.commit()
+    clear_service_scope_cache()
     return None

@@ -33,7 +33,7 @@ from app.schemas.camera_admin import (
     VideoStreamUpdate,
 )
 from app.schemas.users import UserRegister, UserOut
-from app.security import hash_password
+from app.security import decrypt_secret, encrypt_secret, hash_password
 from app.services.onvif import (
     ONVIFServiceError,
     camera_to_detail_payload,
@@ -140,7 +140,9 @@ async def _replace_camera_endpoints(
         existing = existing_map.get((endpoint.endpoint_kind, endpoint.endpoint_url))
         username = endpoint.username if endpoint.username is not None else (existing.username if existing else None)
         password_secret = endpoint.password_secret
-        if password_secret is None and existing is not None:
+        if password_secret is not None:
+            password_secret = encrypt_secret(password_secret)
+        elif existing is not None:
             password_secret = existing.password_secret
         row = models.CameraEndpoint(
             camera_id=camera_id,
@@ -397,7 +399,7 @@ async def refresh_onvif_camera(
             probe_camera,
             host,
             onvif_endpoint.username,
-            onvif_endpoint.password_secret,
+            decrypt_secret(onvif_endpoint.password_secret) if onvif_endpoint.password_secret else None,
             port,
             use_https,
             6,

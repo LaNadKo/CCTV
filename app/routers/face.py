@@ -3,16 +3,18 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
+from app.config import settings
 from app.db import get_session
-from app.dependencies import get_current_user, get_current_user_allow_query
-from app.permissions import check_permission, user_camera_permission
+from app.dependencies import get_current_user
+from app.permissions import check_permission, is_at_least_user, user_camera_permission
+from app.rate_limit import check_rate_limit
 from app.schemas.face import FaceEmbedding, FaceEnrollResponse, FaceLoginRequest, FaceLoginResponse
-from app.security import create_access_token, decrypt_secret, verify_totp
+from app.security import create_access_token, create_media_token, decrypt_secret, verify_totp
 from app.vision import extract_best_face_embedding as _extract_best_face_embedding
 
 router = APIRouter(prefix="/auth/face", tags=["auth-face"])
@@ -106,6 +108,8 @@ async def enroll_person_photo(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not is_at_least_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission")
     data = await file.read()
     image = np.frombuffer(data, np.uint8)
     image = cv2.imdecode(image, cv2.IMREAD_COLOR)
@@ -146,7 +150,7 @@ async def enroll_person_from_recording(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
     recording, cam_id = row
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
-    if not check_permission(perm, "view") and current_user.role_id != 1:
+    if not check_permission(perm, "control") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     cap = cv2.VideoCapture(recording.file_path)
@@ -193,6 +197,9 @@ async def enroll_person_from_snapshot(
     event = await session.get(models.Event, event_id)
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    perm = await user_camera_permission(session, current_user.user_id, event.camera_id)
+    if not check_permission(perm, "control") and current_user.role_id != 1:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     snapshot_path = Path("snapshots").resolve() / f"event_{event_id}.jpg"
     if not snapshot_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
@@ -223,8 +230,16 @@ async def enroll_person_from_snapshot(
 @router.post("/login", response_model=FaceLoginResponse)
 async def face_login(
     payload: FaceLoginRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> FaceLoginResponse:
+    check_rate_limit(
+        request,
+        "auth-face-login",
+        attempts=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+        detail="Too many face login attempts",
+    )
     probe = _normalize(np.array(payload.embedding, dtype=np.float32))
 
     result = await session.execute(select(models.UserFaceTemplate))
@@ -273,4 +288,4 @@ async def face_login(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
 
     token = create_access_token({"sub": str(user.user_id)})
-    return FaceLoginResponse(access_token=token, user_id=user.user_id)
+    return FaceLoginResponse(access_token=token, media_access_token=create_media_token(user.user_id), user_id=user.user_id)

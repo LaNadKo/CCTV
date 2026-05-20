@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
 
 import pyotp
-from fastapi import APIRouter, Depends, HTTPException, status, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +10,11 @@ from app import models
 from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user
+from app.rate_limit import check_rate_limit, client_ip
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
+    MediaTokenResponse,
     ProfileUpdateRequest,
     TokenResponse,
     TotpCodeRequest,
@@ -22,6 +24,7 @@ from app.schemas.auth import (
 )
 from app.security import (
     create_access_token,
+    create_media_token,
     decrypt_secret,
     encrypt_secret,
     generate_totp_secret,
@@ -39,12 +42,15 @@ async def _log_auth_event(
     method: str,
     success: bool,
     reason: str | None = None,
+    request: Request | None = None,
 ) -> None:
     event = models.AuthEvent(
         user_id=user_id,
         method=method,
         success=success,
         reason=reason,
+        source_ip=client_ip(request) if request else None,
+        user_agent=request.headers.get("user-agent", "")[:255] if request else None,
     )
     session.add(event)
     await session.commit()
@@ -78,16 +84,24 @@ def _user_out(user: models.User, *, totp_enabled: bool) -> UserOut:
 @router.post("/login", response_model=TokenResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
+    check_rate_limit(
+        request,
+        f"auth-login:{payload.login.strip().lower()}",
+        attempts=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+        detail="Too many login attempts",
+    )
     result = await session.execute(select(models.User).where(models.User.login == payload.login))
     user = result.scalar_one_or_none()
     if user is None:
-        await _log_auth_event(session, None, method="password", success=False, reason="user_not_found")
+        await _log_auth_event(session, None, method="password", success=False, reason="user_not_found", request=request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     if not verify_password(payload.password, user.password_hash):
-        await _log_auth_event(session, user.user_id, method="password", success=False, reason="invalid_password")
+        await _log_auth_event(session, user.user_id, method="password", success=False, reason="invalid_password", request=request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     totp_method = await _get_totp_method(session, user.user_id)
@@ -95,25 +109,31 @@ async def login(
     if totp_method and totp_method.secret:
         method_used = "password+totp"
         if not payload.totp_code:
-            await _log_auth_event(session, user.user_id, method=method_used, success=False, reason="totp_required")
+            await _log_auth_event(session, user.user_id, method=method_used, success=False, reason="totp_required", request=request)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP code required")
         if not verify_totp(payload.totp_code, decrypt_secret(totp_method.secret)):
-            await _log_auth_event(session, user.user_id, method=method_used, success=False, reason="invalid_totp")
+            await _log_auth_event(session, user.user_id, method=method_used, success=False, reason="invalid_totp", request=request)
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
 
     token = create_access_token({"sub": str(user.user_id)})
-    await _log_auth_event(session, user.user_id, method=method_used, success=True)
-    return TokenResponse(access_token=token, must_change_password=user.must_change_password)
+    await _log_auth_event(session, user.user_id, method=method_used, success=True, request=request)
+    return TokenResponse(
+        access_token=token,
+        media_access_token=create_media_token(user.user_id),
+        media_token_expires_seconds=settings.media_token_expires_seconds,
+        must_change_password=user.must_change_password,
+    )
 
 
 @router.post("/login-form", response_model=TokenResponse, summary="OAuth2 password-form login for Swagger UI")
 async def login_form(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     totp_code: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     payload = LoginRequest(login=form_data.username, password=form_data.password, totp_code=totp_code)
-    return await login(payload=payload, session=session)
+    return await login(payload=payload, request=request, session=session)
 
 
 @router.post("/change-password")
@@ -137,6 +157,16 @@ async def me(
 ) -> UserOut:
     totp_enabled = await _get_totp_method(session, current_user.user_id) is not None
     return _user_out(current_user, totp_enabled=totp_enabled)
+
+
+@router.post("/media-token", response_model=MediaTokenResponse)
+async def refresh_media_token(
+    current_user: models.User = Depends(get_current_user),
+) -> MediaTokenResponse:
+    return MediaTokenResponse(
+        media_access_token=create_media_token(current_user.user_id),
+        media_token_expires_seconds=settings.media_token_expires_seconds,
+    )
 
 
 @router.patch("/profile", response_model=UserOut)
@@ -196,9 +226,17 @@ async def totp_setup(
 @router.post("/totp/activate", response_model=TotpStatusResponse)
 async def totp_activate(
     payload: TotpCodeRequest,
+    request: Request,
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> TotpStatusResponse:
+    check_rate_limit(
+        request,
+        f"totp-activate:{current_user.user_id}",
+        attempts=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+        detail="Too many TOTP attempts",
+    )
     result = await session.execute(
         select(models.UserMfaMethod).where(
             models.UserMfaMethod.user_id == current_user.user_id,

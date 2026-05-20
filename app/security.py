@@ -10,6 +10,7 @@ from app.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 api_key_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
+_FERNET_PREFIX = "fernet:"
 
 
 def hash_password(password: str) -> str:
@@ -20,14 +21,28 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(data: Dict[str, Any], expires_minutes: Optional[int] = None) -> str:
+def create_access_token(
+    data: Dict[str, Any],
+    expires_minutes: Optional[int] = None,
+    expires_seconds: Optional[int] = None,
+) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=expires_minutes if expires_minutes is not None else settings.jwt_expires_minutes
-    )
+    if expires_seconds is not None:
+        expire = datetime.now(timezone.utc) + timedelta(seconds=expires_seconds)
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(
+            minutes=expires_minutes if expires_minutes is not None else settings.jwt_expires_minutes
+        )
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return encoded_jwt
+
+
+def create_media_token(user_id: int) -> str:
+    return create_access_token(
+        {"sub": str(user_id), "token_use": "media"},
+        expires_seconds=settings.media_token_expires_seconds,
+    )
 
 
 def decode_token(token: str) -> Dict[str, Any]:
@@ -45,18 +60,25 @@ def _get_fernet() -> Fernet | None:
 
 
 def encrypt_secret(secret: str) -> str:
+    if not secret:
+        return secret
+    if secret.startswith(_FERNET_PREFIX):
+        return secret
     f = _get_fernet()
     if not f:
         return secret
-    return f.encrypt(secret.encode()).decode()
+    return _FERNET_PREFIX + f.encrypt(secret.encode()).decode()
 
 
 def decrypt_secret(secret: str) -> str:
+    if not secret:
+        return secret
     f = _get_fernet()
     if not f:
         return secret
+    token = secret[len(_FERNET_PREFIX):] if secret.startswith(_FERNET_PREFIX) else secret
     try:
-        return f.decrypt(secret.encode()).decode()
+        return f.decrypt(token.encode()).decode()
     except InvalidToken:
         return secret
 

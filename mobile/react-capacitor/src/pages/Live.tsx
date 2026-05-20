@@ -162,7 +162,7 @@ function getCameraPtzCapabilities(detail: CameraDetail | null): CameraPtzCapabil
 }
 
 const LivePage: React.FC = () => {
-  const { token, user } = useAuth();
+  const { token, mediaToken, user } = useAuth();
   const [cameras, setCameras] = useState<CameraSummary[]>([]);
   const [groups, setGroups] = useState<GroupOut[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
@@ -183,6 +183,7 @@ const LivePage: React.FC = () => {
   const activePtzMoveRef = useRef<string | null>(null);
   const uiSettings = loadUiSettings();
   const isAdmin = user?.role_id === 1;
+  const mediaQueryToken = mediaToken || "";
 
   const densityStyle =
     uiSettings.liveDensity === "focus"
@@ -695,7 +696,7 @@ const LivePage: React.FC = () => {
                     </div>
                   ) : (
                     <img
-                      src={`${API_URL}/cameras/${camera.camera_id}/stream?token=${encodeURIComponent(token)}&r=${streamRetryMap[camera.camera_id] || 0}`}
+                      src={`${API_URL}/cameras/${camera.camera_id}/stream?token=${encodeURIComponent(mediaQueryToken)}&r=${streamRetryMap[camera.camera_id] || 0}`}
                       alt={camera.name}
                       loading="lazy"
                       decoding="async"

@@ -4,8 +4,8 @@ import time
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,14 +27,18 @@ from app.security import decode_token
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
+
+if settings.allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,
+    allow_credentials="*" not in settings.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -46,6 +50,20 @@ if not audit_logger.handlers:
     handler.setFormatter(fmt)
     audit_logger.addHandler(handler)
 audit_logger.setLevel(logging.INFO)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path.startswith(("/auth", "/admin", "/api-keys", "/cameras", "/detections", "/recordings", "/processors", "/persons", "/reports")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 @app.middleware("http")
@@ -105,8 +123,6 @@ RECORDINGS_STATIC_DIR = Path("recordings")
 SNAPSHOTS_STATIC_DIR = Path("snapshots")
 RECORDINGS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_STATIC_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/recordings/static", StaticFiles(directory=str(RECORDINGS_STATIC_DIR)), name="recordings-static")
-app.mount("/snapshots", StaticFiles(directory=str(SNAPSHOTS_STATIC_DIR)), name="snapshots-static")
 
 FRONTEND_DIST_DIR = Path(os.getenv("FRONTEND_DIST_DIR", "frontend_dist")).resolve()
 FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
@@ -141,11 +157,21 @@ async def serve_frontend(request: Request, full_path: str):
 detector_manager = None
 
 
+def _validate_security_settings():
+    errors = settings.security_startup_errors()
+    if errors:
+        message = "Production security configuration is invalid: " + "; ".join(errors)
+        raise RuntimeError(message)
+
+
 async def _ensure_processor_api_key():
     """Auto-create processor API key from PROCESSOR_API_KEY env if not already in DB."""
     from app.security import hash_api_key, verify_api_key
     from app import models
     from sqlalchemy import select
+    if not settings.processor_api_key:
+        logging.getLogger(__name__).warning("PROCESSOR_API_KEY is not set; shared processor API key was not created")
+        return
     async with db.SessionLocal() as session:
         result = await session.execute(select(models.ApiKey).where(models.ApiKey.is_active.is_(True)))
         for key in result.scalars().all():
@@ -163,7 +189,7 @@ async def _ensure_processor_api_key():
 
 
 async def _seed_default_admin():
-    """Create default admin/admin user if no users exist."""
+    """Create initial admin only when explicitly configured or allowed for development."""
     from app import models
     from app.security import hash_password
     from sqlalchemy import select, func
@@ -178,15 +204,27 @@ async def _seed_default_admin():
         if count > 0:
             await session.commit()
             return
+        if settings.bootstrap_admin_password:
+            password = settings.bootstrap_admin_password
+            login = settings.bootstrap_admin_login.strip() or "admin"
+            must_change = False
+        elif settings.allow_default_admin:
+            password = "admin"
+            login = "admin"
+            must_change = True
+        else:
+            await session.commit()
+            logging.getLogger(__name__).warning("No users exist and default admin bootstrap is disabled")
+            return
         admin_user = models.User(
-            login="admin",
-            password_hash=hash_password("admin"),
+            login=login,
+            password_hash=hash_password(password),
             role_id=1,
-            must_change_password=True,
+            must_change_password=must_change,
         )
         session.add(admin_user)
         await session.commit()
-        logging.getLogger(__name__).info("Created default admin user (login=admin, password=admin)")
+        logging.getLogger(__name__).info("Created bootstrap admin user login=%s must_change_password=%s", login, must_change)
 
 
 async def _seed_event_types():
@@ -219,6 +257,7 @@ async def _seed_event_types():
 @app.on_event("startup")
 async def startup_tasks():
     global detector_manager
+    _validate_security_settings()
     await _seed_default_admin()
     await _seed_event_types()
     await _ensure_processor_api_key()
