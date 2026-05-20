@@ -272,31 +272,44 @@ class _NavigationSettings extends StatelessWidget {
                 'До пяти вкладок в шапке. Остальные разделы остаются в меню.',
           ),
           const SizedBox(height: 14),
-          Column(
-            children: [
-              for (var index = 0; index < selected.length; index++)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _NavOrderRow(
-                    index: index,
-                    option: selected[index],
-                    canMoveUp: index > 0,
-                    canMoveDown: index < selected.length - 1,
-                    canRemove: selected.length > 1,
-                    onMoveUp: () => settings.setPrimaryNav(
-                      _move(effectiveRoutes, index, index - 1),
-                    ),
-                    onMoveDown: () => settings.setPrimaryNav(
-                      _move(effectiveRoutes, index, index + 1),
-                    ),
-                    onRemove: () => settings.setPrimaryNav(
-                      effectiveRoutes
-                          .where((route) => route != selected[index].route)
-                          .toList(),
-                    ),
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            itemCount: selected.length,
+            proxyDecorator: (child, index, animation) {
+              return AnimatedBuilder(
+                animation: animation,
+                builder: (context, child) {
+                  final value = Curves.easeOutCubic.transform(animation.value);
+                  return Transform.scale(
+                    scale: 1 + value * 0.018,
+                    child: Opacity(opacity: 0.96, child: child),
+                  );
+                },
+                child: child,
+              );
+            },
+            onReorderItem: (oldIndex, newIndex) => settings.setPrimaryNav(
+              _move(effectiveRoutes, oldIndex, newIndex),
+            ),
+            itemBuilder: (context, index) {
+              final option = selected[index];
+              return Padding(
+                key: ValueKey(option.route),
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _NavOrderRow(
+                  index: index,
+                  option: option,
+                  canRemove: selected.length > 1,
+                  onRemove: () => settings.setPrimaryNav(
+                    effectiveRoutes
+                        .where((route) => route != option.route)
+                        .toList(),
                   ),
                 ),
-            ],
+              );
+            },
           ),
           const SizedBox(height: 8),
           Text(
@@ -357,21 +370,13 @@ class _NavOrderRow extends StatelessWidget {
   const _NavOrderRow({
     required this.index,
     required this.option,
-    required this.canMoveUp,
-    required this.canMoveDown,
     required this.canRemove,
-    required this.onMoveUp,
-    required this.onMoveDown,
     required this.onRemove,
   });
 
   final int index;
   final _NavOption option;
-  final bool canMoveUp;
-  final bool canMoveDown;
   final bool canRemove;
-  final VoidCallback onMoveUp;
-  final VoidCallback onMoveDown;
   final VoidCallback onRemove;
 
   @override
@@ -404,6 +409,15 @@ class _NavOrderRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
+          ReorderableDragStartListener(
+            index: index,
+            child: Icon(
+              Icons.drag_indicator_rounded,
+              color: colors.muted,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               option.label,
@@ -413,16 +427,6 @@ class _NavOrderRow extends StatelessWidget {
                 fontWeight: FontWeight.w800,
               ),
             ),
-          ),
-          IconButton(
-            tooltip: 'Выше',
-            onPressed: canMoveUp ? onMoveUp : null,
-            icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
-          ),
-          IconButton(
-            tooltip: 'Ниже',
-            onPressed: canMoveDown ? onMoveDown : null,
-            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
           ),
           IconButton(
             tooltip: 'Убрать',

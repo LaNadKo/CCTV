@@ -170,7 +170,9 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
               ],
             ),
           ),
-          if (filtered.isEmpty && !_loading)
+          if (_loading && _events.isEmpty)
+            const _LoadingRowsSliver(count: 5)
+          else if (filtered.isEmpty && !_loading)
             SliverToBoxAdapter(
               child: EmptyPanel(
                 message: _events.isEmpty
@@ -853,7 +855,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
           ),
           if (_error != null) ErrorPanel(message: _error!, onRetry: _load),
           const SizedBox(height: 14),
-          if (data == null && !_loading)
+          if (data == null && _loading)
+            const _LoadingReportPanel()
+          else if (data == null && !_loading)
             const EmptyPanel(message: 'Backend пока не вернул отчёт.')
           else if (data != null) ...[
             _MetricRail(
@@ -865,9 +869,81 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ),
                 MetricItem('Записей', formatCell(archive['total_files'])),
                 MetricItem(
+                  'Размер архива',
+                  formatCell(archive['total_bytes'], keyHint: 'bytes'),
+                ),
+                MetricItem(
+                  'Online камер',
+                  '${formatCell(_countOnline(listFrom(data['cameras'])))} / ${formatCell(listFrom(data['cameras']).length)}',
+                ),
+                MetricItem(
                   'Пользователей',
                   formatCell(security['total_users']),
                 ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 860;
+                final cards = [
+                  _ReportSummary(
+                    title: 'События и ревью',
+                    rows: {
+                      'Всего событий': events['total_events'],
+                      'Распознано': events['recognized_events'],
+                      'Неизвестные': events['unknown_events'],
+                      'Движение': events['motion_events'],
+                      'Персоны': events['person_events'],
+                      'Ожидают ревью': events['pending_reviews'],
+                      'Подтверждено': events['approved_reviews'],
+                      'Отклонено': events['rejected_reviews'],
+                      'Среднее время ревью, сек':
+                          events['average_review_seconds'],
+                    },
+                  ),
+                  _ReportSummary(
+                    title: 'Безопасность',
+                    rows: {
+                      'Пользователей': security['total_users'],
+                      'TOTP включён': security['totp_enabled_users'],
+                      'Покрытие TOTP, %': security['totp_coverage_percent'],
+                      'API ключей всего': security['api_keys_total'],
+                      'API ключей активно': security['api_keys_active'],
+                      'Успешные входы': security['successful_logins'],
+                      'Ошибки входа': security['failed_logins'],
+                    },
+                  ),
+                ];
+                if (compact) {
+                  return Column(
+                    children: [cards[0], const SizedBox(height: 14), cards[1]],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: cards[0]),
+                    const SizedBox(width: 14),
+                    Expanded(child: cards[1]),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 14),
+            ReportTable(
+              title: 'Группы камер',
+              rows: listFrom(data['groups']),
+              columns: const [
+                ModuleColumn('Группа', ['name'], width: 170),
+                ModuleColumn('Камер', ['camera_count'], width: 75),
+                ModuleColumn('Online', ['online_cameras'], width: 80),
+                ModuleColumn('Offline', ['offline_cameras'], width: 80),
+                ModuleColumn('События', ['event_count'], width: 90),
+                ModuleColumn('Распознано', ['recognized_count'], width: 105),
+                ModuleColumn('Ревью', ['pending_reviews'], width: 80),
+                ModuleColumn('Записей', ['recordings_count'], width: 85),
+                ModuleColumn('Размер', ['recordings_size_bytes'], width: 100),
               ],
             ),
             const SizedBox(height: 14),
@@ -877,10 +953,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
               columns: const [
                 ModuleColumn('Камера', ['name'], width: 180),
                 ModuleColumn('Группа', ['group_name'], width: 150),
+                ModuleColumn('Локация', ['location'], width: 150),
+                ModuleColumn('Тип', ['connection_kind'], width: 90),
+                ModuleColumn('Processor', ['assigned_processor'], width: 150),
                 ModuleColumn('Online', ['is_online'], width: 80),
+                ModuleColumn('PTZ', ['supports_ptz'], width: 70),
+                ModuleColumn('Детекция', ['detection_enabled'], width: 90),
                 ModuleColumn('События', ['event_count'], width: 95),
+                ModuleColumn('Распознано', ['recognized_count'], width: 105),
+                ModuleColumn('Неизв.', ['unknown_count'], width: 80),
+                ModuleColumn('Движение', ['motion_count'], width: 90),
                 ModuleColumn('Ревью', ['pending_reviews'], width: 90),
                 ModuleColumn('Записи', ['recordings_count'], width: 90),
+                ModuleColumn('Размер', ['recordings_size_bytes'], width: 100),
+                ModuleColumn('Последнее', ['last_event_ts'], width: 145),
               ],
             ),
             const SizedBox(height: 14),
@@ -890,26 +976,263 @@ class _ReportsScreenState extends State<ReportsScreen> {
               columns: const [
                 ModuleColumn('Узел', ['name'], width: 180),
                 ModuleColumn('Статус', ['status'], width: 100),
+                ModuleColumn('Online', ['is_online'], width: 80),
+                ModuleColumn('IP', ['ip_address'], width: 130),
+                ModuleColumn('Версия', ['version'], width: 120),
+                ModuleColumn('Heartbeat', ['last_heartbeat'], width: 145),
                 ModuleColumn('Камер', ['assigned_cameras'], width: 90),
+                ModuleColumn('События', ['event_count'], width: 90),
+                ModuleColumn('Записи', ['recordings_count'], width: 85),
                 ModuleColumn('CPU', ['cpu_percent'], width: 80),
                 ModuleColumn('RAM', ['ram_percent'], width: 80),
                 ModuleColumn('GPU', ['gpu_util_percent'], width: 80),
+                ModuleColumn('Uptime', ['uptime_seconds'], width: 85),
               ],
             ),
             const SizedBox(height: 14),
-            _ReportSummary(
-              title: 'Безопасность и действия',
-              rows: {
-                'Активные пользователи': userActions['active_users'],
-                'Успешные входы': security['successful_logins'],
-                'Ошибки входа': security['failed_logins'],
-                'TOTP пользователей': security['totp_enabled_users'],
-                'Активные API ключи': security['api_keys_active'],
+            ReportTable(
+              title: 'Архив по камерам',
+              rows: listFrom(archive['by_camera']),
+              columns: const [
+                ModuleColumn('Камера', [
+                  'camera_name',
+                  'camera_id',
+                ], width: 180),
+                ModuleColumn('Файлов', ['file_count'], width: 90),
+                ModuleColumn('Видео', ['video_files'], width: 85),
+                ModuleColumn('Снимки', ['snapshot_files'], width: 85),
+                ModuleColumn('Размер', ['total_bytes'], width: 120),
+                ModuleColumn('Последний файл', ['last_file_ts'], width: 150),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ReportTable(
+              title: 'Хранилища',
+              rows: listFrom(archive['by_storage']),
+              columns: const [
+                ModuleColumn('Хранилище', [
+                  'storage_name',
+                  'root_path',
+                ], width: 220),
+                ModuleColumn('Файлов', ['file_count'], width: 90),
+                ModuleColumn('Размер', ['total_bytes'], width: 120),
+                ModuleColumn('Видео', ['video_files'], width: 85),
+                ModuleColumn('Снимки', ['snapshot_files'], width: 85),
+              ],
+            ),
+            const SizedBox(height: 14),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 900;
+                final tables = [
+                  ReportTable(
+                    title: 'Действия пользователей',
+                    rows: listFrom(userActions['top_users']),
+                    columns: const [
+                      ModuleColumn('Пользователь', [
+                        'login',
+                        'user_name',
+                      ], width: 170),
+                      ModuleColumn('Действий', ['action_count'], width: 90),
+                      ModuleColumn('Последнее', ['last_action_at'], width: 145),
+                    ],
+                  ),
+                  ReportTable(
+                    title: 'Последние действия',
+                    rows: listFrom(userActions['recent_actions']),
+                    columns: const [
+                      ModuleColumn('Время', [
+                        'created_at',
+                        'event_ts',
+                      ], width: 145),
+                      ModuleColumn('Пользователь', [
+                        'login',
+                        'user_name',
+                      ], width: 160),
+                      ModuleColumn('Действие', ['action'], width: 170),
+                      ModuleColumn('Объект', ['entity', 'target'], width: 150),
+                    ],
+                  ),
+                ];
+                if (compact) {
+                  return Column(
+                    children: [
+                      tables[0],
+                      const SizedBox(height: 14),
+                      tables[1],
+                    ],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: tables[0]),
+                    const SizedBox(width: 14),
+                    Expanded(child: tables[1]),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 14),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 900;
+                final tables = [
+                  ReportTable(
+                    title: 'Типы событий',
+                    rows: listFrom(events['events_by_type']),
+                    columns: const [
+                      ModuleColumn('Тип', ['event_type', 'type'], width: 150),
+                      ModuleColumn('Количество', ['count'], width: 105),
+                    ],
+                  ),
+                  ReportTable(
+                    title: 'Ревьюеры',
+                    rows: listFrom(events['top_reviewers']),
+                    columns: const [
+                      ModuleColumn('Пользователь', [
+                        'login',
+                        'user_name',
+                      ], width: 170),
+                      ModuleColumn('Ревью', ['review_count'], width: 90),
+                      ModuleColumn('Среднее, сек', [
+                        'average_seconds',
+                      ], width: 110),
+                    ],
+                  ),
+                  ReportTable(
+                    title: 'Ошибки входа',
+                    rows: listFrom(security['recent_failures']),
+                    columns: const [
+                      ModuleColumn('Время', [
+                        'created_at',
+                        'event_ts',
+                      ], width: 145),
+                      ModuleColumn('Логин', ['login'], width: 150),
+                      ModuleColumn('IP', ['ip_address'], width: 130),
+                      ModuleColumn('Причина', ['reason'], width: 180),
+                    ],
+                  ),
+                ];
+                if (compact) {
+                  return Column(
+                    children: [
+                      tables[0],
+                      const SizedBox(height: 14),
+                      tables[1],
+                      const SizedBox(height: 14),
+                      tables[2],
+                    ],
+                  );
+                }
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: tables[0]),
+                    const SizedBox(width: 14),
+                    Expanded(child: tables[1]),
+                    const SizedBox(width: 14),
+                    Expanded(child: tables[2]),
+                  ],
+                );
               },
             ),
             const SizedBox(height: 24),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _LoadingReportPanel extends StatelessWidget {
+  const _LoadingReportPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Формирую отчёт',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontWeight: FontWeight.w900,
+              fontSize: 16,
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: 90,
+            child: Row(
+              children: [
+                for (var index = 0; index < 4; index++) ...[
+                  Expanded(
+                    child: _ReportPulseBlock(
+                      delay: Duration(milliseconds: index * 90),
+                    ),
+                  ),
+                  if (index < 3) const SizedBox(width: 12),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReportPulseBlock extends StatefulWidget {
+  const _ReportPulseBlock({required this.delay});
+
+  final Duration delay;
+
+  @override
+  State<_ReportPulseBlock> createState() => _ReportPulseBlockState();
+}
+
+class _ReportPulseBlockState extends State<_ReportPulseBlock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _opacity = Tween<double>(
+      begin: 0.36,
+      end: 0.88,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    Future<void>.delayed(widget.delay, () {
+      if (mounted) _controller.repeat(reverse: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return FadeTransition(
+      opacity: _opacity,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          color: colors.surfaceMuted,
+          border: Border.all(color: colors.border),
+        ),
       ),
     );
   }
@@ -1063,7 +1386,9 @@ class _DataModuleScreenState extends State<DataModuleScreen> {
               ],
             ),
           ),
-          if (filtered.isEmpty && !_loading)
+          if (_loading && _items.isEmpty)
+            const _LoadingRowsSliver(count: 7)
+          else if (filtered.isEmpty && !_loading)
             SliverToBoxAdapter(
               child: EmptyPanel(
                 message: _items.isEmpty
@@ -1110,72 +1435,204 @@ class _ModuleRowTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final visibleCommands = commands.where((command) => command.visible(row));
-    return GlassPanel(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      radius: 18,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Wrap(
-              spacing: 14,
-              runSpacing: 10,
-              children: [
-                for (final column in columns)
-                  SizedBox(
-                    width: column.width.clamp(82, 260).toDouble(),
+    final visibleCommands = commands
+        .where((command) => command.visible(row))
+        .toList(growable: false);
+    return RepaintBoundary(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          color: colors.surfaceMuted,
+          border: Border.all(color: colors.border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: 14,
+                runSpacing: 10,
+                children: [
+                  for (final column in columns)
+                    SizedBox(
+                      width: column.width.clamp(82, 260).toDouble(),
+                      child: _ModuleCell(column: column, row: row),
+                    ),
+                ],
+              ),
+            ),
+            if (visibleCommands.isNotEmpty) ...[
+              const SizedBox(width: 10),
+              Wrap(
+                spacing: 2,
+                children: [
+                  for (final command in visibleCommands)
+                    IconButton(
+                      tooltip: command.tooltip,
+                      onPressed: () => onCommand(command),
+                      icon: Icon(
+                        command.icon,
+                        size: 19,
+                        color: command.color(context),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModuleCell extends StatelessWidget {
+  const _ModuleCell({required this.column, required this.row});
+
+  final ModuleColumn column;
+  final RowMap row;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          column.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: colors.muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          column.read(row),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: colors.textStrong,
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            height: 1.25,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LoadingRowsSliver extends StatefulWidget {
+  const _LoadingRowsSliver({required this.count});
+
+  final int count;
+
+  @override
+  State<_LoadingRowsSliver> createState() => _LoadingRowsSliverState();
+}
+
+class _LoadingRowsSliverState extends State<_LoadingRowsSliver>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 820),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(
+      begin: 0.46,
+      end: 0.9,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SliverList.builder(
+      itemCount: widget.count,
+      itemBuilder: (context, index) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: FadeTransition(
+            opacity: _opacity,
+            child: Container(
+              height: index == 0 ? 96 : 74,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                color: colors.surfaceMuted,
+                border: Border.all(color: colors.border),
+              ),
+              child: Row(
+                children: [
+                  _SkeletonBlock(width: 96, height: 42, color: colors.border),
+                  const SizedBox(width: 14),
+                  Expanded(
                     child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          column.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: colors.muted,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        _SkeletonBlock(
+                          width: double.infinity,
+                          height: 12,
+                          color: colors.border,
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          column.read(row),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: colors.textStrong,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            height: 1.25,
+                        const SizedBox(height: 10),
+                        FractionallySizedBox(
+                          widthFactor: index.isEven ? 0.72 : 0.48,
+                          child: _SkeletonBlock(
+                            width: double.infinity,
+                            height: 12,
+                            color: colors.border,
                           ),
                         ),
                       ],
                     ),
                   ),
-              ],
+                ],
+              ),
             ),
           ),
-          if (commands.isNotEmpty) ...[
-            const SizedBox(width: 10),
-            Wrap(
-              spacing: 2,
-              children: [
-                for (final command in visibleCommands)
-                  IconButton(
-                    tooltip: command.tooltip,
-                    onPressed: () => onCommand(command),
-                    icon: Icon(
-                      command.icon,
-                      size: 19,
-                      color: command.color(context),
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ],
+        );
+      },
+    );
+  }
+}
+
+class _SkeletonBlock extends StatelessWidget {
+  const _SkeletonBlock({
+    required this.width,
+    required this.height,
+    required this.color,
+  });
+
+  final double width;
+  final double height;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: color.withValues(alpha: 0.42),
       ),
     );
   }
@@ -1488,45 +1945,69 @@ class ReportTable extends StatelessWidget {
           else
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: DataTable(
-                headingRowHeight: 34,
-                dataRowMinHeight: 38,
-                dataRowMaxHeight: 48,
-                horizontalMargin: 8,
-                columnSpacing: 12,
-                headingTextStyle: TextStyle(
-                  color: colors.muted,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                ),
-                dataTextStyle: TextStyle(color: colors.text, fontSize: 13),
-                columns: [
-                  for (final column in columns)
-                    DataColumn(
-                      label: SizedBox(
-                        width: column.width,
-                        child: Text(column.label),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ReportRow(columns: columns, row: const {}, isHeader: true),
+                  for (final row in rows.take(24))
+                    _ReportRow(columns: columns, row: row),
+                  if (rows.length > 24)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, left: 8),
+                      child: Text(
+                        'Показано 24 из ${rows.length}. Используйте профильные разделы для полного списка.',
+                        style: TextStyle(color: colors.muted, fontSize: 12),
                       ),
                     ),
                 ],
-                rows: [
-                  for (final row in rows.take(20))
-                    DataRow(
-                      cells: [
-                        for (final column in columns)
-                          DataCell(
-                            SizedBox(
-                              width: column.width,
-                              child: Text(
-                                column.read(row),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReportRow extends StatelessWidget {
+  const _ReportRow({
+    required this.columns,
+    required this.row,
+    this.isHeader = false,
+  });
+
+  final List<ModuleColumn> columns;
+  final RowMap row;
+  final bool isHeader;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      margin: EdgeInsets.only(bottom: isHeader ? 6 : 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: isHeader ? colors.surfaceMuted : Colors.transparent,
+        border: isHeader ? Border.all(color: colors.border) : null,
+      ),
+      child: Row(
+        children: [
+          for (final column in columns)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: SizedBox(
+                width: column.width,
+                child: Text(
+                  isHeader ? column.label : column.read(row),
+                  maxLines: isHeader ? 1 : 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: isHeader ? colors.muted : colors.text,
+                    fontSize: isHeader ? 12 : 13,
+                    fontWeight: isHeader ? FontWeight.w900 : FontWeight.w600,
+                    height: 1.25,
+                  ),
+                ),
               ),
             ),
         ],
@@ -1783,6 +2264,10 @@ Map<String, dynamic> mapFrom(Object? value) {
 List<RowMap> listFrom(Object? value) {
   if (value is! List) return const [];
   return value.map(mapFrom).toList();
+}
+
+int _countOnline(List<RowMap> rows) {
+  return rows.where((row) => rowBool(row, 'is_online')).length;
 }
 
 bool alwaysVisible(RowMap row) => true;

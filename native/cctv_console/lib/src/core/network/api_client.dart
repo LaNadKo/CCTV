@@ -18,6 +18,8 @@ class ApiClient {
   ApiClient({required this.baseUrlProvider, http.Client? client})
     : _client = client ?? http.Client();
 
+  static const _requestTimeout = Duration(seconds: 20);
+
   final String Function() baseUrlProvider;
   final http.Client _client;
 
@@ -142,24 +144,32 @@ class ApiClient {
       final requestUri = uri(path, query);
       switch (method) {
         case 'GET':
-          response = await _client.get(requestUri, headers: headers);
+          response = await _client
+              .get(requestUri, headers: headers)
+              .timeout(_requestTimeout);
           break;
         case 'POST':
-          response = await _client.post(
-            requestUri,
-            headers: headers,
-            body: body == null ? null : jsonEncode(body),
-          );
+          response = await _client
+              .post(
+                requestUri,
+                headers: headers,
+                body: body == null ? null : jsonEncode(body),
+              )
+              .timeout(_requestTimeout);
           break;
         case 'PATCH':
-          response = await _client.patch(
-            requestUri,
-            headers: headers,
-            body: body == null ? null : jsonEncode(body),
-          );
+          response = await _client
+              .patch(
+                requestUri,
+                headers: headers,
+                body: body == null ? null : jsonEncode(body),
+              )
+              .timeout(_requestTimeout);
           break;
         case 'DELETE':
-          response = await _client.delete(requestUri, headers: headers);
+          response = await _client
+              .delete(requestUri, headers: headers)
+              .timeout(_requestTimeout);
           break;
         default:
           throw ApiException('Unsupported HTTP method: $method');
@@ -167,7 +177,7 @@ class ApiClient {
     } catch (error) {
       if (error is ApiException) rethrow;
       throw ApiException(
-        'Не удалось связаться с backend (${baseUrlProvider()}): $error',
+        'Не удалось связаться с backend (${baseUrlProvider()})',
       );
     }
 
@@ -317,10 +327,29 @@ class ApiClient {
     try {
       final json = jsonDecode(text);
       final detail = json is Map<String, dynamic> ? json['detail'] : null;
-      if (detail is String && detail.trim().isNotEmpty) return detail;
+      if (detail is String && detail.trim().isNotEmpty) {
+        return _safeErrorText(detail, response.statusCode);
+      }
     } catch (_) {
-      return text;
+      return _safeErrorText(text, response.statusCode);
     }
-    return text;
+    return _safeErrorText(text, response.statusCode);
+  }
+
+  static String _safeErrorText(String text, int statusCode) {
+    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) return 'Backend вернул ошибку HTTP $statusCode';
+    final lower = normalized.toLowerCase();
+    final looksInternal =
+        normalized.length > 320 ||
+        lower.contains('<html') ||
+        lower.contains('traceback') ||
+        lower.contains('stack trace') ||
+        lower.contains('exception at') ||
+        lower.contains('file "') ||
+        lower.contains('sqlalchemy') ||
+        lower.contains('postgres');
+    if (looksInternal) return 'Backend вернул ошибку HTTP $statusCode';
+    return normalized;
   }
 }
