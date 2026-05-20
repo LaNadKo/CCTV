@@ -4,8 +4,11 @@ x-processor-common: &processor-common
     dockerfile: processor/Dockerfile
   environment: &processor-env
     BACKEND_URL: "http://backend:8000"
-    API_KEY: "${PROCESSOR_API_KEY:?Set PROCESSOR_API_KEY in .env}"
+    API_KEY: "${PROCESSOR_API_KEY:-}"
+    PROCESSOR_ID: "${PROCESSOR_ID:-}"
+    PROCESSOR_CONNECT_CODE: "${PROCESSOR_CONNECT_CODE:-}"
     PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-1}"
+    PROCESSOR_RUNTIME_DIR: "/app/processor-runtime"
     MAX_WORKERS: "${PROCESSOR_MAX_WORKERS:-4}"
   depends_on:
     backend:
@@ -14,6 +17,7 @@ x-processor-common: &processor-common
   volumes:
     - recordings:/app/media/recordings
     - snapshots:/app/media/snapshots
+    - processor_runtime:/app/processor-runtime
 
 services:
   db:
@@ -155,3 +159,4 @@ volumes:
   pgdata:
   recordings:
   snapshots:
+  processor_runtime:

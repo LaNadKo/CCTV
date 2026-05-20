@@ -64,15 +64,24 @@ def require_scope(scope: str):
     return _dep
 
 
+async def _require_service_scope(
+    session: AsyncSession,
+    x_api_key: str,
+    scope: str,
+) -> tuple[int, list[str]]:
+    api_key_id, scopes = await get_service_identity(x_api_key, session)
+    if scope not in scopes and "*" not in scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Missing scope: {scope}")
+    return api_key_id, scopes
+
+
 async def _authorize_processor_key(
     session: AsyncSession,
     processor_id: int,
     x_api_key: str,
     scope: str,
 ) -> tuple[models.Processor, list[str]]:
-    api_key_id, scopes = await get_service_identity(x_api_key, session)
-    if scope not in scopes and "*" not in scopes:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Missing scope: {scope}")
+    api_key_id, scopes = await _require_service_scope(session, x_api_key, scope)
     proc = await session.get(models.Processor, processor_id)
     if not proc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
@@ -133,6 +142,68 @@ def _store_snapshot(event_id: int, snapshot_bytes: bytes) -> str:
     return str(path)
 
 
+def _safe_node_uid(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized[:128]
+
+
+async def _find_processor_for_node(
+    session: AsyncSession,
+    *,
+    node_uid: str | None,
+    api_key_id: int | None = None,
+    name: str | None = None,
+    hostname: str | None = None,
+) -> models.Processor | None:
+    if node_uid:
+        result = await session.execute(
+            select(models.Processor).where(models.Processor.node_uid == node_uid)
+        )
+        found = result.scalar_one_or_none()
+        if found is not None:
+            return found
+    if api_key_id is not None and name and hostname:
+        result = await session.execute(
+            select(models.Processor).where(
+                models.Processor.api_key_id == api_key_id,
+                models.Processor.name == name,
+                models.Processor.hostname == hostname,
+            )
+        )
+        return result.scalar_one_or_none()
+    return None
+
+
+def _apply_processor_metadata(
+    proc: models.Processor,
+    *,
+    name: str,
+    node_uid: str | None,
+    api_key_id: int | None,
+    status_value: str,
+    hostname: str | None,
+    ip_address: str | None,
+    os_info: str | None,
+    version: str | None,
+    capabilities: dict | None,
+) -> None:
+    proc.name = name
+    proc.node_uid = node_uid or proc.node_uid
+    proc.api_key_id = api_key_id if api_key_id is not None else proc.api_key_id
+    proc.hostname = hostname or proc.hostname
+    proc.ip_address = ip_address or proc.ip_address
+    proc.os_info = os_info or proc.os_info
+    proc.version = version or proc.version
+    proc.status = status_value
+    proc.last_heartbeat = datetime.utcnow()
+    if capabilities is not None:
+        proc.capabilities = json.dumps(capabilities)
+
+
 # ── Connection code flow (universal: LAN + WAN) ──
 
 @router.post("/generate-code", response_model=GenerateCodeOut)
@@ -188,19 +259,28 @@ async def connect_processor(
     # Detect IP from request
     client_ip = payload.ip_address or (request.client.host if request.client else None)
 
-    # Create processor
-    proc = models.Processor(
+    node_uid = _safe_node_uid(payload.node_uid)
+    proc = await _find_processor_for_node(
+        session,
+        node_uid=node_uid,
         name=payload.name,
+        hostname=payload.hostname,
+    )
+    if proc is None:
+        proc = models.Processor(name=payload.name, status="online")
+        session.add(proc)
+    _apply_processor_metadata(
+        proc,
+        name=payload.name,
+        node_uid=node_uid,
         api_key_id=api_key.api_key_id,
+        status_value="online",
         hostname=payload.hostname,
         ip_address=client_ip,
         os_info=payload.os_info,
         version=payload.version,
-        status="online",
-        capabilities=json.dumps(payload.capabilities) if payload.capabilities else None,
-        last_heartbeat=datetime.utcnow(),
+        capabilities=payload.capabilities,
     )
-    session.add(proc)
     await session.flush()
 
     # Mark code as used
@@ -222,14 +302,32 @@ async def connect_processor(
 async def register_processor(
     payload: ProcessorRegister,
     session: AsyncSession = Depends(get_session),
-    _scopes=Depends(require_scope("processor:register")),
+    x_api_key: str = Header(...),
 ):
-    proc = models.Processor(
+    api_key_id, _scopes = await _require_service_scope(session, x_api_key, "processor:register")
+    node_uid = _safe_node_uid(payload.node_uid)
+    proc = await _find_processor_for_node(
+        session,
+        node_uid=node_uid,
+        api_key_id=api_key_id,
         name=payload.name,
-        status="registered",
-        capabilities=json.dumps(payload.capabilities) if payload.capabilities else None,
+        hostname=payload.hostname,
     )
-    session.add(proc)
+    if proc is None:
+        proc = models.Processor(name=payload.name, status="registered")
+        session.add(proc)
+    _apply_processor_metadata(
+        proc,
+        name=payload.name,
+        node_uid=node_uid,
+        api_key_id=api_key_id,
+        status_value="registered",
+        hostname=payload.hostname,
+        ip_address=payload.ip_address,
+        os_info=payload.os_info,
+        version=payload.version,
+        capabilities=payload.capabilities,
+    )
     await session.commit()
     await session.refresh(proc)
     return ProcessorRegisterOut(processor_id=proc.processor_id, name=proc.name, status=proc.status)
@@ -573,6 +671,7 @@ async def list_processors(
         out.append(ProcessorOut(
             processor_id=p.processor_id,
             name=p.name,
+            node_uid=p.node_uid,
             status=p.status,
             last_heartbeat=p.last_heartbeat,
             capabilities=caps,

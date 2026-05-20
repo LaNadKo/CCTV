@@ -11,10 +11,15 @@ services:
       dockerfile: processor/Dockerfile
     environment:
       BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
-      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      API_KEY: ${API_KEY:-}
+      PROCESSOR_ID: ${PROCESSOR_ID:-}
+      PROCESSOR_CONNECT_CODE: ${PROCESSOR_CONNECT_CODE:-}
       PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-1}
+      PROCESSOR_RUNTIME_DIR: /app/processor-runtime
       PROCESSOR_ACCEL: ${PROCESSOR_ACCEL:-auto}
       MAX_WORKERS: ${MAX_WORKERS:-4}
+    volumes:
+      - processor_runtime:/app/processor-runtime
     restart: always
     profiles:
       - cpu
@@ -25,10 +30,15 @@ services:
       dockerfile: processor/Dockerfile.nvidia
     environment:
       BACKEND_URL: ${BACKEND_URL:?Set BACKEND_URL in .env (e.g. https://cctv.example.com)}
-      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      API_KEY: ${API_KEY:-}
+      PROCESSOR_ID: ${PROCESSOR_ID:-}
+      PROCESSOR_CONNECT_CODE: ${PROCESSOR_CONNECT_CODE:-}
       PROCESSOR_NAME: ${PROCESSOR_NAME:-processor-nvidia-1}
+      PROCESSOR_RUNTIME_DIR: /app/processor-runtime
       PROCESSOR_ACCEL: nvidia
       MAX_WORKERS: ${MAX_WORKERS:-4}
+    volumes:
+      - processor_runtime:/app/processor-runtime
     restart: always
     deploy:
       resources:
@@ -39,3 +49,6 @@ services:
               capabilities: [gpu]
     profiles:
       - nvidia
+
+volumes:
+  processor_runtime:

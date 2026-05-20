@@ -2,7 +2,7 @@
 import secrets
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", validation_alias="API_KEY")
     processor_id: int | None = Field(default=None, validation_alias="PROCESSOR_ID")
     processor_name: str = Field(default="processor-1", validation_alias="PROCESSOR_NAME")
+    processor_node_uid: str | None = Field(default=None, validation_alias="PROCESSOR_NODE_UID")
     advertised_ip: str | None = Field(default=None, validation_alias="PROCESSOR_ADVERTISED_IP")
     poll_interval: int = Field(default=3, validation_alias="POLL_INTERVAL")
     heartbeat_interval: int = Field(default=30, validation_alias="HEARTBEAT_INTERVAL")
@@ -31,6 +32,15 @@ class Settings(BaseSettings):
     recording_segment_seconds: int = Field(default=300, validation_alias="RECORDING_SEGMENT_SECONDS")
     media_port: int = Field(default=8777, validation_alias="MEDIA_PORT")
     media_token: str = Field(default_factory=lambda: secrets.token_urlsafe(24), validation_alias="MEDIA_TOKEN")
+
+    @field_validator("processor_id", mode="before")
+    @classmethod
+    def _empty_processor_id_is_none(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
