@@ -10,6 +10,7 @@ x-processor-common: &processor-common
     PROCESSOR_NAME: "${PROCESSOR_NAME:-processor-1}"
     PROCESSOR_RUNTIME_DIR: "/app/processor-runtime"
     MAX_WORKERS: "${PROCESSOR_MAX_WORKERS:-4}"
+    RECORDING_SEGMENT_SECONDS: "${RECORDING_SEGMENT_SECONDS:-60}"
   depends_on:
     backend:
       condition: service_healthy

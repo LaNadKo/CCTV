@@ -193,7 +193,7 @@ const RecordingsPage: React.FC = () => {
       const dateFrom = `${selectedDate}T00:00:00`;
       const dateTo = `${selectedDate}T23:59:59`;
       const [recordingItems, timelineItems] = await Promise.all([
-        listRecordings(token, activeCameraId ?? undefined, dateFrom, dateTo, 500),
+        listRecordings(token, activeCameraId ?? undefined, dateFrom, dateTo, 2000),
         getTimeline(token, activeCameraId ?? undefined, dateFrom, dateTo),
       ]);
 

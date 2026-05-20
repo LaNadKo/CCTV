@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     antispoof_context_motion_threshold: float = Field(default=4.2, validation_alias="ANTISPOOF_CONTEXT_MOTION_THRESHOLD")
     antispoof_active_ratio: float = Field(default=0.03, validation_alias="ANTISPOOF_ACTIVE_RATIO")
     unknown_face_requires_motion_seconds: float = Field(default=2.0, validation_alias="UNKNOWN_FACE_REQUIRES_MOTION_SECONDS")
-    recording_segment_seconds: int = Field(default=300, validation_alias="RECORDING_SEGMENT_SECONDS")
+    recording_segment_seconds: int = Field(default=60, validation_alias="RECORDING_SEGMENT_SECONDS")
     media_port: int = Field(default=8777, validation_alias="MEDIA_PORT")
     media_token: str = Field(default_factory=lambda: secrets.token_urlsafe(24), validation_alias="MEDIA_TOKEN")
 
@@ -41,6 +41,15 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("recording_segment_seconds", mode="before")
+    @classmethod
+    def _recording_segment_is_minute_max(cls, value):
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            seconds = 60
+        return min(60, max(10, seconds))
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
