@@ -93,7 +93,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ],
                   )
                 : Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(flex: 6, child: _HeroPanel(colors: colors)),
                       const SizedBox(width: 20),
