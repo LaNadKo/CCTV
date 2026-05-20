@@ -169,55 +169,55 @@ class AppTheme {
         .apply(bodyColor: colors.text, displayColor: colors.textStrong)
         .copyWith(
           displaySmall: GoogleFonts.spaceGrotesk(
-            fontSize: 34,
+            fontSize: 30,
             height: 1.04,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
             letterSpacing: -1.2,
           ),
           headlineLarge: GoogleFonts.spaceGrotesk(
-            fontSize: 30,
+            fontSize: 26,
             height: 1.06,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
             letterSpacing: -0.8,
           ),
           headlineMedium: GoogleFonts.spaceGrotesk(
-            fontSize: 24,
+            fontSize: 22,
             height: 1.12,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
           ),
           headlineSmall: GoogleFonts.spaceGrotesk(
-            fontSize: 21,
+            fontSize: 19,
             height: 1.18,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
           ),
           titleLarge: GoogleFonts.spaceGrotesk(
-            fontSize: 20,
+            fontSize: 18,
             height: 1.2,
             fontWeight: FontWeight.w700,
             color: colors.textStrong,
           ),
           titleMedium: GoogleFonts.spaceGrotesk(
-            fontSize: 15,
+            fontSize: 14,
             height: 1.45,
             fontWeight: FontWeight.w500,
             color: colors.text,
           ),
           bodyLarge: GoogleFonts.spaceGrotesk(
-            fontSize: 15,
+            fontSize: 14,
             height: 1.45,
             color: colors.text,
           ),
           bodyMedium: GoogleFonts.spaceGrotesk(
-            fontSize: 14,
+            fontSize: 13,
             height: 1.45,
             color: colors.text,
           ),
           labelLarge: GoogleFonts.spaceGrotesk(
-            fontSize: 14,
+            fontSize: 13,
             fontWeight: FontWeight.w700,
           ),
         );
