@@ -24,6 +24,14 @@ class CctvConsoleApp extends StatelessWidget {
         settings: settings,
         brightness: Brightness.dark,
       ),
+      builder: (context, child) {
+        final media = MediaQuery.of(context);
+        final safeScale = media.textScaler.scale(1).clamp(0.9, 1.08).toDouble();
+        return MediaQuery(
+          data: media.copyWith(textScaler: TextScaler.linear(safeScale)),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: AnimatedSwitcher(
         duration: const Duration(milliseconds: 220),
         child: auth.isAuthenticated ? const AppShell() : const LoginScreen(),

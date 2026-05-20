@@ -43,7 +43,7 @@ services:
   backend:
     build: .
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     env_file: .env
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-cctv}:${POSTGRES_PASSWORD:-cctv}@db:5432/${POSTGRES_DB:-cctv}"
@@ -123,7 +123,7 @@ services:
     ports:
       - "80:80"
     environment:
-      VITE_API_URL: "http://${DOMAIN:-localhost}:8000"
+      VITE_API_URL: "http://${DOMAIN:-localhost}:${BACKEND_PORT:-8000}"
     depends_on:
       - backend
     profiles:
