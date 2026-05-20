@@ -1,6 +1,15 @@
 .git
 .env
 .claude/
+calibration_datasets/
+desktop/
+external/
+firmware/
+mobile/
+native/
+output/
+recordings_cache/
+tmp/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
@@ -9,6 +18,8 @@ processor/
 !processor/**
 processor/build/
 processor/dist/
+processor/installer_output/
+processor/.models/
 processor/.venv/
 processor/.pytest_cache/
 processor/**/__pycache__/

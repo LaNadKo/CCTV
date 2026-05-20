@@ -20,6 +20,31 @@ class ProcessorRegisterOut(BaseModel):
     status: str
 
 
+class ProcessorCommandCreate(BaseModel):
+    command_type: str
+    payload: dict | None = None
+
+
+class ProcessorCommandResult(BaseModel):
+    status: str
+    result: dict | str | None = None
+    error_message: str | None = None
+
+
+class ProcessorCommandOut(BaseModel):
+    command_id: int
+    processor_id: int
+    command_type: str
+    payload: dict | None = None
+    status: str
+    result: dict | str | None = None
+    error_message: str | None = None
+    requested_by_user_id: int | None = None
+    created_at: datetime
+    claimed_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 # ── Connection code flow ──
 
 class GenerateCodeOut(BaseModel):
@@ -174,6 +199,9 @@ class ProcessorOut(BaseModel):
     created_at: datetime
     camera_count: int = 0
     assigned_cameras: list[AssignedCameraInfo] = []
+    pending_commands: int = 0
+    running_commands: int = 0
+    last_command: ProcessorCommandOut | None = None
 
 
 class AssignCamerasIn(BaseModel):

@@ -502,6 +502,31 @@ class ProcessorCameraAssignment(Base):
     camera: Mapped[Camera] = relationship()
 
 
+class ProcessorCommand(Base):
+    __tablename__ = "processor_commands"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="processor_commands_status_chk",
+        ),
+    )
+
+    command_id: Mapped[int] = mapped_column(primary_key=True)
+    processor_id: Mapped[int] = mapped_column(ForeignKey("processors.processor_id", ondelete="CASCADE"), nullable=False)
+    command_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")
+    result: Mapped[Optional[str]] = mapped_column(Text)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    requested_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.user_id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
+
+    processor: Mapped[Processor] = relationship()
+    requested_by: Mapped[Optional[User]] = relationship()
+
+
 # ── Phase 2: Camera Presets ──
 
 class CameraPreset(Base):
@@ -552,6 +577,8 @@ class ApiKey(Base):
 
 Index("processors_status_idx", Processor.status)
 Index("processors_node_uid_idx", Processor.node_uid, unique=True)
+Index("processor_commands_processor_status_idx", ProcessorCommand.processor_id, ProcessorCommand.status)
+Index("processor_commands_created_idx", ProcessorCommand.created_at)
 Index("processor_assignments_camera_idx", ProcessorCameraAssignment.camera_id)
 Index("camera_presets_camera_idx", CameraPreset.camera_id)
 Index("camera_roi_zones_camera_idx", CameraRoiZone.camera_id)
