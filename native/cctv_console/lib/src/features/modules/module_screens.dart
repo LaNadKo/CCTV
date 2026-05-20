@@ -33,65 +33,389 @@ class RecordingsScreen extends StatelessWidget {
   }
 }
 
-class ReviewsScreen extends StatelessWidget {
+class ReviewsScreen extends StatefulWidget {
   const ReviewsScreen({super.key});
 
   @override
+  State<ReviewsScreen> createState() => _ReviewsScreenState();
+}
+
+class _ReviewsScreenState extends State<ReviewsScreen> {
+  final _searchController = TextEditingController();
+  bool _loading = false;
+  String? _error;
+  List<RowMap> _events = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() => setState(() {}));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final token = context.read<AuthController>().accessToken;
+    final api = context.read<ApiClient>();
+    if (token == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final events = await api.getJsonList('/detections/pending', token: token);
+      if (!mounted) return;
+      setState(() => _events = events);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<RowMap> get _filtered {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) return _events;
+    return _events.where((row) {
+      return row.values.any((value) => '$value'.toLowerCase().contains(query));
+    }).toList();
+  }
+
+  Future<void> _review(RowMap row, String status) async {
+    final token = context.read<AuthController>().accessToken;
+    final api = context.read<ApiClient>();
+    final id = rowInt(row, 'event_id');
+    if (token == null || id == null) return;
+    try {
+      await api.reviewEvent(token, id, status);
+      await _load();
+    } catch (error) {
+      if (!mounted) return;
+      showErrorSnack(context, '$error');
+    }
+  }
+
+  Future<void> _rejectAll() async {
+    final token = context.read<AuthController>().accessToken;
+    final api = context.read<ApiClient>();
+    if (token == null) return;
+    final ok = await confirmAction(
+      context,
+      title: 'Отклонить все события?',
+      message: 'Все ожидающие ревью события получат статус rejected.',
+    );
+    if (!ok) return;
+    try {
+      await api.rejectAllPendingReviews(token);
+      await _load();
+    } catch (error) {
+      if (!mounted) return;
+      showErrorSnack(context, '$error');
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return DataModuleScreen(
-      title: 'Ревью',
-      subtitle: 'Проверка неизвестных и спорных событий распознавания.',
-      icon: Icons.fact_check_rounded,
-      loadItems: (api, token) =>
-          api.getJsonList('/detections/pending', token: token),
-      columns: const [
-        ModuleColumn('ID', ['event_id'], width: 70),
-        ModuleColumn('Камера', ['camera_name', 'camera_id'], width: 150),
-        ModuleColumn('Тип', ['event_type', 'event_type_id'], width: 110),
-        ModuleColumn('Персона', ['person_label', 'person_id'], width: 170),
-        ModuleColumn('Уверенность', ['confidence'], width: 115),
-        ModuleColumn('Время', ['event_ts'], width: 160),
-      ],
-      commands: [
-        ModuleCommand(
-          label: 'Отклонить всё',
-          icon: Icons.clear_all_rounded,
-          onRun: (context, api, token, reload) async {
-            final ok = await confirmAction(
-              context,
-              title: 'Отклонить все события?',
-              message: 'Все ожидающие ревью события получат статус rejected.',
+    final filtered = _filtered;
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                ModuleHeader(
+                  title: 'Ревью',
+                  subtitle:
+                      'Проверка неизвестных и спорных событий распознавания.',
+                  icon: Icons.fact_check_rounded,
+                  trailing: Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _events.isEmpty ? null : _rejectAll,
+                        icon: const Icon(Icons.clear_all_rounded, size: 18),
+                        label: const Text('Отклонить всё'),
+                      ),
+                      RefreshButton(loading: _loading, onPressed: _load),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    labelText: 'Поиск по событиям',
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: _searchController.clear,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (_error != null)
+                  ErrorPanel(message: _error!, onRetry: _load),
+                if (_error != null) const SizedBox(height: 14),
+              ],
+            ),
+          ),
+          if (filtered.isEmpty && !_loading)
+            SliverToBoxAdapter(
+              child: EmptyPanel(
+                message: _events.isEmpty
+                    ? 'Очередь ревью пуста.'
+                    : 'Ничего не найдено.',
+              ),
+            )
+          else
+            SliverList.builder(
+              itemCount: filtered.length,
+              itemBuilder: (context, index) {
+                final row = filtered[index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: _ReviewEventCard(
+                    row: row,
+                    onApprove: () => _review(row, 'approved'),
+                    onReject: () => _review(row, 'rejected'),
+                  ),
+                );
+              },
+            ),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReviewEventCard extends StatelessWidget {
+  const _ReviewEventCard({
+    required this.row,
+    required this.onApprove,
+    required this.onReject,
+  });
+
+  final RowMap row;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final api = context.read<ApiClient>();
+    final token = context.read<AuthController>().accessToken;
+    final snapshotUrl = _snapshotUrl(api, row);
+    final details = [
+      _Detail('ID', formatCell(row['event_id'])),
+      _Detail('Камера', formatCell(row['camera_name'] ?? row['camera_id'])),
+      _Detail('Локация', formatCell(row['camera_location'])),
+      _Detail('Время', formatCell(row['event_ts'], keyHint: 'event_ts')),
+      _Detail('Уверенность', formatCell(row['confidence'])),
+    ];
+
+    return GlassPanel(
+      padding: const EdgeInsets.all(14),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 760;
+          final image = _SnapshotPreview(url: snapshotUrl, token: token);
+          final info = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Событие #${formatCell(row['event_id'])}',
+                style: TextStyle(
+                  color: colors.textStrong,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  for (final detail in details)
+                    _DetailPill(label: detail.label, value: detail.value),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: onApprove,
+                    icon: const Icon(Icons.check_rounded, size: 18),
+                    label: const Text('Подтвердить'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onReject,
+                    icon: Icon(
+                      Icons.close_rounded,
+                      size: 18,
+                      color: colors.danger,
+                    ),
+                    label: const Text('Отклонить'),
+                  ),
+                ],
+              ),
+            ],
+          );
+
+          if (compact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [image, const SizedBox(height: 12), info],
             );
-            if (!ok) return;
-            await api.rejectAllPendingReviews(token);
-            await reload();
-          },
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 260, child: image),
+              const SizedBox(width: 16),
+              Expanded(child: info),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String? _snapshotUrl(ApiClient api, RowMap row) {
+    final value = row['snapshot_url'];
+    if (value == null || '$value'.isEmpty) return null;
+    final text = '$value';
+    if (text.startsWith('http://') || text.startsWith('https://')) {
+      return text;
+    }
+    return api.uri(text).toString();
+  }
+}
+
+class _SnapshotPreview extends StatelessWidget {
+  const _SnapshotPreview({required this.url, required this.token});
+
+  final String? url;
+  final String? token;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          color: Colors.black.withValues(alpha: 0.25),
+          child: url == null
+              ? const _SnapshotFallback(text: 'Snapshot не сохранён')
+              : Image.network(
+                  url!,
+                  fit: BoxFit.cover,
+                  headers: token == null
+                      ? null
+                      : {'Authorization': 'Bearer $token'},
+                  errorBuilder: (context, error, stackTrace) {
+                    return const _SnapshotFallback(
+                      text: 'Не удалось открыть фото',
+                    );
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: colors.primaryAccent,
+                      ),
+                    );
+                  },
+                ),
         ),
-      ],
-      rowCommands: [
-        RowCommand(
-          tooltip: 'Подтвердить',
-          icon: Icons.check_rounded,
-          color: (context) => context.colors.success,
-          onRun: (context, api, token, row, reload) async {
-            final id = rowInt(row, 'event_id');
-            if (id == null) throw ApiException('Не найден event_id');
-            await api.reviewEvent(token, id, 'approved');
-            await reload();
-          },
-        ),
-        RowCommand(
-          tooltip: 'Отклонить',
-          icon: Icons.close_rounded,
-          color: (context) => context.colors.danger,
-          onRun: (context, api, token, row, reload) async {
-            final id = rowInt(row, 'event_id');
-            if (id == null) throw ApiException('Не найден event_id');
-            await api.reviewEvent(token, id, 'rejected');
-            await reload();
-          },
-        ),
-      ],
+      ),
+    );
+  }
+}
+
+class _SnapshotFallback extends StatelessWidget {
+  const _SnapshotFallback({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.image_not_supported_rounded, color: colors.muted),
+          const SizedBox(height: 8),
+          Text(text, style: TextStyle(color: colors.muted, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+class _Detail {
+  const _Detail(this.label, this.value);
+
+  final String label;
+  final String value;
+}
+
+class _DetailPill extends StatelessWidget {
+  const _DetailPill({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: colors.muted,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              color: colors.textStrong,
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -591,57 +915,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 }
 
-class HelpScreen extends StatelessWidget {
-  const HelpScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return ListView(
-      children: [
-        const ModuleHeader(
-          title: 'Справка',
-          subtitle: 'Краткая карта модулей нативной консоли.',
-          icon: Icons.help_outline_rounded,
-        ),
-        const SizedBox(height: 14),
-        GlassPanel(
-          padding: const EdgeInsets.all(18),
-          child: DefaultTextStyle(
-            style: TextStyle(color: colors.text, fontSize: 14, height: 1.55),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                HelpLine(
-                  'Live',
-                  'просмотр потоков и быстрые ONVIF/PTZ команды.',
-                ),
-                HelpLine('Записи', 'архив файлов, созданных Processor.'),
-                HelpLine(
-                  'Ревью',
-                  'подтверждение или отклонение событий распознавания.',
-                ),
-                HelpLine(
-                  'Камеры',
-                  'подключения, ONVIF обновление и удаление камер.',
-                ),
-                HelpLine(
-                  'Processor',
-                  'узлы обработки, код подключения и состояние.',
-                ),
-                HelpLine(
-                  'Настройки',
-                  'адрес backend, тема, акценты и плотность Live.',
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class DataModuleScreen extends StatefulWidget {
   const DataModuleScreen({
     super.key,
@@ -742,135 +1015,166 @@ class _DataModuleScreenState extends State<DataModuleScreen> {
   @override
   Widget build(BuildContext context) {
     final filtered = _filtered;
-    final colors = context.colors;
 
     return RefreshIndicator(
       onRefresh: _load,
-      child: ListView(
+      child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        children: [
-          ModuleHeader(
-            title: widget.title,
-            subtitle: widget.subtitle,
-            icon: widget.icon,
-            trailing: Wrap(
-              spacing: 10,
-              runSpacing: 8,
+        slivers: [
+          SliverToBoxAdapter(
+            child: Column(
               children: [
-                for (final command in widget.commands)
-                  ElevatedButton.icon(
-                    onPressed: () => _runModuleCommand(command),
-                    icon: Icon(command.icon, size: 18),
-                    label: Text(command.label),
-                  ),
-                RefreshButton(loading: _loading, onPressed: _load),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _searchController,
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search_rounded),
-              labelText: 'Поиск',
-              suffixIcon: _searchController.text.isEmpty
-                  ? null
-                  : IconButton(
-                      onPressed: _searchController.clear,
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-            ),
-          ),
-          const SizedBox(height: 14),
-          if (_error != null) ErrorPanel(message: _error!, onRetry: _load),
-          if (_error != null) const SizedBox(height: 14),
-          if (filtered.isEmpty && !_loading)
-            EmptyPanel(
-              message: _items.isEmpty
-                  ? 'Данных пока нет.'
-                  : 'Ничего не найдено.',
-            )
-          else
-            GlassPanel(
-              padding: const EdgeInsets.all(10),
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: DataTable(
-                    headingRowHeight: 38,
-                    dataRowMinHeight: 42,
-                    dataRowMaxHeight: 54,
-                    horizontalMargin: 10,
-                    columnSpacing: 14,
-                    headingTextStyle: TextStyle(
-                      color: colors.muted,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                    ),
-                    dataTextStyle: TextStyle(
-                      color: colors.text,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    columns: [
-                      for (final column in widget.columns)
-                        DataColumn(
-                          label: SizedBox(
-                            width: column.width,
-                            child: Text(column.label),
-                          ),
+                ModuleHeader(
+                  title: widget.title,
+                  subtitle: widget.subtitle,
+                  icon: widget.icon,
+                  trailing: Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      for (final command in widget.commands)
+                        ElevatedButton.icon(
+                          onPressed: () => _runModuleCommand(command),
+                          icon: Icon(command.icon, size: 18),
+                          label: Text(command.label),
                         ),
-                      if (widget.rowCommands.isNotEmpty)
-                        const DataColumn(
-                          label: SizedBox(width: 104, child: Text('Действия')),
-                        ),
-                    ],
-                    rows: [
-                      for (final row in filtered)
-                        DataRow(
-                          cells: [
-                            for (final column in widget.columns)
-                              DataCell(
-                                SizedBox(
-                                  width: column.width,
-                                  child: Text(
-                                    column.read(row),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ),
-                            if (widget.rowCommands.isNotEmpty)
-                              DataCell(
-                                SizedBox(
-                                  width: 104,
-                                  child: Row(
-                                    children: [
-                                      for (final command in widget.rowCommands)
-                                        if (command.visible(row))
-                                          IconButton(
-                                            tooltip: command.tooltip,
-                                            onPressed: () =>
-                                                _runRowCommand(command, row),
-                                            icon: Icon(
-                                              command.icon,
-                                              size: 19,
-                                              color: command.color(context),
-                                            ),
-                                          ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
+                      RefreshButton(loading: _loading, onPressed: _load),
                     ],
                   ),
                 ),
-              ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    labelText: 'Поиск',
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: _searchController.clear,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (_error != null)
+                  ErrorPanel(message: _error!, onRetry: _load),
+                if (_error != null) const SizedBox(height: 14),
+              ],
             ),
-          const SizedBox(height: 24),
+          ),
+          if (filtered.isEmpty && !_loading)
+            SliverToBoxAdapter(
+              child: EmptyPanel(
+                message: _items.isEmpty
+                    ? 'Данных пока нет.'
+                    : 'Ничего не найдено.',
+              ),
+            )
+          else
+            SliverList.builder(
+              itemCount: filtered.length,
+              itemBuilder: (context, index) {
+                final row = filtered[index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _ModuleRowTile(
+                    row: row,
+                    columns: widget.columns,
+                    commands: widget.rowCommands,
+                    onCommand: (command) => _runRowCommand(command, row),
+                  ),
+                );
+              },
+            ),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModuleRowTile extends StatelessWidget {
+  const _ModuleRowTile({
+    required this.row,
+    required this.columns,
+    required this.commands,
+    required this.onCommand,
+  });
+
+  final RowMap row;
+  final List<ModuleColumn> columns;
+  final List<RowCommand> commands;
+  final ValueChanged<RowCommand> onCommand;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final visibleCommands = commands.where((command) => command.visible(row));
+    return GlassPanel(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      radius: 18,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Wrap(
+              spacing: 14,
+              runSpacing: 10,
+              children: [
+                for (final column in columns)
+                  SizedBox(
+                    width: column.width.clamp(82, 260).toDouble(),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          column.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.muted,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          column.read(row),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textStrong,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (commands.isNotEmpty) ...[
+            const SizedBox(width: 10),
+            Wrap(
+              spacing: 2,
+              children: [
+                for (final command in visibleCommands)
+                  IconButton(
+                    tooltip: command.tooltip,
+                    onPressed: () => onCommand(command),
+                    icon: Icon(
+                      command.icon,
+                      size: 19,
+                      color: command.color(context),
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -1276,36 +1580,6 @@ class _ReportSummary extends StatelessWidget {
               ),
             ),
         ],
-      ),
-    );
-  }
-}
-
-class HelpLine extends StatelessWidget {
-  const HelpLine(this.title, this.body, {super.key});
-
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: RichText(
-        text: TextSpan(
-          style: TextStyle(color: colors.text, fontSize: 14, height: 1.45),
-          children: [
-            TextSpan(
-              text: '$title: ',
-              style: TextStyle(
-                color: colors.textStrong,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            TextSpan(text: body),
-          ],
-        ),
       ),
     );
   }
