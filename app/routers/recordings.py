@@ -24,6 +24,7 @@ from app.processor_media import (
     get_processor_by_id,
     get_processor_media_base_url,
     get_processor_media_headers,
+    is_processor_effectively_online,
     parse_processor_file_path,
 )
 from app.schemas.recordings import RecordingOut, LocalRecordingOut
@@ -92,7 +93,7 @@ async def _resolve_processor_media(
         return None
     processor_id, relative_path = parsed
     proc = await get_processor_by_id(session, processor_id)
-    if proc is not None and proc.ip_address:
+    if proc is not None and proc.ip_address and is_processor_effectively_online(proc):
         return proc, relative_path
 
     # Recordings are stored on the processor machine. If backend/processor were
@@ -110,10 +111,16 @@ async def _resolve_processor_media(
                 models.Processor.status == "online",
             )
             .order_by(models.Processor.last_heartbeat.desc(), models.Processor.processor_id.desc())
-            .limit(1)
         )
-        fallback_proc = fallback_result.scalar_one_or_none()
-        if fallback_proc is not None and fallback_proc.ip_address:
+        fallback_proc = next(
+            (
+                item
+                for item in fallback_result.scalars().all()
+                if item.ip_address and is_processor_effectively_online(item)
+            ),
+            None,
+        )
+        if fallback_proc is not None:
             return fallback_proc, relative_path
 
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")

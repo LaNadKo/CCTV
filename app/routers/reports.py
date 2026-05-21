@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple
@@ -16,6 +16,7 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
 from app.permissions import is_at_least_user
+from app.processor_media import effective_processor_status, is_processor_effectively_online
 from app.schemas.reports import (
     AppearanceItem,
     AppearanceReport,
@@ -140,9 +141,7 @@ def _format_duration(seconds: Optional[float]) -> str:
 
 
 def _is_processor_online(processor: models.Processor) -> bool:
-    if processor.status != "online" or not processor.last_heartbeat:
-        return False
-    return (datetime.utcnow() - processor.last_heartbeat) <= timedelta(seconds=120)
+    return is_processor_effectively_online(processor)
 
 
 def _load_metrics(processor: models.Processor) -> dict:
@@ -835,7 +834,7 @@ async def reports_dashboard(
             ProcessorReportItem(
                 processor_id=processor.processor_id,
                 name=processor.name,
-                status=processor.status,
+                status=effective_processor_status(processor),
                 is_online=_is_processor_online(processor),
                 ip_address=processor.ip_address,
                 version=processor.version,

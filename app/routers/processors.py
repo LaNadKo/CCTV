@@ -18,6 +18,7 @@ from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_service_identity, get_service_scopes
 from app.permissions import is_admin
+from app.processor_media import effective_processor_status
 from app.schemas.processors import (
     AssignCamerasIn,
     AssignedCameraInfo,
@@ -791,7 +792,7 @@ async def list_processors(
             processor_id=p.processor_id,
             name=p.name,
             node_uid=p.node_uid,
-            status=p.status,
+            status=effective_processor_status(p),
             last_heartbeat=p.last_heartbeat,
             capabilities=caps,
             ip_address=p.ip_address,
