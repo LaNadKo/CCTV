@@ -14,6 +14,13 @@ class ApiException implements Exception {
   final String message;
   final int? statusCode;
 
+  bool get isTotpRequired {
+    final lower = message.toLowerCase();
+    return lower.contains('totp code required') ||
+        lower.contains('код двухфакторной') ||
+        lower.contains('2fa-код');
+  }
+
   @override
   String toString() => message;
 }
@@ -558,9 +565,10 @@ class ApiClient {
     return postVoid('/detections/review/reject-all', token: token);
   }
 
-  Uri cameraStreamUri(int cameraId, {bool annotate = true}) {
+  Uri cameraStreamUri(int cameraId, {bool annotate = true, int maxFps = 20}) {
     return uri('/cameras/$cameraId/stream', {
       'annotate': annotate ? 'true' : 'false',
+      'max_fps': '$maxFps',
     });
   }
 
@@ -904,6 +912,8 @@ class ApiClient {
   static String _safeErrorText(String text, int statusCode) {
     final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (normalized.isEmpty) return 'Backend вернул ошибку HTTP $statusCode';
+    final translated = _translatedErrorText(normalized);
+    if (translated != null) return translated;
     final lower = normalized.toLowerCase();
     final looksInternal =
         normalized.length > 320 ||
@@ -916,5 +926,46 @@ class ApiClient {
         lower.contains('postgres');
     if (looksInternal) return 'Backend вернул ошибку HTTP $statusCode';
     return normalized;
+  }
+
+  static String? _translatedErrorText(String text) {
+    final lower = text.toLowerCase();
+    if (lower == 'invalid credentials') {
+      return 'Неверный логин или пароль';
+    }
+    if (lower == 'totp code required') {
+      return 'Введите код двухфакторной аутентификации';
+    }
+    if (lower == 'invalid totp code') {
+      return 'Неверный код двухфакторной аутентификации';
+    }
+    if (lower == 'too many login attempts') {
+      return 'Слишком много попыток входа. Подождите и попробуйте снова.';
+    }
+    if (lower == 'too many totp attempts') {
+      return 'Слишком много попыток ввода 2FA-кода. Подождите и попробуйте снова.';
+    }
+    if (lower == 'invalid current password') {
+      return 'Текущий пароль указан неверно';
+    }
+    if (lower == 'totp not initialized') {
+      return 'Сначала настройте двухфакторную аутентификацию';
+    }
+    if (lower == 'code expired') {
+      return 'Код подключения истек. Создайте новый код.';
+    }
+    if (lower == 'invalid or already used code') {
+      return 'Код подключения неверный или уже использован';
+    }
+    if (lower.contains('not authenticated') ||
+        lower.contains('could not validate credentials') ||
+        lower.contains('invalid authentication credentials')) {
+      return 'Сессия истекла. Войдите снова.';
+    }
+    if (lower.contains('not enough permissions') ||
+        lower.contains('forbidden')) {
+      return 'Недостаточно прав для этого действия';
+    }
+    return null;
   }
 }

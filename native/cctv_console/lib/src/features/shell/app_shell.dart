@@ -19,6 +19,7 @@ import '../persons/persons_screen.dart';
 import '../profile/profile_screen.dart';
 import '../recordings/recordings_screen.dart';
 import '../reports/reports_screen.dart';
+import '../setup/setup_screen.dart';
 import '../settings/settings_screen.dart';
 
 const _changePollInterval = Duration(seconds: 5);
@@ -35,6 +36,7 @@ const _activeAutoRefreshRoutes = <String>{
   '/processors',
   '/users',
   '/api-keys',
+  '/setup',
 };
 const _changeSectionRoutes = <String, List<String>>{
   'cameras': ['/live', '/cameras', '/recordings', '/reports', '/processors'],
@@ -271,6 +273,13 @@ class _AppShellState extends State<AppShell> {
           icon: Icons.vpn_key_rounded,
           builder: (_) => const ApiKeysManagementScreen(),
         ),
+      if (isAdmin)
+        _ShellTab(
+          route: '/setup',
+          label: 'Setup',
+          icon: Icons.settings_applications_rounded,
+          builder: (_) => const SetupScreen(),
+        ),
       _ShellTab(
         route: '/profile',
         label: 'Профиль',
@@ -436,17 +445,17 @@ class _MobileShell extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
         child: Column(
           children: [
             GlassPanel(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
               child: Row(
                 children: [
                   const Expanded(child: _Brand(compact: true)),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   const _ThemeToggleButton(compact: true),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   PopupMenuButton<String>(
                     tooltip: 'Меню',
                     color: colors.surfaceElevated,
@@ -456,18 +465,27 @@ class _MobileShell extends StatelessWidget {
                       for (final tab in tabs)
                         PopupMenuItem(value: tab.route, child: Text(tab.label)),
                     ],
-                    child: _MenuChip(active: !visibleTabs.contains(selected)),
+                    child: _MobileIconChip(
+                      icon: Icons.menu_rounded,
+                      active: !visibleTabs.contains(selected),
+                    ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   IconButton.filledTonal(
                     onPressed: context.read<AuthController>().logout,
                     tooltip: 'Выйти',
+                    style: IconButton.styleFrom(
+                      fixedSize: const Size.square(36),
+                      minimumSize: const Size.square(36),
+                      padding: EdgeInsets.zero,
+                    ),
+                    iconSize: 19,
                     icon: const Icon(Icons.logout_rounded),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Expanded(child: child),
           ],
         ),
@@ -478,8 +496,9 @@ class _MobileShell extends StatelessWidget {
           border: Border(top: BorderSide(color: colors.border)),
         ),
         child: NavigationBar(
-          height: 64,
+          height: 58,
           backgroundColor: Colors.transparent,
+          labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
           selectedIndex: selectedIndex < 0 ? 0 : selectedIndex,
           onDestinationSelected: (index) => onSelect(visibleTabs[index].route),
           destinations: [
@@ -533,7 +552,7 @@ class _Brand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final size = compact ? 42.0 : 50.0;
+    final size = compact ? 36.0 : 50.0;
     return SizedBox(
       height: size,
       child: Row(
@@ -563,7 +582,7 @@ class _Brand extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          SizedBox(width: compact ? 8 : 12),
           Flexible(
             child: SizedBox(
               height: size,
@@ -578,7 +597,7 @@ class _Brand extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.w900,
                       color: colors.textStrong,
-                      fontSize: compact ? 17 : 19,
+                      fontSize: compact ? 16 : 19,
                       height: 1.08,
                     ),
                   ),
@@ -737,6 +756,39 @@ class _MenuChip extends StatelessWidget {
   }
 }
 
+class _MobileIconChip extends StatelessWidget {
+  const _MobileIconChip({required this.icon, required this.active});
+
+  final IconData icon;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: active
+            ? LinearGradient(
+                colors: [colors.primaryAccent, colors.secondaryAccent],
+              )
+            : null,
+        color: active ? null : colors.surfaceMuted,
+        border: Border.all(color: active ? Colors.transparent : colors.border),
+      ),
+      alignment: Alignment.center,
+      child: Icon(
+        icon,
+        size: 19,
+        color: active ? const Color(0xFF07111F) : colors.muted,
+      ),
+    );
+  }
+}
+
 class _DesktopMenu extends StatefulWidget {
   const _DesktopMenu({
     required this.tabs,
@@ -881,8 +933,8 @@ class _ThemeToggleButton extends StatelessWidget {
         onTap: () => settings.setThemeMode(nextMode),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
-          width: compact ? 40 : 42,
-          height: compact ? 40 : 42,
+          width: compact ? 36 : 42,
+          height: compact ? 36 : 42,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: colors.surfaceMuted,
@@ -891,7 +943,7 @@ class _ThemeToggleButton extends StatelessWidget {
           child: Icon(
             isDark ? Icons.dark_mode_rounded : Icons.wb_sunny_rounded,
             color: isDark ? colors.secondaryAccent : colors.warning,
-            size: compact ? 19 : 20,
+            size: compact ? 18 : 20,
           ),
         ),
       ),

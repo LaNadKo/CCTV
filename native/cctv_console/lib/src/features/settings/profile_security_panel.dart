@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/segmented_code_field.dart';
 import '../auth/auth_controller.dart';
 
 class ProfileSecurityPanel extends StatefulWidget {
@@ -416,12 +417,25 @@ class _TotpSetupDialogState extends State<_TotpSetupDialog> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    _code.addListener(_refresh);
+  }
+
+  @override
   void dispose() {
+    _code.removeListener(_refresh);
     _code.dispose();
     super.dispose();
   }
 
+  void _refresh() => setState(() {});
+
   Future<void> _activate() async {
+    if (_code.text.trim().length != 6) {
+      setState(() => _error = 'Введите 6 цифр из приложения-аутентификатора');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -486,13 +500,13 @@ class _TotpSetupDialogState extends State<_TotpSetupDialog> {
                 label: const Text('Скопировать ключ'),
               ),
               const SizedBox(height: 14),
-              TextField(
+              SegmentedCodeField(
                 controller: _code,
+                length: 6,
+                autofocus: true,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Код двухфакторной аутентификации',
-                ),
-                onSubmitted: (_) => _activate(),
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onCompleted: (_) => _activate(),
               ),
               if (_error != null) ...[
                 const SizedBox(height: 10),
@@ -514,7 +528,7 @@ class _TotpSetupDialogState extends State<_TotpSetupDialog> {
           child: const Text('Отмена'),
         ),
         ElevatedButton(
-          onPressed: _busy ? null : _activate,
+          onPressed: _busy || _code.text.trim().length != 6 ? null : _activate,
           child: _busy
               ? const SizedBox(
                   width: 18,

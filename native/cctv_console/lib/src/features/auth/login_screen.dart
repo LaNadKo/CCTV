@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/profiles/connection_profiles.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/segmented_code_field.dart';
 import 'auth_controller.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -18,22 +21,31 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _apiUrlController;
-  final _loginController = TextEditingController(text: 'admin');
+  late final TextEditingController _profileNameController;
+  late final TextEditingController _loginController;
   final _passwordController = TextEditingController();
+  String? _selectedProfileId;
   bool _obscurePassword = true;
   bool _serverSettingsOpen = false;
 
   @override
   void initState() {
     super.initState();
-    _apiUrlController = TextEditingController(
-      text: context.read<ThemeController>().apiBaseUrl,
+    final profile = context.read<ConnectionProfilesController>().activeProfile;
+    _selectedProfileId = profile?.id;
+    _profileNameController = TextEditingController(
+      text: profile?.name ?? 'CCTV Server',
     );
+    _apiUrlController = TextEditingController(
+      text: profile?.baseUrl ?? context.read<ThemeController>().apiBaseUrl,
+    );
+    _loginController = TextEditingController(text: profile?.login ?? 'admin');
   }
 
   @override
   void dispose() {
     _apiUrlController.dispose();
+    _profileNameController.dispose();
     _loginController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -43,8 +55,17 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     final settings = context.read<ThemeController>();
     final auth = context.read<AuthController>();
+    final profiles = context.read<ConnectionProfilesController>();
 
-    await settings.setApiBaseUrl(_apiUrlController.text);
+    final profile = await profiles.saveProfile(
+      id: _selectedProfileId,
+      name: _profileNameController.text,
+      baseUrl: _apiUrlController.text,
+      login: _loginController.text.trim(),
+      makeActive: true,
+    );
+    _selectedProfileId = profile.id;
+    await settings.setApiBaseUrl(profile.baseUrl);
     if (!mounted) return;
 
     try {
@@ -53,6 +74,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text,
         totpCode: totpCode,
       );
+      await profiles.markLoginUsed(_loginController.text.trim());
       if (!mounted) return;
       if (auth.user?.mustChangePassword == true) {
         final changed = await showDialog<bool>(
@@ -67,8 +89,8 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } on ApiException catch (error) {
       if (!mounted) return;
-      if (error.statusCode == 400 &&
-          error.message.toLowerCase().contains('totp')) {
+      if (error.statusCode == 400 && error.isTotpRequired) {
+        auth.clearError();
         final code = await showDialog<String>(
           context: context,
           barrierDismissible: false,
@@ -92,9 +114,67 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  Future<void> _selectProfile(String? id) async {
+    if (id == null || id == _selectedProfileId) return;
+    final profiles = context.read<ConnectionProfilesController>();
+    final settings = context.read<ThemeController>();
+    await profiles.selectProfile(id);
+    final profile = profiles.activeProfile;
+    if (profile == null || !mounted) return;
+    _selectedProfileId = profile.id;
+    _profileNameController.text = profile.name;
+    _apiUrlController.text = profile.baseUrl;
+    _loginController.text = profile.login ?? 'admin';
+    await settings.setApiBaseUrl(profile.baseUrl);
+    if (!mounted) return;
+    setState(() {});
+    await context.read<AuthController>().restoreSession();
+  }
+
+  Future<void> _saveProfile() async {
+    final profiles = context.read<ConnectionProfilesController>();
+    final settings = context.read<ThemeController>();
+    final profile = await profiles.saveProfile(
+      id: _selectedProfileId,
+      name: _profileNameController.text,
+      baseUrl: _apiUrlController.text,
+      login: _loginController.text.trim(),
+      makeActive: true,
+    );
+    _selectedProfileId = profile.id;
+    await settings.setApiBaseUrl(profile.baseUrl);
+    if (mounted) setState(() {});
+  }
+
+  void _newProfile() {
+    _selectedProfileId = null;
+    _profileNameController.text = 'Новый сервер';
+    _apiUrlController.text = '';
+    _loginController.text = 'admin';
+    setState(() {});
+  }
+
+  Future<void> _deleteProfile() async {
+    final id = _selectedProfileId;
+    if (id == null) return;
+    final profiles = context.read<ConnectionProfilesController>();
+    final settings = context.read<ThemeController>();
+    if (profiles.profiles.length <= 1) return;
+    await profiles.deleteProfile(id);
+    final profile = profiles.activeProfile;
+    if (profile == null) return;
+    _selectedProfileId = profile.id;
+    _profileNameController.text = profile.name;
+    _apiUrlController.text = profile.baseUrl;
+    _loginController.text = profile.login ?? 'admin';
+    await settings.setApiBaseUrl(profile.baseUrl);
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthController>();
+    final profiles = context.watch<ConnectionProfilesController>();
 
     return AppBackdrop(
       child: Center(
@@ -173,20 +253,80 @@ class _LoginScreenState extends State<LoginScreen> {
                           ? Padding(
                               key: const ValueKey('server-settings'),
                               padding: const EdgeInsets.only(top: 12),
-                              child: TextFormField(
-                                controller: _apiUrlController,
-                                decoration: const InputDecoration(
-                                  labelText: 'URL backend',
-                                  hintText: 'http://127.0.0.1:8001',
-                                ),
-                                validator: (value) {
-                                  final text = value?.trim() ?? '';
-                                  if (!text.startsWith('http://') &&
-                                      !text.startsWith('https://')) {
-                                    return 'Нужен URL с http:// или https://';
-                                  }
-                                  return null;
-                                },
+                              child: Column(
+                                children: [
+                                  DropdownButtonFormField<String>(
+                                    initialValue: _selectedProfileId,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Профиль подключения',
+                                    ),
+                                    items: [
+                                      for (final profile in profiles.profiles)
+                                        DropdownMenuItem(
+                                          value: profile.id,
+                                          child: Text(profile.name),
+                                        ),
+                                    ],
+                                    onChanged: _selectProfile,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  TextFormField(
+                                    controller: _profileNameController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Название профиля',
+                                      hintText: 'Дом / Сервер диплома',
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  TextFormField(
+                                    controller: _apiUrlController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'URL backend',
+                                      hintText: 'http://127.0.0.1:8001',
+                                    ),
+                                    validator: (value) {
+                                      final text = value?.trim() ?? '';
+                                      if (!text.startsWith('http://') &&
+                                          !text.startsWith('https://')) {
+                                        return 'Нужен URL с http:// или https://';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: OutlinedButton.icon(
+                                          onPressed: _saveProfile,
+                                          icon: const Icon(
+                                            Icons.save_rounded,
+                                            size: 18,
+                                          ),
+                                          label: const Text(
+                                            'Сохранить профиль',
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      IconButton.outlined(
+                                        tooltip: 'Новый профиль',
+                                        onPressed: _newProfile,
+                                        icon: const Icon(Icons.add_rounded),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      IconButton.outlined(
+                                        tooltip: 'Удалить профиль',
+                                        onPressed: profiles.profiles.length > 1
+                                            ? _deleteProfile
+                                            : null,
+                                        icon: const Icon(
+                                          Icons.delete_outline_rounded,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
                             )
                           : const SizedBox.shrink(),
@@ -341,14 +481,29 @@ class _TwoFactorDialogState extends State<_TwoFactorDialog> {
   final _controller = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_refresh);
+  }
+
+  @override
   void dispose() {
+    _controller.removeListener(_refresh);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _refresh() => setState(() {});
+
+  void _submit() {
+    final code = _controller.text.trim();
+    if (code.length == 6) Navigator.of(context).pop(code);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final code = _controller.text.trim();
     return AlertDialog(
       backgroundColor: colors.surfaceElevated,
       surfaceTintColor: Colors.transparent,
@@ -364,17 +519,13 @@ class _TwoFactorDialogState extends State<_TwoFactorDialog> {
               style: TextStyle(color: colors.muted, fontSize: 13),
             ),
             const SizedBox(height: 14),
-            TextField(
+            SegmentedCodeField(
               controller: _controller,
               autofocus: true,
               keyboardType: TextInputType.number,
-              maxLength: 8,
-              decoration: const InputDecoration(
-                labelText: 'Код двухфакторной аутентификации',
-                counterText: '',
-              ),
-              onSubmitted: (_) =>
-                  Navigator.of(context).pop(_controller.text.trim()),
+              length: 6,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              onCompleted: (_) => _submit(),
             ),
           ],
         ),
@@ -385,7 +536,7 @@ class _TwoFactorDialogState extends State<_TwoFactorDialog> {
           child: const Text('Отмена'),
         ),
         ElevatedButton(
-          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          onPressed: code.length == 6 ? _submit : null,
           child: const Text('Подтвердить'),
         ),
       ],
@@ -425,7 +576,7 @@ class _LoginHeader extends StatelessWidget {
             color: colors.textStrong,
             fontWeight: FontWeight.w900,
             fontSize: 26,
-            letterSpacing: -1.2,
+            letterSpacing: 0,
           ),
         ),
       ],

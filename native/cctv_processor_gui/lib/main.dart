@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 void main() {
@@ -895,11 +896,9 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                           label: 'Backend URL',
                           hint: 'http://127.0.0.1:8001',
                         ),
-                        _TextField(
+                        _CodeInputField(
                           controller: _codeController,
                           label: 'Код подключения',
-                          hint: 'ABCD1234',
-                          obscure: true,
                         ),
                         _TextField(
                           controller: _nameController,
@@ -1587,6 +1586,32 @@ class RuntimeBridge {
       encoding: utf8,
       flush: true,
     );
+    await _restrictConfigPermissions(file);
+  }
+
+  Future<void> _restrictConfigPermissions(File file) async {
+    try {
+      if (Platform.isWindows) {
+        final user = Platform.environment['USERNAME'];
+        final domain = Platform.environment['USERDOMAIN'];
+        if (user == null || user.isEmpty) return;
+        final account = domain == null || domain.isEmpty
+            ? user
+            : '$domain\\$user';
+        await Process.run('icacls', [
+          file.path,
+          '/inheritance:r',
+          '/grant:r',
+          '$account:(R,W)',
+          '*S-1-5-18:(F)',
+          '*S-1-5-32-544:(F)',
+        ]);
+      } else {
+        await Process.run('chmod', ['600', file.path]);
+      }
+    } catch (_) {
+      // Permission hardening is best-effort; config writes must stay available.
+    }
   }
 
   Future<Map<String, dynamic>> connectProcessor(
@@ -2479,6 +2504,198 @@ class _Section extends StatelessWidget {
         child,
       ],
     );
+  }
+}
+
+class _CodeInputField extends StatefulWidget {
+  const _CodeInputField({required this.controller, required this.label});
+
+  final TextEditingController controller;
+  final String label;
+
+  @override
+  State<_CodeInputField> createState() => _CodeInputFieldState();
+}
+
+class _CodeInputFieldState extends State<_CodeInputField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(_refresh);
+    widget.controller.addListener(_refresh);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CodeInputField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_refresh);
+      widget.controller.addListener(_refresh);
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode
+      ..removeListener(_refresh)
+      ..dispose();
+    widget.controller.removeListener(_refresh);
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const length = 8;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 8),
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                color: AppPalette.muted,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _focusNode.requestFocus(),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    const gap = 8.0;
+                    final cellWidth =
+                        ((constraints.maxWidth - (length - 1) * gap) / length)
+                            .clamp(38.0, 56.0);
+                    final value = widget.controller.text;
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        for (var i = 0; i < length; i++) ...[
+                          _CodeCell(
+                            char: i < value.length ? value[i] : '',
+                            active:
+                                _focusNode.hasFocus &&
+                                i == math.min(value.length, length),
+                            filled: i < value.length,
+                            width: cellWidth,
+                          ),
+                          if (i != length - 1) const SizedBox(width: gap),
+                        ],
+                      ],
+                    );
+                  },
+                ),
+                Positioned.fill(
+                  child: Opacity(
+                    opacity: 0.01,
+                    child: TextField(
+                      controller: widget.controller,
+                      focusNode: _focusNode,
+                      keyboardType: TextInputType.visiblePassword,
+                      textCapitalization: TextCapitalization.characters,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      showCursor: false,
+                      maxLength: length,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                          RegExp(r'[A-Za-z0-9_-]'),
+                        ),
+                        _UpperCaseTextFormatter(),
+                        LengthLimitingTextInputFormatter(length),
+                      ],
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.zero,
+                        counterText: '',
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CodeCell extends StatelessWidget {
+  const _CodeCell({
+    required this.char,
+    required this.active,
+    required this.filled,
+    required this.width,
+  });
+
+  final String char;
+  final bool active;
+  final bool filled;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 120),
+      width: width,
+      height: 58,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: AppPalette.surface.withValues(alpha: filled ? 0.95 : 0.78),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: active
+              ? AppPalette.accent
+              : (filled ? AppPalette.borderStrong : AppPalette.border),
+          width: active ? 1.8 : 1.1,
+        ),
+        boxShadow: active
+            ? [
+                BoxShadow(
+                  color: AppPalette.accent.withValues(alpha: 0.18),
+                  blurRadius: 18,
+                  spreadRadius: 1,
+                ),
+              ]
+            : null,
+      ),
+      child: Text(
+        char,
+        style: const TextStyle(
+          color: AppPalette.textStrong,
+          fontSize: 22,
+          height: 1,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+}
+
+class _UpperCaseTextFormatter extends TextInputFormatter {
+  const _UpperCaseTextFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    return newValue.copyWith(text: newValue.text.toUpperCase());
   }
 }
 

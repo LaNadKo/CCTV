@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import time
 from urllib.parse import quote
 
 import cv2
@@ -46,6 +47,7 @@ async def _proxy_processor_camera_stream(
     proc: models.Processor,
     camera_id: int,
     overlay: bool,
+    max_fps: float,
 ) -> StreamingResponse:
     errors: list[str] = []
     for base_url in get_processor_media_base_urls(proc):
@@ -55,6 +57,7 @@ async def _proxy_processor_camera_stream(
                 proc,
                 camera_id,
                 overlay,
+                max_fps,
             )
         except Exception as exc:
             errors.append(f"{base_url}: {exc!r}")
@@ -66,13 +69,14 @@ async def _proxy_processor_camera_stream_url(
     proc: models.Processor,
     camera_id: int,
     overlay: bool,
+    max_fps: float,
 ) -> StreamingResponse:
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=10, write=5, pool=5))
     stream_cm = client.stream(
         "GET",
         f"{base_url}/cameras/{camera_id}/stream.mjpeg",
         headers=get_processor_media_headers(proc),
-        params={"overlay": "1" if overlay else "0"},
+        params={"overlay": "1" if overlay else "0", "max_fps": f"{max_fps:.2f}"},
     )
     upstream = await stream_cm.__aenter__()
     if upstream.status_code >= 400:
@@ -246,7 +250,10 @@ async def _snapshot_direct_camera(camera: models.Camera) -> Response:
     )
 
 
-async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
+async def _stream_direct_camera(
+    camera: models.Camera,
+    max_fps: float = 20.0,
+) -> StreamingResponse:
     source = _resolve_direct_camera_source(camera)
     if source is None:
         raise RuntimeError("camera stream source is not configured")
@@ -257,6 +264,8 @@ async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
 
     async def gen():
         failures = 0
+        frame_interval = 1.0 / min(max(max_fps, 1.0), 30.0)
+        last_sent_at = 0.0
         try:
             while True:
                 frame = await asyncio.to_thread(_read_direct_jpeg, cap)
@@ -267,8 +276,22 @@ async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
                     await asyncio.sleep(0.1)
                     continue
                 failures = 0
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                await asyncio.sleep(1 / 15)
+                now = asyncio.get_running_loop().time()
+                if last_sent_at and now - last_sent_at < frame_interval:
+                    await asyncio.sleep(
+                        min(frame_interval - (now - last_sent_at), 0.01)
+                    )
+                    continue
+                header = (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    + f"Content-Length: {len(frame)}\r\n".encode("ascii")
+                    + f"X-CCTV-Sent-At: {time.time():.6f}\r\n".encode("ascii")
+                    + b"\r\n"
+                )
+                yield header + frame + b"\r\n"
+                last_sent_at = asyncio.get_running_loop().time()
+                await asyncio.sleep(0)
         finally:
             cap.release()
 
@@ -366,6 +389,7 @@ async def get_camera_permission(
 async def stream_camera(
     camera_id: int,
     annotate: bool = True,
+    max_fps: float = Query(20.0, ge=1.0, le=30.0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user_allow_query),
 ):
@@ -397,7 +421,7 @@ async def stream_camera(
             break
     if assignment_row is None:
         try:
-            return await _stream_direct_camera(camera)
+            return await _stream_direct_camera(camera, max_fps=max_fps)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -406,7 +430,12 @@ async def stream_camera(
 
     _, processor = assignment_row
     try:
-        return await _proxy_processor_camera_stream(processor, camera_id, overlay=annotate)
+        return await _proxy_processor_camera_stream(
+            processor,
+            camera_id,
+            overlay=annotate,
+            max_fps=max_fps,
+        )
     except Exception as exc:
         log.warning(
             "camera.stream.processor_proxy_failed camera=%s processor=%s reason=%s",
@@ -415,7 +444,7 @@ async def stream_camera(
             repr(exc),
         )
         try:
-            return await _stream_direct_camera(camera)
+            return await _stream_direct_camera(camera, max_fps=max_fps)
         except Exception as fallback_exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

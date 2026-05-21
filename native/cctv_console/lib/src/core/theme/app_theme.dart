@@ -114,10 +114,10 @@ class AppTheme {
     final isDark = brightness == Brightness.dark;
     final colors = isDark
         ? AppColors(
-            bg: const Color(0xFF07111F),
-            bgElevated: const Color(0xE60A1426),
-            surface: const Color(0xD10B1425),
-            surfaceElevated: const Color(0xEA09101F),
+            bg: const Color(0xFF071013),
+            bgElevated: const Color(0xE60C151A),
+            surface: const Color(0xD10E171D),
+            surfaceElevated: const Color(0xEA101A21),
             surfaceMuted: Colors.white.withValues(alpha: 0.035),
             text: const Color(0xFFF3F7FF),
             textStrong: Colors.white,
@@ -165,58 +165,56 @@ class AppTheme {
       extensions: [colors],
     );
 
-    final textTheme = GoogleFonts.spaceGroteskTextTheme(base.textTheme)
+    final textTheme = GoogleFonts.manropeTextTheme(base.textTheme)
         .apply(bodyColor: colors.text, displayColor: colors.textStrong)
         .copyWith(
-          displaySmall: GoogleFonts.spaceGrotesk(
+          displaySmall: GoogleFonts.manrope(
             fontSize: 30,
             height: 1.04,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
-            letterSpacing: -1.2,
           ),
-          headlineLarge: GoogleFonts.spaceGrotesk(
+          headlineLarge: GoogleFonts.manrope(
             fontSize: 26,
             height: 1.06,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
-            letterSpacing: -0.8,
           ),
-          headlineMedium: GoogleFonts.spaceGrotesk(
+          headlineMedium: GoogleFonts.manrope(
             fontSize: 22,
             height: 1.12,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
           ),
-          headlineSmall: GoogleFonts.spaceGrotesk(
+          headlineSmall: GoogleFonts.manrope(
             fontSize: 19,
             height: 1.18,
             fontWeight: FontWeight.w800,
             color: colors.textStrong,
           ),
-          titleLarge: GoogleFonts.spaceGrotesk(
+          titleLarge: GoogleFonts.manrope(
             fontSize: 18,
             height: 1.2,
             fontWeight: FontWeight.w700,
             color: colors.textStrong,
           ),
-          titleMedium: GoogleFonts.spaceGrotesk(
+          titleMedium: GoogleFonts.manrope(
             fontSize: 14,
             height: 1.45,
             fontWeight: FontWeight.w500,
             color: colors.text,
           ),
-          bodyLarge: GoogleFonts.spaceGrotesk(
+          bodyLarge: GoogleFonts.manrope(
             fontSize: 14,
             height: 1.45,
             color: colors.text,
           ),
-          bodyMedium: GoogleFonts.spaceGrotesk(
+          bodyMedium: GoogleFonts.manrope(
             fontSize: 13,
             height: 1.45,
             color: colors.text,
           ),
-          labelLarge: GoogleFonts.spaceGrotesk(
+          labelLarge: GoogleFonts.manrope(
             fontSize: 13,
             fontWeight: FontWeight.w700,
           ),

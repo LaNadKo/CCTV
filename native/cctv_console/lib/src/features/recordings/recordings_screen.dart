@@ -616,54 +616,82 @@ class _PlayerPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final current = record;
+    final titleBlock = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          current == null
+              ? 'Архивный медиаплеер'
+              : 'Клип ${_timeRange(current)}',
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          current == null
+              ? 'Выберите час или клип ниже.'
+              : '${_formatDuration(current.durationSeconds)} · ${_formatBytes(current.sizeBytes)} · ${chainPlayback ? 'склейка включена' : 'одиночный просмотр'}',
+          style: TextStyle(color: colors.muted, fontSize: 13),
+        ),
+      ],
+    );
+    final headerActions = current == null
+        ? const <Widget>[]
+        : <Widget>[
+            _EventBadge(
+              label: '${events.length} меток',
+              icon: Icons.sell_rounded,
+              color: colors.primaryAccent,
+            ),
+            OutlinedButton.icon(
+              onPressed: onDownload,
+              icon: const Icon(Icons.download_rounded, size: 18),
+              label: const Text('Открыть файл'),
+            ),
+            OutlinedButton.icon(
+              onPressed: onMjpegFallback,
+              icon: const Icon(Icons.video_file_rounded, size: 18),
+              label: const Text('MJPEG fallback'),
+            ),
+          ];
     return GlassPanel(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 620;
+              if (compact) {
+                return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      current == null
-                          ? 'Архивный медиаплеер'
-                          : 'Клип ${_timeRange(current)}',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      current == null
-                          ? 'Выберите час или клип ниже.'
-                          : '${_formatDuration(current.durationSeconds)} · ${_formatBytes(current.sizeBytes)} · ${chainPlayback ? 'склейка включена' : 'одиночный просмотр'}',
-                      style: TextStyle(color: colors.muted, fontSize: 13),
+                    titleBlock,
+                    if (headerActions.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Wrap(spacing: 8, runSpacing: 8, children: headerActions),
+                    ],
+                  ],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: titleBlock),
+                  if (headerActions.isNotEmpty) ...[
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        alignment: WrapAlignment.end,
+                        children: headerActions,
+                      ),
                     ),
                   ],
-                ),
-              ),
-              if (current != null)
-                _EventBadge(
-                  label: '${events.length} меток',
-                  icon: Icons.sell_rounded,
-                  color: colors.primaryAccent,
-                ),
-              if (current != null) ...[
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: onDownload,
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('Открыть файл'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: onMjpegFallback,
-                  icon: const Icon(Icons.video_file_rounded, size: 18),
-                  label: const Text('MJPEG fallback'),
-                ),
-              ],
-            ],
+                ],
+              );
+            },
           ),
           const SizedBox(height: 14),
           AspectRatio(
@@ -1081,6 +1109,68 @@ class _ArchiveClipRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    Widget snapshot({double? width, double? height, bool expanded = false}) {
+      final image = Image.network(
+        snapshotUri,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => Container(
+          color: colors.surfaceMuted,
+          child: Icon(Icons.broken_image_rounded, color: colors.muted),
+        ),
+      );
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(15),
+        child: expanded
+            ? AspectRatio(aspectRatio: 16 / 9, child: image)
+            : SizedBox(width: width, height: height, child: image),
+      );
+    }
+
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          DateFormat('dd.MM.yyyy HH:mm:ss').format(record.startedAt),
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+            color: colors.textStrong,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${_timeRange(record)} · ${_formatDuration(record.durationSeconds)} · ${_formatBytes(record.sizeBytes)}',
+          style: TextStyle(color: colors.muted, fontSize: 12),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            if (events.isEmpty)
+              _EventBadge(
+                label: 'без меток',
+                icon: Icons.radio_button_unchecked_rounded,
+                color: colors.muted,
+              )
+            else
+              for (final event in events.take(3))
+                _EventBadge(
+                  label:
+                      '${_eventLabel(event.type)} ${DateFormat('HH:mm:ss').format(event.ts)}',
+                  icon: _eventIcon(event.type),
+                  color: _eventColor(context, event.type),
+                ),
+          ],
+        ),
+      ],
+    );
+
+    final playButton = IconButton.filled(
+      onPressed: onPlay,
+      icon: const Icon(Icons.play_arrow_rounded),
+      tooltip: 'Играть отсюда',
+    );
+
     return RepaintBoundary(
       child: InkWell(
         onTap: onTap,
@@ -1095,76 +1185,32 @@ class _ArchiveClipRow extends StatelessWidget {
               color: active ? colors.primaryAccent : colors.border,
             ),
           ),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(15),
-                child: SizedBox(
-                  width: 148,
-                  height: 84,
-                  child: Image.network(
-                    snapshotUri,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      color: colors.surfaceMuted,
-                      child: Icon(
-                        Icons.broken_image_rounded,
-                        color: colors.muted,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 420;
+              if (compact) {
+                return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      DateFormat(
-                        'dd.MM.yyyy HH:mm:ss',
-                      ).format(record.startedAt),
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: colors.textStrong,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${_timeRange(record)} · ${_formatDuration(record.durationSeconds)} · ${_formatBytes(record.sizeBytes)}',
-                      style: TextStyle(color: colors.muted, fontSize: 12),
-                    ),
+                    snapshot(expanded: true),
+                    const SizedBox(height: 10),
+                    details,
                     const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: [
-                        if (events.isEmpty)
-                          _EventBadge(
-                            label: 'без меток',
-                            icon: Icons.radio_button_unchecked_rounded,
-                            color: colors.muted,
-                          )
-                        else
-                          for (final event in events.take(3))
-                            _EventBadge(
-                              label:
-                                  '${_eventLabel(event.type)} ${DateFormat('HH:mm:ss').format(event.ts)}',
-                              icon: _eventIcon(event.type),
-                              color: _eventColor(context, event.type),
-                            ),
-                      ],
-                    ),
+                    Align(alignment: Alignment.centerRight, child: playButton),
                   ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              IconButton.filled(
-                onPressed: onPlay,
-                icon: const Icon(Icons.play_arrow_rounded),
-                tooltip: 'Играть отсюда',
-              ),
-            ],
+                );
+              }
+
+              return Row(
+                children: [
+                  snapshot(width: 148, height: 84),
+                  const SizedBox(width: 14),
+                  Expanded(child: details),
+                  const SizedBox(width: 10),
+                  playButton,
+                ],
+              );
+            },
           ),
         ),
       ),

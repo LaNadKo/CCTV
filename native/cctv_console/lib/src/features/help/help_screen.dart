@@ -792,6 +792,25 @@ const _helpTabs = [
         tags: ['api', 'ключи', 'scopes', 'processor', 'безопасность'],
       ),
       _HelpSection(
+        id: 'setup',
+        title: 'CCTV Setup',
+        summary:
+            'Setup настраивает публичный домен, nginx, Let’s Encrypt и профиль подключения Console без ручного редактирования конфигов.',
+        bullets: [
+          'Домен должен указывать на этот сервер, а порты 80 и 443 должны быть доступны для HTTP-01 проверки Let’s Encrypt.',
+          'Мастер записывает DOMAIN, SSL_EMAIL, ALLOWED_HOSTS и CORS_ORIGINS в .env, генерирует недостающие секреты production-режима и поднимает nginx в bootstrap-режиме.',
+          'После выпуска сертификата включается HTTPS, запускается certbot renew и создаётся профиль подключения Console на https://домен.',
+          'На Android запуск Docker недоступен: команда копируется, а выполнять её нужно на серверной Windows/Linux машине из папки проекта.',
+        ],
+        previewTitle: 'Порядок настройки',
+        previewLines: [
+          'Указать домен и email',
+          'Проверить DNS и backend',
+          'Запустить настройку или скопировать команду',
+        ],
+        tags: ['setup', 'https', 'nginx', 'letsencrypt', 'домен'],
+      ),
+      _HelpSection(
         id: 'troubleshooting',
         title: 'Типовые проблемы',
         summary:

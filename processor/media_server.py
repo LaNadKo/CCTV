@@ -185,6 +185,8 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
 
         qs = parse_qs(query or "")
         overlay = qs.get("overlay", ["1"])[0].lower() not in {"0", "false", "no"}
+        max_fps = _parse_float(qs.get("max_fps", ["20"])[0], default=20.0)
+        frame_interval = 1.0 / min(max(max_fps, 1.0), 30.0)
 
         self.send_response(200)
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -195,15 +197,30 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
 
+        last_frame: bytes | None = None
+        last_sent_at = 0.0
         try:
             while not self.media_server.stop_event.is_set():
                 frame = worker.get_stream_frame(overlay=overlay)
-                if frame:
-                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                if frame and frame is not last_frame:
+                    now = time.monotonic()
+                    if last_sent_at and now - last_sent_at < frame_interval:
+                        time.sleep(min(frame_interval - (now - last_sent_at), 0.02))
+                        continue
+                    header = (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        + f"Content-Length: {len(frame)}\r\n".encode("ascii")
+                        + f"X-CCTV-Sent-At: {time.time():.6f}\r\n\r\n".encode("ascii")
+                    )
+                    self.wfile.write(header)
                     self.wfile.write(frame)
                     self.wfile.write(b"\r\n")
                     self.wfile.flush()
-                time.sleep(1 / 20)
+                    last_frame = frame
+                    last_sent_at = time.monotonic()
+                    continue
+                time.sleep(0.01)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             log.debug("media.live client disconnected camera=%s", camera_id)
 
@@ -383,3 +400,10 @@ class ProcessorMediaServer:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
         self._thread = None
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default

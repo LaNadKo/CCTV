@@ -1,5 +1,5 @@
 # Stage 1: Build React SPA
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -9,6 +9,7 @@ RUN npm run build
 # Stage 2: Serve static files with nginx
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
+RUN apk del curl || true
 # SPA fallback: all routes → index.html
 RUN echo 'server { \
     listen 80; \

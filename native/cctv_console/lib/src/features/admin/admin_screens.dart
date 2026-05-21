@@ -686,6 +686,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
         title: 'Код подключения Processor',
         value: '${result['code'] ?? ''}',
         note: 'Действует до: ${formatCell(result['expires_at'])}',
+        segmentedCode: true,
       );
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');

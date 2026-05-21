@@ -2,7 +2,7 @@ import time
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,7 +42,7 @@ async def _user_from_token(
         if sub is None:
             raise credentials_exception
         user_id = int(sub)
-    except (JWTError, ValueError):
+    except (InvalidTokenError, ValueError):
         raise credentials_exception
 
     result = await session.execute(select(models.User).where(models.User.user_id == user_id))

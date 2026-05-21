@@ -105,40 +105,7 @@ class _LiveScreenState extends State<LiveScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Live',
-                            style: Theme.of(context).textTheme.displaySmall
-                                ?.copyWith(
-                                  color: colors.textStrong,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                          ),
-                          Text(
-                            'Камеры, Processor и быстрые ONVIF-команды',
-                            style: TextStyle(color: colors.muted),
-                          ),
-                        ],
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _loading ? null : _load,
-                      icon: _loading
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.refresh_rounded),
-                      label: const Text('Обновить'),
-                    ),
-                  ],
-                ),
+                _LiveHeader(loading: _loading, onRefresh: _load),
                 const SizedBox(height: 18),
                 if (_error != null)
                   Padding(
@@ -153,6 +120,7 @@ class _LiveScreenState extends State<LiveScreen>
                         label: 'Камер в системе',
                         value: '${_cameras.length}',
                         icon: Icons.videocam_rounded,
+                        compact: compact,
                       ),
                       StatCard(
                         label: 'Processor online',
@@ -161,6 +129,7 @@ class _LiveScreenState extends State<LiveScreen>
                         accent: onlineProcessors > 0
                             ? colors.success
                             : colors.warning,
+                        compact: compact,
                       ),
                       StatCard(
                         label: 'Ожидают ревью',
@@ -169,18 +138,20 @@ class _LiveScreenState extends State<LiveScreen>
                         accent: _pending.isEmpty
                             ? colors.success
                             : colors.warning,
+                        compact: compact,
                       ),
                     ];
                     if (compact) {
-                      return Column(
-                        children: cards
-                            .map(
-                              (card) => Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: card,
-                              ),
-                            )
-                            .toList(),
+                      final tileWidth = constraints.maxWidth >= 330
+                          ? (constraints.maxWidth - 8) / 2
+                          : constraints.maxWidth;
+                      return Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final card in cards)
+                            SizedBox(width: tileWidth, child: card),
+                        ],
                       );
                     }
                     return Row(
@@ -278,6 +249,7 @@ class _LiveScreenState extends State<LiveScreen>
   }
 
   int _gridColumns(double width, LiveDensity density, int forcedColumns) {
+    if (width < 600) return 1;
     if (forcedColumns > 0) return forcedColumns;
     if (density == LiveDensity.focus) return 1;
     if (width >= 1240) return density == LiveDensity.compact ? 3 : 2;
@@ -304,8 +276,9 @@ class _GridControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final compact = MediaQuery.sizeOf(context).width < 600;
     return GlassPanel(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.all(compact ? 10 : 12),
       child: Wrap(
         spacing: 8,
         runSpacing: 8,
@@ -355,12 +328,86 @@ class _GridControls extends StatelessWidget {
               size: 18,
             ),
           ),
-          Text(
-            'Перетаскивайте карточки долгим нажатием.',
-            style: TextStyle(color: colors.muted, fontSize: 12),
-          ),
+          if (!compact)
+            Text(
+              'Перетаскивайте карточки долгим нажатием.',
+              style: TextStyle(color: colors.muted, fontSize: 12),
+            ),
         ],
       ),
+    );
+  }
+}
+
+class _LiveHeader extends StatelessWidget {
+  const _LiveHeader({required this.loading, required this.onRefresh});
+
+  final bool loading;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 600;
+        final title = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Live',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  (compact
+                          ? Theme.of(context).textTheme.headlineMedium
+                          : Theme.of(context).textTheme.displaySmall)
+                      ?.copyWith(
+                        color: colors.textStrong,
+                        fontWeight: FontWeight.w900,
+                        height: 1.05,
+                      ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Камеры, Processor и быстрые ONVIF-команды',
+              maxLines: compact ? 2 : 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colors.muted,
+                fontSize: compact ? 13 : null,
+              ),
+            ),
+          ],
+        );
+        final refresh = OutlinedButton.icon(
+          onPressed: loading ? null : onRefresh,
+          icon: loading
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh_rounded),
+          label: const Text('Обновить'),
+        );
+
+        if (compact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [title, const SizedBox(height: 10), refresh],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: title),
+            const SizedBox(width: 12),
+            refresh,
+          ],
+        );
+      },
     );
   }
 }
@@ -632,6 +679,7 @@ class _CameraTileState extends State<_CameraTile> {
     final token = auth.accessToken;
     final camera = widget.camera;
     final canControlPtz = camera.supportsPtz && (auth.user?.isAdmin ?? false);
+    final compact = MediaQuery.sizeOf(context).width < 600;
 
     return GlassPanel(
       padding: EdgeInsets.zero,
@@ -654,6 +702,9 @@ class _CameraTileState extends State<_CameraTile> {
                         uri: api.cameraStreamUri(
                           camera.cameraId,
                           annotate: widget.annotate,
+                          maxFps: MediaQuery.sizeOf(context).width < 600
+                              ? 12
+                              : 20,
                         ),
                         headers: {'Authorization': 'Bearer $token'},
                         fit: BoxFit.cover,
@@ -697,7 +748,7 @@ class _CameraTileState extends State<_CameraTile> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(compact ? 12 : 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1140,6 +1191,7 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
                         uri: api.cameraStreamUri(
                           widget.camera.cameraId,
                           annotate: widget.annotate,
+                          maxFps: 24,
                         ),
                         headers: {'Authorization': 'Bearer $token'},
                         fit: BoxFit.contain,

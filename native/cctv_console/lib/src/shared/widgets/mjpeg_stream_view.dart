@@ -97,11 +97,15 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
               (chunk) {
                 if (!mounted || generation != _generation) return;
                 buffer.addAll(chunk);
+                Uint8List? latestFrame;
                 while (true) {
                   final frame = _takeNextJpeg(buffer);
                   if (frame == null) break;
+                  latestFrame = frame;
+                }
+                if (latestFrame != null) {
                   setState(() {
-                    _frame = frame;
+                    _frame = latestFrame;
                     _error = null;
                   });
                 }
@@ -134,12 +138,15 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
   Widget build(BuildContext context) {
     final frame = _frame;
     if (frame != null) {
-      return Image.memory(
-        frame,
-        fit: widget.fit,
-        gaplessPlayback: true,
-        width: double.infinity,
-        height: double.infinity,
+      return RepaintBoundary(
+        child: Image.memory(
+          frame,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          filterQuality: FilterQuality.low,
+          width: double.infinity,
+          height: double.infinity,
+        ),
       );
     }
     final error = _error;

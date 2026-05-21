@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/segmented_code_field.dart';
 import '../auth/auth_controller.dart';
 
 typedef RowMap = Map<String, dynamic>;
@@ -640,6 +642,7 @@ class ProcessorsScreen extends StatelessWidget {
               title: 'Код Processor',
               value: '${result['code'] ?? ''}',
               note: 'Действует до: ${formatCell(result['expires_at'])}',
+              segmentedCode: true,
             );
           },
         ),
@@ -1445,41 +1448,65 @@ class _ModuleRowTile extends StatelessWidget {
           color: colors.surfaceMuted,
           border: Border.all(color: colors.border),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Expanded(
-              child: Wrap(
-                spacing: 14,
-                runSpacing: 10,
-                children: [
-                  for (final column in columns)
-                    SizedBox(
-                      width: column.width.clamp(82, 260).toDouble(),
-                      child: _ModuleCell(column: column, row: row),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 600;
+            final cells = Wrap(
+              spacing: compact ? 10 : 14,
+              runSpacing: 10,
+              children: [
+                for (final column in columns)
+                  SizedBox(
+                    width: compact
+                        ? (constraints.maxWidth >= 340
+                              ? (constraints.maxWidth - 10) / 2
+                              : constraints.maxWidth)
+                        : column.width.clamp(82, 260).toDouble(),
+                    child: _ModuleCell(column: column, row: row),
+                  ),
+              ],
+            );
+            final actions = Wrap(
+              spacing: 2,
+              runSpacing: 2,
+              children: [
+                for (final command in visibleCommands)
+                  IconButton(
+                    tooltip: command.tooltip,
+                    onPressed: () => onCommand(command),
+                    icon: Icon(
+                      command.icon,
+                      size: 19,
+                      color: command.color(context),
                     ),
-                ],
-              ),
-            ),
-            if (visibleCommands.isNotEmpty) ...[
-              const SizedBox(width: 10),
-              Wrap(
-                spacing: 2,
+                  ),
+              ],
+            );
+
+            if (compact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final command in visibleCommands)
-                    IconButton(
-                      tooltip: command.tooltip,
-                      onPressed: () => onCommand(command),
-                      icon: Icon(
-                        command.icon,
-                        size: 19,
-                        color: command.color(context),
-                      ),
-                    ),
+                  cells,
+                  if (visibleCommands.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    actions,
+                  ],
                 ],
-              ),
-            ],
-          ],
+              );
+            }
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(child: cells),
+                if (visibleCommands.isNotEmpty) ...[
+                  const SizedBox(width: 10),
+                  actions,
+                ],
+              ],
+            );
+          },
         ),
       ),
     );
@@ -1654,41 +1681,89 @@ class ModuleHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 46,
-          height: 46,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: colors.surfaceMuted,
-            border: Border.all(color: colors.border),
-          ),
-          child: Icon(icon, color: colors.primaryAccent, size: 22),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 600;
+        final titleBlock = Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: compact ? 40 : 46,
+              height: compact ? 40 : 46,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(compact ? 14 : 16),
+                color: colors.surfaceMuted,
+                border: Border.all(color: colors.border),
+              ),
+              child: Icon(
+                icon,
+                color: colors.primaryAccent,
+                size: compact ? 20 : 22,
+              ),
+            ),
+            SizedBox(width: compact ? 10 : 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      color: colors.textStrong,
+                      fontWeight: FontWeight.w900,
+                      fontSize: compact ? 24 : null,
+                      height: 1.05,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    maxLines: compact ? 3 : 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: colors.muted,
+                      fontSize: compact ? 13 : 14,
+                      height: 1.25,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+
+        if (compact) {
+          return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w900,
+              titleBlock,
+              if (trailing != null) ...[
+                const SizedBox(height: 12),
+                SizedBox(width: double.infinity, child: trailing!),
+              ],
+            ],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: titleBlock),
+            if (trailing != null) ...[
+              const SizedBox(width: 12),
+              Flexible(
+                flex: 0,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: trailing!,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: TextStyle(color: colors.muted, fontSize: 14),
-              ),
             ],
-          ),
-        ),
-        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
-      ],
+          ],
+        );
+      },
     );
   }
 }
@@ -2170,6 +2245,7 @@ Future<void> showResultDialog(
   required String title,
   required String value,
   String? note,
+  bool segmentedCode = false,
 }) {
   return showDialog<void>(
     context: context,
@@ -2177,15 +2253,54 @@ Future<void> showResultDialog(
       final colors = dialogContext.colors;
       return AlertDialog(
         title: Text(title),
-        content: SelectableText(
-          [value, if (note != null && note.isNotEmpty) '\n$note'].join('\n'),
-          style: TextStyle(
-            color: colors.textStrong,
-            fontSize: 15,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
+        content: segmentedCode
+            ? SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SegmentedCodeDisplay(
+                      value: value,
+                      length: value.isEmpty ? 8 : value.length,
+                    ),
+                    if (note != null && note.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Text(
+                        note,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: colors.muted, fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ),
+              )
+            : SelectableText(
+                [
+                  value,
+                  if (note != null && note.isNotEmpty) '\n$note',
+                ].join('\n'),
+                style: TextStyle(
+                  color: colors.textStrong,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
         actions: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: value));
+              if (!dialogContext.mounted) return;
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(
+                  content: Text('Скопировано'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded, size: 18),
+            label: const Text('Скопировать'),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Закрыть'),

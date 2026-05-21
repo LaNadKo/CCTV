@@ -2,6 +2,7 @@ import 'package:flex_color_picker/flex_color_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/profiles/connection_profiles.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
@@ -29,6 +30,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _apiUrlController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveConnection() async {
+    final profiles = context.read<ConnectionProfilesController>();
+    final settings = context.read<ThemeController>();
+    final active = profiles.activeProfile;
+    final profile = await profiles.saveProfile(
+      id: active?.id,
+      name: active?.name ?? 'CCTV Server',
+      baseUrl: _apiUrlController.text,
+      login: active?.login,
+      makeActive: true,
+    );
+    await settings.setApiBaseUrl(profile.baseUrl);
   }
 
   @override
@@ -83,8 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const SizedBox(width: 10),
                       ElevatedButton(
-                        onPressed: () =>
-                            settings.setApiBaseUrl(_apiUrlController.text),
+                        onPressed: _saveConnection,
                         child: const Text('Сохранить'),
                       ),
                     ],
@@ -240,6 +254,7 @@ class _NavigationSettings extends StatelessWidget {
     _NavOption('/groups', 'Группы'),
     _NavOption('/persons', 'Персоны', adminOnly: true),
     _NavOption('/processors', 'Processor', adminOnly: true),
+    _NavOption('/setup', 'Setup', adminOnly: true),
     _NavOption('/users', 'Пользователи', adminOnly: true),
     _NavOption('/api-keys', 'API ключи', adminOnly: true),
     _NavOption('/profile', 'Профиль'),
@@ -558,7 +573,13 @@ class _PalettePresets extends StatelessWidget {
   final Color selectedSecondary;
 
   static const _presets = [
+    _PalettePreset('Glacier Ops', Color(0xFF8EDBFF), Color(0xFF2F80ED)),
     _PalettePreset('CCTV Cyan', Color(0xFF5EF0FF), Color(0xFF6F7BFF)),
+    _PalettePreset('Nights', Color(0xFFE0264F), Color(0xFF001B2E)),
+    _PalettePreset('Arctic', Color(0xFFCFE6FF), Color(0xFF1D6EEA)),
+    _PalettePreset('Dusk', Color(0xFFE83FB7), Color(0xFF6028FF)),
+    _PalettePreset('Solar Flare', Color(0xFFFFB000), Color(0xFFFF2E55)),
+    _PalettePreset('Vault Gold', Color(0xFFD0AF67), Color(0xFF141417)),
     _PalettePreset('Amber Ops', Color(0xFFFFC857), Color(0xFFFF6B35)),
     _PalettePreset('Forest Lab', Color(0xFF4ADE80), Color(0xFF22D3EE)),
     _PalettePreset('Mono Blue', Color(0xFF93C5FD), Color(0xFF64748B)),

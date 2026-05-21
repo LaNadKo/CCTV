@@ -724,29 +724,37 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Отчёты',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w900,
-                ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 600;
+        final title = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Отчёты',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                color: colors.textStrong,
+                fontWeight: FontWeight.w900,
+                fontSize: compact ? 24 : null,
+                height: 1.05,
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Сводка по пользователям, камерам, Processor, событиям, архиву и безопасности.',
-                style: TextStyle(color: colors.muted, fontSize: 13),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Сводка по пользователям, камерам, Processor, событиям, архиву и безопасности.',
+              maxLines: compact ? 3 : 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colors.muted,
+                fontSize: compact ? 13 : 13,
+                height: 1.25,
               ),
-            ],
-          ),
-        ),
-        IconButton.filledTonal(
+            ),
+          ],
+        );
+        final refresh = IconButton.filledTonal(
           onPressed: busy ? null : onRefresh,
           icon: busy
               ? const SizedBox(
@@ -755,8 +763,23 @@ class _Header extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.refresh_rounded),
-        ),
-      ],
+        );
+
+        if (compact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [title, const SizedBox(height: 10), refresh],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: title),
+            refresh,
+          ],
+        );
+      },
     );
   }
 }
