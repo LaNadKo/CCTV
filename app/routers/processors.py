@@ -653,7 +653,11 @@ async def get_storage_config(
         st_result = await session.execute(select(models.StorageTarget).limit(1))
         st = st_result.scalar_one_or_none()
     if not st:
-        raise HTTPException(status_code=404, detail="No storage target")
+        return StorageConfigOut(
+            storage_type="local",
+            root_path="processor://local",
+            connection_config={"mode": "processor_local"},
+        )
     config = None
     if st.connection_config:
         try:

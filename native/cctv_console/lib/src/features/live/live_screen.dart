@@ -742,21 +742,27 @@ class _NoStream extends StatelessWidget {
     return Container(
       color: Colors.black.withValues(alpha: 0.2),
       child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.videocam_off_rounded, color: colors.muted, size: 34),
-            const SizedBox(height: 10),
-            Text(
-              message,
-              style: TextStyle(
-                color: colors.textStrong,
-                fontWeight: FontWeight.w800,
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.videocam_off_rounded, color: colors.muted, size: 34),
+              const SizedBox(height: 10),
+              Text(
+                message,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: colors.textStrong,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(camera.name, style: TextStyle(color: colors.muted)),
-          ],
+              const SizedBox(height: 6),
+              Text(camera.name, style: TextStyle(color: colors.muted)),
+            ],
+          ),
         ),
       ),
     );
@@ -1059,9 +1065,15 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
                         headers: {'Authorization': 'Bearer $token'},
                         fit: BoxFit.contain,
                         errorBuilder: (context, error) => Center(
-                          child: Text(
-                            'Нет live-потока: $error',
-                            style: const TextStyle(color: Colors.white70),
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              'Нет live-потока: $error',
+                              maxLines: 5,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70),
+                            ),
                           ),
                         ),
                       ),
