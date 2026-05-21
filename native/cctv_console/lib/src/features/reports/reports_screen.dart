@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
@@ -17,7 +18,8 @@ class ReportsDashboardScreen extends StatefulWidget {
   State<ReportsDashboardScreen> createState() => _ReportsDashboardScreenState();
 }
 
-class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
+class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
+    with RouteRefreshState<ReportsDashboardScreen> {
   bool _busy = false;
   String? _error;
 
@@ -56,6 +58,15 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/reports';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_busy) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {

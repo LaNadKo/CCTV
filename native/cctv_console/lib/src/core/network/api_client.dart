@@ -163,19 +163,28 @@ class ApiClient {
     String path, {
     String? token,
     Map<String, String?> query = const {},
+    Duration? timeout,
   }) {
-    return get(path, token: token, query: query, decoder: (json) => json);
+    return get(
+      path,
+      token: token,
+      query: query,
+      timeout: timeout,
+      decoder: (json) => json,
+    );
   }
 
   Future<List<Map<String, dynamic>>> getJsonList(
     String path, {
     String? token,
     Map<String, String?> query = const {},
+    Duration? timeout,
   }) {
     return get(
       path,
       token: token,
       query: query,
+      timeout: timeout,
       decoder: (json) => _asMapList(json),
     );
   }

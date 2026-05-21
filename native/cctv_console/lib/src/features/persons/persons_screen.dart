@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
@@ -31,7 +32,8 @@ class _LiveCaptureResult {
   final double? maxSimilarity;
 }
 
-class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
+class _PersonsManagementScreenState extends State<PersonsManagementScreen>
+    with RouteRefreshState<PersonsManagementScreen> {
   final _searchController = TextEditingController();
   final _createFirstName = TextEditingController();
   final _createLastName = TextEditingController();
@@ -61,6 +63,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     super.initState();
     _searchController.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/persons';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_busy || _liveCaptureRunning) return Future<void>.value();
+    return _load();
   }
 
   @override
@@ -128,6 +139,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
       _createMiddleName.clear();
       _selectedPersonId = created['person_id'] as int?;
       await _reloadQuietly();
+      _markPersonsChanged();
       _toast('Персона создана');
     });
   }
@@ -156,6 +168,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
         },
       );
       await _reloadQuietly();
+      _markPersonsChanged();
       _toast('Карточка персоны сохранена');
     });
   }
@@ -188,6 +201,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
       await api.deleteVoid('/persons/$personId', token: token);
       _selectedPersonId = null;
       await _reloadQuietly();
+      _markPersonsChanged();
       _toast('Персона удалена');
     });
   }
@@ -216,6 +230,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
         cameraId: _embeddingCameraId,
       );
       await _reloadQuietly();
+      _markPersonsChanged();
       final status = '${result['status'] ?? 'added'}';
       final similarity = result['max_similarity'];
       _toast(
@@ -282,6 +297,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     );
     if (reload) {
       await _reloadQuietly();
+      _markPersonsChanged();
     }
     final similarity = result['max_similarity'];
     return _LiveCaptureResult(
@@ -393,6 +409,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
           : 'Автосбор остановлен: добавлено $added, попыток $attempts.';
     });
     unawaited(_reloadQuietly());
+    _markPersonsChanged();
   }
 
   void _stopLiveAutoCapture() {
@@ -439,6 +456,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
       _createMiddleName.clear();
       _selectedPersonId = result['person_id'] as int?;
       await _reloadQuietly();
+      _markPersonsChanged();
       _toast('Персона создана из фото');
     });
   }
@@ -511,6 +529,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _markPersonsChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const [
+      '/reviews',
+      '/reports',
+      '/live',
+    ]);
   }
 
   int? _resolveSelectedPersonId(List<Map<String, dynamic>> persons) {

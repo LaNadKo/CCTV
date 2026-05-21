@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.config import settings
-from app.routers import auth, groups, cameras, admin, detections, api_keys, recordings
+from app.routers import auth, groups, cameras, admin, detections, api_keys, recordings, system
 from app.routers import processors as processors_router
 from app.routers import persons as persons_router
 from app.routers import reports as reports_router
@@ -61,7 +61,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.url.path.startswith(("/auth", "/admin", "/api-keys", "/cameras", "/detections", "/recordings", "/processors", "/persons", "/reports")):
+    if request.url.path.startswith(("/auth", "/admin", "/api-keys", "/cameras", "/detections", "/recordings", "/processors", "/persons", "/reports", "/system")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -118,6 +118,7 @@ app.include_router(recordings.router)
 app.include_router(processors_router.router)
 app.include_router(persons_router.router)
 app.include_router(reports_router.router)
+app.include_router(system.router)
 
 RECORDINGS_STATIC_DIR = Path("recordings")
 SNAPSHOTS_STATIC_DIR = Path("snapshots")

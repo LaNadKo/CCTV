@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
@@ -36,7 +37,8 @@ class ReviewsManagementScreen extends StatefulWidget {
       _ReviewsManagementScreenState();
 }
 
-class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
+class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
+    with RouteRefreshState<ReviewsManagementScreen> {
   final _search = TextEditingController();
   bool _loading = false;
   String? _error;
@@ -49,6 +51,15 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
     super.initState();
     _search.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/reviews';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   @override
@@ -122,6 +133,7 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
         personId: _personByEvent[eventId],
       );
       await _load();
+      _markReviewsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -168,6 +180,7 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
       final personId = _asInt(result['person_id']);
       if (personId != null) _personByEvent[eventId] = personId;
       await _load();
+      _markReviewsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -194,6 +207,7 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
       final personId = _asInt(result['person_id']);
       if (personId != null) _personByEvent[eventId] = personId;
       await _load();
+      _markReviewsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -211,9 +225,15 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen> {
     try {
       await context.read<ApiClient>().rejectAllPendingReviews(token);
       await _load();
+      _markReviewsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
+  }
+
+  void _markReviewsChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const ['/reports', '/persons']);
   }
 
   @override
@@ -312,7 +332,8 @@ class GroupsManagementScreen extends StatefulWidget {
   State<GroupsManagementScreen> createState() => _GroupsManagementScreenState();
 }
 
-class _GroupsManagementScreenState extends State<GroupsManagementScreen> {
+class _GroupsManagementScreenState extends State<GroupsManagementScreen>
+    with RouteRefreshState<GroupsManagementScreen> {
   bool _loading = false;
   String? _error;
   List<RowMap> _groups = const [];
@@ -324,6 +345,15 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/groups';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {
@@ -461,9 +491,19 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen> {
     try {
       await action();
       await _load();
+      _markGroupsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
+  }
+
+  void _markGroupsChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const [
+      '/live',
+      '/cameras',
+      '/reports',
+    ]);
   }
 
   @override
@@ -563,7 +603,8 @@ class ProcessorsManagementScreen extends StatefulWidget {
 }
 
 class _ProcessorsManagementScreenState
-    extends State<ProcessorsManagementScreen> {
+    extends State<ProcessorsManagementScreen>
+    with RouteRefreshState<ProcessorsManagementScreen> {
   bool _loading = false;
   String? _error;
   List<ProcessorOut> _processors = const [];
@@ -583,6 +624,15 @@ class _ProcessorsManagementScreenState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/processors';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {
@@ -655,6 +705,7 @@ class _ProcessorsManagementScreenState
         },
       );
       await _load();
+      _markProcessorsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -670,6 +721,7 @@ class _ProcessorsManagementScreenState
         token: token,
       );
       await _load();
+      _markProcessorsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -694,6 +746,7 @@ class _ProcessorsManagementScreenState
         body: {'command_type': commandType, 'payload': <String, dynamic>{}},
       );
       await _load();
+      _markProcessorsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -710,6 +763,7 @@ class _ProcessorsManagementScreenState
         token: token,
       );
       await _load();
+      _markProcessorsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -731,9 +785,15 @@ class _ProcessorsManagementScreenState
       );
       _selectedId = null;
       await _load();
+      _markProcessorsChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
+  }
+
+  void _markProcessorsChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const ['/live', '/reports']);
   }
 
   @override
@@ -848,7 +908,8 @@ class UsersManagementScreen extends StatefulWidget {
   State<UsersManagementScreen> createState() => _UsersManagementScreenState();
 }
 
-class _UsersManagementScreenState extends State<UsersManagementScreen> {
+class _UsersManagementScreenState extends State<UsersManagementScreen>
+    with RouteRefreshState<UsersManagementScreen> {
   bool _loading = false;
   String? _error;
   List<RowMap> _users = const [];
@@ -857,6 +918,15 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/users';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {
@@ -923,9 +993,15 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
     try {
       await action();
       await _load();
+      _markUsersChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
+  }
+
+  void _markUsersChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const ['/profile', '/reports']);
   }
 
   @override
@@ -1004,7 +1080,8 @@ class ApiKeysManagementScreen extends StatefulWidget {
       _ApiKeysManagementScreenState();
 }
 
-class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen> {
+class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen>
+    with RouteRefreshState<ApiKeysManagementScreen> {
   bool _loading = false;
   String? _error;
   List<RowMap> _keys = const [];
@@ -1013,6 +1090,15 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/api-keys';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   Future<void> _load() async {
@@ -1052,6 +1138,7 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen> {
         note: 'Ключ показывается один раз.',
       );
       await _load();
+      _markApiKeysChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -1073,6 +1160,7 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen> {
         body: values,
       );
       await _load();
+      _markApiKeysChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
@@ -1093,9 +1181,15 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen> {
         token: context.read<AuthController>().accessToken,
       );
       await _load();
+      _markApiKeysChanged();
     } catch (error) {
       if (mounted) showErrorSnack(context, '$error');
     }
+  }
+
+  void _markApiKeysChanged() {
+    if (!mounted) return;
+    context.read<RefreshBus>().markStale(const ['/processors', '/reports']);
   }
 
   @override

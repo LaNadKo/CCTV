@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
+import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
@@ -17,6 +21,19 @@ import '../recordings/recordings_screen.dart';
 import '../reports/reports_screen.dart';
 import '../settings/settings_screen.dart';
 
+const _changePollInterval = Duration(seconds: 5);
+const _changePollTimeout = Duration(seconds: 5);
+const _changeSectionRoutes = <String, List<String>>{
+  'cameras': ['/live', '/cameras', '/recordings', '/reports', '/processors'],
+  'groups': ['/live', '/groups', '/cameras', '/reports'],
+  'persons': ['/persons', '/reviews', '/reports'],
+  'recordings': ['/recordings', '/reports'],
+  'events': ['/live', '/recordings', '/reviews', '/reports'],
+  'processors': ['/live', '/processors', '/reports'],
+  'users': ['/users', '/profile', '/reports'],
+  'api_keys': ['/api-keys', '/processors', '/reports'],
+};
+
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -27,7 +44,23 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   String _selectedRoute = '/live';
   bool _routeRestored = false;
+  bool _hasChangeSnapshot = false;
+  bool _changePollInFlight = false;
+  Timer? _changePollTimer;
+  Map<String, String> _sectionRevisions = const {};
   final Set<String> _visitedRoutes = {'/live'};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_pollChanges());
+      _changePollTimer = Timer.periodic(
+        _changePollInterval,
+        (_) => unawaited(_pollChanges()),
+      );
+    });
+  }
 
   @override
   void didChangeDependencies() {
@@ -35,6 +68,12 @@ class _AppShellState extends State<AppShell> {
     if (_routeRestored) return;
     _routeRestored = true;
     _selectedRoute = context.read<ThemeController>().lastRoute;
+  }
+
+  @override
+  void dispose() {
+    _changePollTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -80,6 +119,57 @@ class _AppShellState extends State<AppShell> {
       _visitedRoutes.add(route);
     });
     context.read<ThemeController>().setLastRoute(route);
+  }
+
+  Future<void> _pollChanges() async {
+    if (!mounted || _changePollInFlight) return;
+    final auth = context.read<AuthController>();
+    final token = auth.accessToken;
+    if (token == null || token.isEmpty) return;
+
+    _changePollInFlight = true;
+    try {
+      final raw = await context.read<ApiClient>().getJson(
+        '/system/changes',
+        token: token,
+        timeout: _changePollTimeout,
+      );
+      if (!mounted) return;
+      final root = raw is Map ? raw : null;
+      final sections = root?['sections'];
+      if (sections is! Map) return;
+      final next = <String, String>{
+        for (final entry in sections.entries) '${entry.key}': '${entry.value}',
+      };
+      if (next.isEmpty) return;
+
+      if (!_hasChangeSnapshot) {
+        _sectionRevisions = next;
+        _hasChangeSnapshot = true;
+        return;
+      }
+
+      final changedSections = <String>{
+        for (final entry in next.entries)
+          if (_sectionRevisions[entry.key] != entry.value) entry.key,
+        for (final section in _sectionRevisions.keys)
+          if (!next.containsKey(section)) section,
+      };
+      _sectionRevisions = next;
+      if (changedSections.isEmpty) return;
+
+      final routes = <String>{
+        for (final section in changedSections)
+          ...?_changeSectionRoutes[section],
+      };
+      if (routes.isNotEmpty) {
+        context.read<RefreshBus>().markStale(routes);
+      }
+    } catch (_) {
+      // Polling is an optimization. Connection errors must not break navigation.
+    } finally {
+      _changePollInFlight = false;
+    }
   }
 
   List<_ShellTab> _tabsFor(CurrentUser? user) {

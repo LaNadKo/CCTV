@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'src/app.dart';
 import 'src/core/network/api_client.dart';
+import 'src/core/refresh/refresh_bus.dart';
 import 'src/core/theme/theme_controller.dart';
 import 'src/features/auth/auth_controller.dart';
 
@@ -25,6 +26,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: settings),
         Provider.value(value: apiClient),
         ChangeNotifierProvider.value(value: auth),
+        ChangeNotifierProvider(create: (_) => RefreshBus()),
       ],
       child: const CctvConsoleApp(),
     ),

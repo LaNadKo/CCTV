@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
+import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
@@ -26,7 +27,8 @@ class ArchiveRecordingsScreen extends StatefulWidget {
       _ArchiveRecordingsScreenState();
 }
 
-class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
+class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
+    with RouteRefreshState<ArchiveRecordingsScreen> {
   late final Player _player;
   late final VideoController _videoController;
   StreamSubscription<bool>? _completedSub;
@@ -54,6 +56,15 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
       }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  String get refreshRoute => '/recordings';
+
+  @override
+  Future<void> onRefreshRequested() {
+    if (_loading) return Future<void>.value();
+    return _load();
   }
 
   @override
