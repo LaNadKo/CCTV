@@ -129,6 +129,7 @@ async def list_recordings(
     date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
     date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
     limit: int = Query(default=300, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[RecordingOut]:
@@ -136,6 +137,7 @@ async def list_recordings(
         select(models.RecordingFile, models.VideoStream.camera_id)
         .join(models.VideoStream, models.VideoStream.video_stream_id == models.RecordingFile.video_stream_id)
         .order_by(models.RecordingFile.started_at.desc())
+        .offset(offset)
         .limit(limit)
     )
     if camera_id:

@@ -303,6 +303,8 @@ async def timeline(
     camera_id: int | None = Query(default=None),
     date_from: str | None = Query(default=None, description="ISO datetime start"),
     date_to: str | None = Query(default=None, description="ISO datetime end"),
+    limit: int = Query(default=3000, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -325,6 +327,7 @@ async def timeline(
             stmt = stmt.where(models.Event.event_ts <= dt)
         except ValueError:
             pass
+    stmt = stmt.order_by(models.Event.event_ts.desc()).offset(offset).limit(limit)
     res = await session.execute(stmt)
     rows = res.all()
     out = []
