@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -31,6 +33,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   int? _embeddingCameraId;
   List<Map<String, dynamic>> _persons = const [];
   List<CameraSummary> _cameras = const [];
+  List<Map<String, dynamic>> _appearances = const [];
 
   @override
   void initState() {
@@ -61,10 +64,12 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
       final persons = result[0] as List<Map<String, dynamic>>;
       final cameras = result[1] as List<CameraSummary>;
       final selectedId = _resolveSelectedPersonId(persons);
+      final appearances = await _fetchAppearances(selectedId);
       setState(() {
         _persons = persons;
         _cameras = cameras;
         _selectedPersonId = selectedId;
+        _appearances = appearances;
         if (_embeddingCameraId != null &&
             !_cameras.any((camera) => camera.cameraId == _embeddingCameraId)) {
           _embeddingCameraId = null;
@@ -181,6 +186,61 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     });
   }
 
+  Future<void> _captureLiveEmbedding() async {
+    final personId = _selectedPersonId;
+    final cameraId = _embeddingCameraId;
+    if (personId == null) return;
+    if (cameraId == null) {
+      _toast('Выберите камеру для live-кадра');
+      return;
+    }
+    await _run(() async {
+      final (api, token) = _deps();
+      final bytes = await api.captureCameraJpegFrame(token, cameraId);
+      final result = await api.uploadPersonPhotoStream(
+        token,
+        personId,
+        stream: Stream<List<int>>.value(bytes),
+        length: bytes.length,
+        filename: 'live-camera-$cameraId.jpg',
+        cameraId: cameraId,
+      );
+      await _reloadQuietly();
+      _toast('Live-кадр отправлен: ${result['status'] ?? 'ok'}');
+    });
+  }
+
+  Future<void> _createPersonFromPhoto() async {
+    final picked = await openFile(
+      acceptedTypeGroups: const [
+        XTypeGroup(
+          label: 'Изображения',
+          extensions: ['jpg', 'jpeg', 'png', 'webp'],
+          mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        ),
+      ],
+    );
+    if (picked == null) return;
+    await _run(() async {
+      final (api, token) = _deps();
+      final result = await api.enrollPersonPhotoStream(
+        token,
+        stream: picked.openRead(),
+        length: await picked.length(),
+        filename: picked.name,
+        firstName: _createFirstName.text,
+        lastName: _createLastName.text,
+        middleName: _createMiddleName.text,
+      );
+      _createFirstName.clear();
+      _createLastName.clear();
+      _createMiddleName.clear();
+      _selectedPersonId = result['person_id'] as int?;
+      await _reloadQuietly();
+      _toast('Персона создана из фото');
+    });
+  }
+
   Future<void> _reloadQuietly() async {
     final (api, token) = _deps();
     final result = await Future.wait([
@@ -191,12 +251,42 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
     final persons = result[0] as List<Map<String, dynamic>>;
     final cameras = result[1] as List<CameraSummary>;
     final selectedId = _resolveSelectedPersonId(persons);
+    final appearances = await _fetchAppearances(selectedId);
     setState(() {
       _persons = persons;
       _cameras = cameras;
       _selectedPersonId = selectedId;
+      _appearances = appearances;
     });
     _syncEditControllers();
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchAppearances(int? personId) async {
+    if (personId == null) return const [];
+    final (api, token) = _deps();
+    final result = await api.getJson(
+      '/reports/appearances',
+      token: token,
+      query: {'person_id': '$personId'},
+    );
+    final map = result is Map
+        ? result.map((key, value) => MapEntry('$key', value))
+        : <String, dynamic>{};
+    final items = map['items'];
+    if (items is! List) return const [];
+    return items
+        .whereType<Map>()
+        .map((item) => item.map((key, value) => MapEntry('$key', value)))
+        .toList();
+  }
+
+  Future<void> _loadSelectedAppearances() async {
+    try {
+      final appearances = await _fetchAppearances(_selectedPersonId);
+      if (mounted) setState(() => _appearances = appearances);
+    } catch (_) {
+      if (mounted) setState(() => _appearances = const []);
+    }
   }
 
   (ApiClient, String) _deps() {
@@ -233,6 +323,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
   void _selectPerson(int personId) {
     setState(() => _selectedPersonId = personId);
     _syncEditControllers();
+    unawaited(_loadSelectedAppearances());
   }
 
   void _syncEditControllers() {
@@ -376,9 +467,12 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen> {
                       onEmbeddingCameraChanged: (value) =>
                           setState(() => _embeddingCameraId = value),
                       onCreate: _createPerson,
+                      onCreateFromPhoto: _createPersonFromPhoto,
                       onSave: _saveSelectedPerson,
                       onDelete: _deleteSelectedPerson,
                       onAddPhoto: _addPhotoEmbedding,
+                      onCaptureLive: _captureLiveEmbedding,
+                      appearances: _appearances,
                     );
                     if (narrow) {
                       return Column(
@@ -567,9 +661,12 @@ class _PersonDetailPanel extends StatelessWidget {
     required this.embeddingCameraId,
     required this.onEmbeddingCameraChanged,
     required this.onCreate,
+    required this.onCreateFromPhoto,
     required this.onSave,
     required this.onDelete,
     required this.onAddPhoto,
+    required this.onCaptureLive,
+    required this.appearances,
   });
 
   final Map<String, dynamic>? person;
@@ -584,9 +681,12 @@ class _PersonDetailPanel extends StatelessWidget {
   final int? embeddingCameraId;
   final ValueChanged<int?> onEmbeddingCameraChanged;
   final VoidCallback onCreate;
+  final VoidCallback onCreateFromPhoto;
   final VoidCallback onSave;
   final VoidCallback onDelete;
   final VoidCallback onAddPhoto;
+  final VoidCallback onCaptureLive;
+  final List<Map<String, dynamic>> appearances;
 
   @override
   Widget build(BuildContext context) {
@@ -655,6 +755,12 @@ class _PersonDetailPanel extends StatelessWidget {
                           icon: const Icon(Icons.add_photo_alternate_rounded),
                           label: const Text('Добавить фото'),
                         ),
+                        const SizedBox(width: 10),
+                        OutlinedButton.icon(
+                          onPressed: busy ? null : onCaptureLive,
+                          icon: const Icon(Icons.camera_rounded),
+                          label: const Text('Кадр из Live'),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 14),
@@ -668,6 +774,8 @@ class _PersonDetailPanel extends StatelessWidget {
                       'Фото используется для добавления эмбеддинга. Если локальное извлечение лица недоступно, backend попробует Processor выбранной камеры.',
                       style: TextStyle(color: colors.muted, fontSize: 12),
                     ),
+                    const SizedBox(height: 14),
+                    _AppearancesPanel(items: appearances),
                   ],
                 ),
         ),
@@ -697,10 +805,75 @@ class _PersonDetailPanel extends StatelessWidget {
                 icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
                 label: const Text('Создать персону'),
               ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: busy ? null : onCreateFromPhoto,
+                icon: const Icon(Icons.add_a_photo_rounded, size: 18),
+                label: const Text('Создать из фото'),
+              ),
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AppearancesPanel extends StatelessWidget {
+  const _AppearancesPanel({required this.items});
+
+  final List<Map<String, dynamic>> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'История появлений',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontSize: 15,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (items.isEmpty)
+            Text('Появлений пока нет.', style: TextStyle(color: colors.muted))
+          else
+            for (final item in items.take(10))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.visibility_rounded,
+                      color: colors.primaryAccent,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${item['camera_name'] ?? 'Камера #${item['camera_id']}'} · ${item['event_ts'] ?? '-'} · confidence ${item['confidence'] ?? '-'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: colors.text, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+        ],
+      ),
     );
   }
 }

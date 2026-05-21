@@ -6,11 +6,11 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../admin/admin_screens.dart';
 import '../auth/auth_controller.dart';
 import '../cameras/cameras_screen.dart';
 import '../help/help_screen.dart';
 import '../live/live_screen.dart';
-import '../modules/module_screens.dart';
 import '../persons/persons_screen.dart';
 import '../profile/profile_screen.dart';
 import '../recordings/recordings_screen.dart';
@@ -26,6 +26,15 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   String _selectedRoute = '/live';
+  bool _routeRestored = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_routeRestored) return;
+    _routeRestored = true;
+    _selectedRoute = context.read<ThemeController>().lastRoute;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,17 +52,22 @@ class _AppShellState extends State<AppShell> {
             ? _MobileShell(
                 tabs: tabs,
                 selected: selected,
-                onSelect: (route) => setState(() => _selectedRoute = route),
+                onSelect: _selectRoute,
                 child: selected.builder(context),
               )
             : _DesktopShell(
                 tabs: tabs,
                 selected: selected,
-                onSelect: (route) => setState(() => _selectedRoute = route),
+                onSelect: _selectRoute,
                 child: selected.builder(context),
               ),
       ),
     );
+  }
+
+  void _selectRoute(String route) {
+    setState(() => _selectedRoute = route);
+    context.read<ThemeController>().setLastRoute(route);
   }
 
   List<_ShellTab> _tabsFor(CurrentUser? user) {
@@ -77,7 +91,7 @@ class _AppShellState extends State<AppShell> {
           route: '/reviews',
           label: 'Ревью',
           icon: Icons.fact_check_rounded,
-          builder: (_) => const ReviewsScreen(),
+          builder: (_) => const ReviewsManagementScreen(),
         ),
       if (canReview)
         _ShellTab(
@@ -93,13 +107,12 @@ class _AppShellState extends State<AppShell> {
           icon: Icons.videocam_rounded,
           builder: (_) => const CameraManagementScreen(),
         ),
-      if (isAdmin)
-        _ShellTab(
-          route: '/groups',
-          label: 'Группы',
-          icon: Icons.account_tree_rounded,
-          builder: (_) => const GroupsScreen(),
-        ),
+      _ShellTab(
+        route: '/groups',
+        label: 'Группы',
+        icon: Icons.account_tree_rounded,
+        builder: (_) => const GroupsManagementScreen(),
+      ),
       if (isAdmin)
         _ShellTab(
           route: '/persons',
@@ -112,21 +125,21 @@ class _AppShellState extends State<AppShell> {
           route: '/processors',
           label: 'Processor',
           icon: Icons.memory_rounded,
-          builder: (_) => const ProcessorsScreen(),
+          builder: (_) => const ProcessorsManagementScreen(),
         ),
       if (isAdmin)
         _ShellTab(
           route: '/users',
           label: 'Пользователи',
           icon: Icons.manage_accounts_rounded,
-          builder: (_) => const UsersScreen(),
+          builder: (_) => const UsersManagementScreen(),
         ),
       if (isAdmin)
         _ShellTab(
           route: '/api-keys',
           label: 'API ключи',
           icon: Icons.vpn_key_rounded,
-          builder: (_) => const ApiKeysScreen(),
+          builder: (_) => const ApiKeysManagementScreen(),
         ),
       _ShellTab(
         route: '/profile',

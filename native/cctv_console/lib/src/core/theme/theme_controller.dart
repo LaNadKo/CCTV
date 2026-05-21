@@ -22,6 +22,7 @@ class ThemeController extends ChangeNotifier {
   static const _liveGridColumnsKey = 'cctv.live_grid_columns';
   static const _liveCameraOrderKey = 'cctv.live_camera_order';
   static const _primaryNavKey = 'cctv.primary_nav';
+  static const _lastRouteKey = 'cctv.last_route';
 
   String _apiBaseUrl = 'http://127.0.0.1:8001';
   CctvThemeMode _themeMode = CctvThemeMode.system;
@@ -31,6 +32,7 @@ class ThemeController extends ChangeNotifier {
   int _liveGridColumns = 0;
   List<int> _liveCameraOrder = const [];
   List<String> _primaryNav = List<String>.from(defaultPrimaryNav);
+  String _lastRoute = '/live';
 
   String get apiBaseUrl => _apiBaseUrl;
   CctvThemeMode get themeMode => _themeMode;
@@ -40,6 +42,7 @@ class ThemeController extends ChangeNotifier {
   int get liveGridColumns => _liveGridColumns;
   List<int> get liveCameraOrder => List.unmodifiable(_liveCameraOrder);
   List<String> get primaryNav => List.unmodifiable(_primaryNav);
+  String get lastRoute => _lastRoute;
 
   ThemeMode get materialThemeMode {
     switch (_themeMode) {
@@ -72,6 +75,7 @@ class ThemeController extends ChangeNotifier {
     _primaryNav = _normalizePrimaryNav(
       prefs.getStringList(_primaryNavKey) ?? _primaryNav,
     );
+    _lastRoute = _normalizeRoute(prefs.getString(_lastRouteKey) ?? _lastRoute);
     notifyListeners();
   }
 
@@ -145,6 +149,23 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_primaryNavKey, normalized);
+  }
+
+  Future<void> setLastRoute(String route) async {
+    final normalized = _normalizeRoute(route);
+    if (normalized == _lastRoute) return;
+    _lastRoute = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastRouteKey, normalized);
+  }
+
+  Future<void> setAccentPreset(Color primary, Color secondary) async {
+    _primaryAccent = primary;
+    _secondaryAccent = secondary;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_primaryAccentKey, colorToHex(primary));
+    await prefs.setString(_secondaryAccentKey, colorToHex(secondary));
   }
 
   Future<void> resetPrimaryNav() async {
@@ -230,6 +251,12 @@ class ThemeController extends ChangeNotifier {
       if (unique.length >= maxPrimaryNavItems) break;
     }
     return unique.isEmpty ? List<String>.from(defaultPrimaryNav) : unique;
+  }
+
+  static String _normalizeRoute(String route) {
+    final value = route.trim();
+    if (value.startsWith('/')) return value;
+    return '/live';
   }
 
   static bool _listEquals(List<String> left, List<String> right) {

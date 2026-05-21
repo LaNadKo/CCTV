@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/models/models.dart';
@@ -40,6 +41,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
   int? _selectedHour;
   DateTime _selectedDate = _dateOnly(DateTime.now());
   bool _chainPlayback = false;
+  String _eventTypeFilter = 'all';
 
   @override
   void initState() {
@@ -148,6 +150,13 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
     return _records.where((record) => record.id == id).firstOrNull;
   }
 
+  List<_TimelineEvent> get _visibleEvents {
+    if (_eventTypeFilter == 'all') return _events;
+    return _events
+        .where((event) => event.type == _eventTypeFilter)
+        .toList(growable: false);
+  }
+
   Future<void> _openClip(
     _RecordingClip record, {
     required bool play,
@@ -218,7 +227,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
   }
 
   List<_TimelineEvent> _eventsForClip(_RecordingClip record) {
-    return _events
+    return _visibleEvents
         .where((event) {
           return !event.ts.isBefore(record.startedAt) &&
               !event.ts.isAfter(record.endAt);
@@ -227,7 +236,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
   }
 
   List<_TimelineEvent> _eventsForHour(int hour) {
-    return _events
+    return _visibleEvents
         .where((event) => event.ts.hour == hour)
         .toList(growable: false);
   }
@@ -251,10 +260,42 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
     await _load();
   }
 
+  Future<void> _downloadSelected() async {
+    final record = _selectedRecord;
+    final token = context.read<AuthController>().accessToken;
+    if (record == null || token == null) return;
+    try {
+      final file = await context.read<ApiClient>().downloadRecordingFile(
+        token,
+        record.id,
+      );
+      await OpenFilex.open(file.path);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  Future<void> _showMjpegFallback() async {
+    final record = _selectedRecord;
+    if (record == null) return;
+    await _ensureMediaToken();
+    if (!mounted) return;
+    final token = context.read<AuthController>().mediaToken ?? '';
+    final uri = context.read<ApiClient>().recordingMjpegUri(record.id, token);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _MjpegFallbackDialog(uri: uri.toString()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final selectedRecord = _selectedRecord;
     final byHour = _recordsByHour;
+    final visibleEvents = _visibleEvents;
     final selectedHourRecords = _selectedHour == null
         ? const <_RecordingClip>[]
         : byHour[_selectedHour] ?? const <_RecordingClip>[];
@@ -306,6 +347,9 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
                   onDateTap: _pickDate,
                   onPrevDay: () => _shiftDate(-1),
                   onNextDay: () => _shiftDate(1),
+                  eventTypeFilter: _eventTypeFilter,
+                  onEventTypeChanged: (value) =>
+                      setState(() => _eventTypeFilter = value),
                 ),
                 const SizedBox(height: 14),
                 if (_error != null) ...[
@@ -329,12 +373,18 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
                     events: selectedRecord == null
                         ? const []
                         : _eventsForClip(selectedRecord),
+                    onDownload: selectedRecord == null
+                        ? null
+                        : _downloadSelected,
+                    onMjpegFallback: selectedRecord == null
+                        ? null
+                        : _showMjpegFallback,
                   ),
                 const SizedBox(height: 14),
                 if (_records.isNotEmpty)
                   _DayTimeline(
                     records: _records,
-                    events: _events,
+                    events: visibleEvents,
                     selectedId: _selectedId,
                     onSelect: (record) => _openClip(record, play: false),
                   ),
@@ -342,7 +392,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen> {
                 if (_records.isNotEmpty)
                   _SummaryRail(
                     records: _records,
-                    events: _events,
+                    events: visibleEvents,
                     selectedDate: _selectedDate,
                   ),
                 const SizedBox(height: 14),
@@ -428,6 +478,8 @@ class _ArchiveControls extends StatelessWidget {
     required this.onDateTap,
     required this.onPrevDay,
     required this.onNextDay,
+    required this.eventTypeFilter,
+    required this.onEventTypeChanged,
   });
 
   final List<CameraSummary> cameras;
@@ -438,6 +490,8 @@ class _ArchiveControls extends StatelessWidget {
   final VoidCallback onDateTap;
   final VoidCallback onPrevDay;
   final VoidCallback onNextDay;
+  final String eventTypeFilter;
+  final ValueChanged<String> onEventTypeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -491,6 +545,38 @@ class _ArchiveControls extends StatelessWidget {
             icon: const Icon(Icons.chevron_right_rounded),
             label: const Text('День вперёд'),
           ),
+          SizedBox(
+            width: 230,
+            child: DropdownButtonFormField<String>(
+              initialValue: eventTypeFilter,
+              decoration: const InputDecoration(
+                labelText: 'Метки событий',
+                prefixIcon: Icon(Icons.sell_rounded),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'all', child: Text('Все события')),
+                DropdownMenuItem(
+                  value: 'face_recognized',
+                  child: Text('Распознанные лица'),
+                ),
+                DropdownMenuItem(
+                  value: 'face_unknown',
+                  child: Text('Неизвестные лица'),
+                ),
+                DropdownMenuItem(
+                  value: 'person_detected',
+                  child: Text('Человек'),
+                ),
+                DropdownMenuItem(
+                  value: 'motion_detected',
+                  child: Text('Движение'),
+                ),
+              ],
+              onChanged: loading
+                  ? null
+                  : (value) => onEventTypeChanged(value ?? 'all'),
+            ),
+          ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
@@ -515,12 +601,16 @@ class _PlayerPanel extends StatelessWidget {
     required this.record,
     required this.chainPlayback,
     required this.events,
+    required this.onDownload,
+    required this.onMjpegFallback,
   });
 
   final VideoController controller;
   final _RecordingClip? record;
   final bool chainPlayback;
   final List<_TimelineEvent> events;
+  final VoidCallback? onDownload;
+  final VoidCallback? onMjpegFallback;
 
   @override
   Widget build(BuildContext context) {
@@ -559,6 +649,20 @@ class _PlayerPanel extends StatelessWidget {
                   icon: Icons.sell_rounded,
                   color: colors.primaryAccent,
                 ),
+              if (current != null) ...[
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: onDownload,
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('Открыть файл'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: onMjpegFallback,
+                  icon: const Icon(Icons.video_file_rounded, size: 18),
+                  label: const Text('MJPEG fallback'),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 14),
@@ -606,6 +710,59 @@ class _PlayerPanel extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _MjpegFallbackDialog extends StatelessWidget {
+  const _MjpegFallbackDialog({required this.uri});
+
+  final String uri;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      title: const Text('MJPEG fallback'),
+      content: SizedBox(
+        width: 760,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: Container(
+                  color: Colors.black,
+                  child: Image.network(
+                    uri,
+                    fit: BoxFit.contain,
+                    gaplessPlayback: true,
+                    errorBuilder: (_, _, _) => Center(
+                      child: Text(
+                        'MJPEG поток не открылся. URL можно проверить во внешнем плеере.',
+                        style: TextStyle(color: colors.muted),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SelectableText(
+              uri,
+              style: TextStyle(color: colors.muted, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Закрыть'),
+        ),
+      ],
     );
   }
 }

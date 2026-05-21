@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -22,6 +23,7 @@ class _LiveScreenState extends State<LiveScreen> {
   List<CameraSummary> _cameras = const [];
   List<ProcessorOut> _processors = const [];
   List<PendingEvent> _pending = const [];
+  bool _annotate = true;
 
   @override
   void initState() {
@@ -177,7 +179,10 @@ class _LiveScreenState extends State<LiveScreen> {
                 const SizedBox(height: 18),
                 _GridControls(
                   columns: settings.liveGridColumns,
+                  annotate: _annotate,
                   onColumnsChanged: settings.setLiveGridColumns,
+                  onAnnotateChanged: (value) =>
+                      setState(() => _annotate = value),
                   onResetOrder: cameras.length < 2
                       ? null
                       : () => settings.setLiveCameraOrder(const []),
@@ -204,6 +209,7 @@ class _LiveScreenState extends State<LiveScreen> {
                 final camera = cameras[index];
                 return _DraggableCameraTile(
                   camera: camera,
+                  annotate: _annotate,
                   onMoveBefore: _reorderCameras,
                 );
               }, childCount: cameras.length),
@@ -262,12 +268,16 @@ class _LiveScreenState extends State<LiveScreen> {
 class _GridControls extends StatelessWidget {
   const _GridControls({
     required this.columns,
+    required this.annotate,
     required this.onColumnsChanged,
+    required this.onAnnotateChanged,
     required this.onResetOrder,
   });
 
   final int columns;
+  final bool annotate;
   final ValueChanged<int> onColumnsChanged;
+  final ValueChanged<bool> onAnnotateChanged;
   final VoidCallback? onResetOrder;
 
   @override
@@ -312,6 +322,17 @@ class _GridControls extends StatelessWidget {
             onPressed: onResetOrder,
             icon: const Icon(Icons.restart_alt_rounded, size: 18),
             label: const Text('Сбросить порядок'),
+          ),
+          FilterChip(
+            selected: annotate,
+            onSelected: onAnnotateChanged,
+            label: const Text('Overlay детекции'),
+            avatar: Icon(
+              annotate
+                  ? Icons.visibility_rounded
+                  : Icons.visibility_off_rounded,
+              size: 18,
+            ),
           ),
           Text(
             'Перетаскивайте карточки долгим нажатием.',
@@ -373,10 +394,12 @@ class _GridChoice extends StatelessWidget {
 class _DraggableCameraTile extends StatefulWidget {
   const _DraggableCameraTile({
     required this.camera,
+    required this.annotate,
     required this.onMoveBefore,
   });
 
   final CameraSummary camera;
+  final bool annotate;
   final void Function(int draggedId, int targetId) onMoveBefore;
 
   @override
@@ -442,9 +465,15 @@ class _DraggableCameraTileState extends State<_DraggableCameraTile> {
             ),
             childWhenDragging: Opacity(
               opacity: 0.42,
-              child: _CameraTile(camera: widget.camera),
+              child: _CameraTile(
+                camera: widget.camera,
+                annotate: widget.annotate,
+              ),
             ),
-            child: _CameraTile(camera: widget.camera),
+            child: _CameraTile(
+              camera: widget.camera,
+              annotate: widget.annotate,
+            ),
           ),
         );
       },
@@ -453,9 +482,10 @@ class _DraggableCameraTileState extends State<_DraggableCameraTile> {
 }
 
 class _CameraTile extends StatefulWidget {
-  const _CameraTile({required this.camera});
+  const _CameraTile({required this.camera, required this.annotate});
 
   final CameraSummary camera;
+  final bool annotate;
 
   @override
   State<_CameraTile> createState() => _CameraTileState();
@@ -501,6 +531,50 @@ class _CameraTileState extends State<_CameraTile> {
     }
   }
 
+  Future<void> _ptzContinuous({
+    double pan = 0,
+    double tilt = 0,
+    double zoom = 0,
+  }) async {
+    final auth = context.read<AuthController>();
+    final api = context.read<ApiClient>();
+    final token = auth.accessToken;
+    if (token == null) return;
+    try {
+      await api.ptzContinuous(
+        token,
+        widget.camera.cameraId,
+        pan: pan,
+        tilt: tilt,
+        zoom: zoom,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  Future<void> _openPresets() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _PresetsSheet(camera: widget.camera),
+    );
+  }
+
+  Future<void> _openFullscreen() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _FullscreenCameraDialog(
+        camera: widget.camera,
+        annotate: widget.annotate,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
@@ -524,17 +598,28 @@ class _CameraTileState extends State<_CameraTile> {
                 fit: StackFit.expand,
                 children: [
                   if (token != null)
-                    Image.network(
-                      api.cameraStreamUri(camera.cameraId).toString(),
-                      headers: {'Authorization': 'Bearer $token'},
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                      errorBuilder: (context, error, stackTrace) {
-                        return _NoStream(
-                          camera: camera,
-                          message: 'Нет live-потока',
-                        );
-                      },
+                    InteractiveViewer(
+                      minScale: 1,
+                      maxScale: 5,
+                      child: Image.network(
+                        api
+                            .cameraStreamUri(
+                              camera.cameraId,
+                              annotate: widget.annotate,
+                            )
+                            .toString(),
+                        headers: {'Authorization': 'Bearer $token'},
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                        gaplessPlayback: true,
+                        errorBuilder: (context, error, stackTrace) {
+                          return _NoStream(
+                            camera: camera,
+                            message: 'Нет live-потока',
+                          );
+                        },
+                      ),
                     )
                   else
                     _NoStream(camera: camera, message: 'Нет авторизации'),
@@ -554,6 +639,15 @@ class _CameraTileState extends State<_CameraTile> {
                     child: _CameraBadge(
                       text: camera.detectionEnabled ? 'DETECT' : 'VIEW',
                       active: camera.detectionEnabled,
+                    ),
+                  ),
+                  Positioned(
+                    right: 12,
+                    bottom: 12,
+                    child: IconButton.filledTonal(
+                      tooltip: 'Во весь экран',
+                      onPressed: _openFullscreen,
+                      icon: const Icon(Icons.fullscreen_rounded),
                     ),
                   ),
                 ],
@@ -610,14 +704,15 @@ class _CameraTileState extends State<_CameraTile> {
                     busy: _ptzBusy,
                     canZoom: camera.ptzCapabilities.zoom,
                     canHome: camera.ptzCapabilities.home,
-                    onUp: () => _ptz(tilt: 0.18),
-                    onDown: () => _ptz(tilt: -0.18),
-                    onLeft: () => _ptz(pan: -0.18),
-                    onRight: () => _ptz(pan: 0.18),
-                    onZoomIn: () => _ptz(zoom: 0.15),
-                    onZoomOut: () => _ptz(zoom: -0.15),
+                    onUp: () => _ptzContinuous(tilt: 0.35),
+                    onDown: () => _ptzContinuous(tilt: -0.35),
+                    onLeft: () => _ptzContinuous(pan: -0.35),
+                    onRight: () => _ptzContinuous(pan: 0.35),
+                    onZoomIn: () => _ptzContinuous(zoom: 0.28),
+                    onZoomOut: () => _ptzContinuous(zoom: -0.28),
                     onHome: () => _ptz(home: true),
                     onStop: () => _ptz(stop: true),
+                    onPresets: _openPresets,
                   ),
                 ],
               ],
@@ -675,6 +770,7 @@ class _PtzControls extends StatelessWidget {
     required this.onZoomOut,
     required this.onHome,
     required this.onStop,
+    required this.onPresets,
   });
 
   final bool busy;
@@ -688,6 +784,7 @@ class _PtzControls extends StatelessWidget {
   final VoidCallback onZoomOut;
   final VoidCallback onHome;
   final VoidCallback onStop;
+  final VoidCallback onPresets;
 
   @override
   Widget build(BuildContext context) {
@@ -699,46 +796,61 @@ class _PtzControls extends StatelessWidget {
         _PtzButton(
           icon: Icons.keyboard_arrow_up_rounded,
           onPressed: busy ? null : onUp,
+          onReleased: busy ? null : onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_down_rounded,
           onPressed: busy ? null : onDown,
+          onReleased: busy ? null : onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_left_rounded,
           onPressed: busy ? null : onLeft,
+          onReleased: busy ? null : onStop,
         ),
         _PtzButton(
           icon: Icons.keyboard_arrow_right_rounded,
           onPressed: busy ? null : onRight,
+          onReleased: busy ? null : onStop,
         ),
         if (canZoom)
           _PtzButton(
             icon: Icons.zoom_in_rounded,
             onPressed: busy ? null : onZoomIn,
+            onReleased: busy ? null : onStop,
           ),
         if (canZoom)
           _PtzButton(
             icon: Icons.zoom_out_rounded,
             onPressed: busy ? null : onZoomOut,
+            onReleased: busy ? null : onStop,
           ),
         if (canHome)
           _PtzButton(icon: Icons.home_rounded, onPressed: busy ? null : onHome),
         _PtzButton(icon: Icons.stop_rounded, onPressed: busy ? null : onStop),
+        _PtzButton(
+          icon: Icons.bookmarks_rounded,
+          onPressed: busy ? null : onPresets,
+        ),
       ],
     );
   }
 }
 
 class _PtzButton extends StatelessWidget {
-  const _PtzButton({required this.icon, required this.onPressed});
+  const _PtzButton({
+    required this.icon,
+    required this.onPressed,
+    this.onReleased,
+  });
 
   final IconData icon;
   final VoidCallback? onPressed;
+  final VoidCallback? onReleased;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    final button = SizedBox(
       width: 38,
       height: 34,
       child: OutlinedButton(
@@ -751,6 +863,13 @@ class _PtzButton extends StatelessWidget {
         ),
         child: Icon(icon, size: 19),
       ),
+    );
+    if (onReleased == null) return button;
+    return GestureDetector(
+      onTapDown: onPressed == null ? null : (_) => onPressed!(),
+      onTapUp: onPressed == null ? null : (_) => onReleased!(),
+      onTapCancel: onPressed == null ? null : onReleased,
+      child: button,
     );
   }
 }
@@ -808,6 +927,382 @@ class _InfoPill extends StatelessWidget {
           color: colors.muted,
           fontSize: 12,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _FullscreenCameraDialog extends StatefulWidget {
+  const _FullscreenCameraDialog({required this.camera, required this.annotate});
+
+  final CameraSummary camera;
+  final bool annotate;
+
+  @override
+  State<_FullscreenCameraDialog> createState() =>
+      _FullscreenCameraDialogState();
+}
+
+class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
+  final _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _focusNode.requestFocus(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _move({double pan = 0, double tilt = 0, double zoom = 0}) async {
+    final token = context.read<AuthController>().accessToken;
+    if (token == null) return;
+    try {
+      await context.read<ApiClient>().ptzContinuous(
+        token,
+        widget.camera.cameraId,
+        pan: pan,
+        tilt: tilt,
+        zoom: zoom,
+      );
+    } catch (_) {
+      // В fullscreen не спамим snackbar на каждое нажатие клавиши.
+    }
+  }
+
+  Future<void> _stop() async {
+    final token = context.read<AuthController>().accessToken;
+    if (token == null) return;
+    try {
+      await context.read<ApiClient>().ptzStop(token, widget.camera.cameraId);
+    } catch (_) {}
+  }
+
+  void _handleKey(KeyEvent event) {
+    if (event is KeyUpEvent) {
+      _stop();
+      return;
+    }
+    if (event is! KeyDownEvent) return;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape) {
+      Navigator.of(context).pop();
+    } else if (key == LogicalKeyboardKey.keyW ||
+        key == LogicalKeyboardKey.arrowUp) {
+      _move(tilt: 0.35);
+    } else if (key == LogicalKeyboardKey.keyS ||
+        key == LogicalKeyboardKey.arrowDown) {
+      _move(tilt: -0.35);
+    } else if (key == LogicalKeyboardKey.keyA ||
+        key == LogicalKeyboardKey.arrowLeft) {
+      _move(pan: -0.35);
+    } else if (key == LogicalKeyboardKey.keyD ||
+        key == LogicalKeyboardKey.arrowRight) {
+      _move(pan: 0.35);
+    } else if (key == LogicalKeyboardKey.keyQ) {
+      _move(zoom: -0.25);
+    } else if (key == LogicalKeyboardKey.keyE) {
+      _move(zoom: 0.25);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final api = context.read<ApiClient>();
+    final token = context.watch<AuthController>().accessToken;
+    return Dialog.fullscreen(
+      backgroundColor: Colors.black,
+      child: KeyboardListener(
+        focusNode: _focusNode,
+        onKeyEvent: _handleKey,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: token == null
+                  ? const Center(child: Text('Нет авторизации'))
+                  : InteractiveViewer(
+                      minScale: 1,
+                      maxScale: 8,
+                      child: Image.network(
+                        api
+                            .cameraStreamUri(
+                              widget.camera.cameraId,
+                              annotate: widget.annotate,
+                            )
+                            .toString(),
+                        headers: {'Authorization': 'Bearer $token'},
+                        fit: BoxFit.contain,
+                        width: double.infinity,
+                        height: double.infinity,
+                        gaplessPlayback: true,
+                      ),
+                    ),
+            ),
+            Positioned(
+              left: 18,
+              top: 18,
+              child: _CameraBadge(text: widget.camera.name, active: true),
+            ),
+            Positioned(
+              right: 18,
+              top: 18,
+              child: IconButton.filled(
+                tooltip: 'Закрыть',
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ),
+            Positioned(
+              left: 18,
+              bottom: 18,
+              child: _CameraBadge(
+                text: 'WASD/стрелки - PTZ, Q/E - zoom, Esc - закрыть',
+                active: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PresetsSheet extends StatefulWidget {
+  const _PresetsSheet({required this.camera});
+
+  final CameraSummary camera;
+
+  @override
+  State<_PresetsSheet> createState() => _PresetsSheetState();
+}
+
+class _PresetsSheetState extends State<_PresetsSheet> {
+  bool _loading = false;
+  String? _error;
+  List<Map<String, dynamic>> _presets = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  Future<void> _load() async {
+    final token = context.read<AuthController>().accessToken;
+    if (token == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final presets = await context.read<ApiClient>().listCameraPresets(
+        token,
+        widget.camera.cameraId,
+      );
+      if (mounted) setState(() => _presets = presets);
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _refresh() async {
+    final token = context.read<AuthController>().accessToken;
+    if (token == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final presets = await context.read<ApiClient>().refreshCameraPresets(
+        token,
+        widget.camera.cameraId,
+      );
+      if (mounted) setState(() => _presets = presets);
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _create() async {
+    final controller = TextEditingController();
+    try {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Сохранить текущий ракурс'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Название пресета'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Отмена'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      );
+      if (name == null || name.isEmpty) return;
+      final token = context.read<AuthController>().accessToken;
+      if (token == null) return;
+      await context.read<ApiClient>().createCameraPreset(
+        token,
+        widget.camera.cameraId,
+        name: name,
+        orderIndex: _presets.length,
+      );
+      await _load();
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _goto(Map<String, dynamic> preset) async {
+    final token = context.read<AuthController>().accessToken;
+    final id = preset['camera_preset_id'] as int?;
+    if (token == null || id == null) return;
+    try {
+      await context.read<ApiClient>().gotoCameraPreset(
+        token,
+        widget.camera.cameraId,
+        id,
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> preset) async {
+    final token = context.read<AuthController>().accessToken;
+    final id = preset['camera_preset_id'] as int?;
+    if (token == null || id == null) return;
+    try {
+      await context.read<ApiClient>().deleteCameraPreset(
+        token,
+        widget.camera.cameraId,
+        id,
+      );
+      await _load();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.all(18),
+      child: GlassPanel(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 520,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Пресеты ${widget.camera.name}',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _loading ? null : _create,
+                    icon: const Icon(Icons.add_rounded, size: 18),
+                    label: const Text('Сохранить ракурс'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _loading ? null : _refresh,
+                    icon: const Icon(Icons.sync_rounded, size: 18),
+                    label: const Text('Синхронизировать'),
+                  ),
+                ],
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, style: TextStyle(color: colors.danger)),
+              ],
+              const SizedBox(height: 12),
+              Expanded(
+                child: _presets.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Пресетов пока нет.',
+                          style: TextStyle(color: colors.muted),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: _presets.length,
+                        itemBuilder: (context, index) {
+                          final preset = _presets[index];
+                          return ListTile(
+                            title: Text('${preset['name'] ?? 'Preset'}'),
+                            subtitle: Text(
+                              'token: ${preset['preset_token'] ?? '-'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            leading: const Icon(Icons.bookmark_rounded),
+                            trailing: Wrap(
+                              spacing: 4,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Перейти',
+                                  onPressed: () => _goto(preset),
+                                  icon: const Icon(Icons.play_arrow_rounded),
+                                ),
+                                IconButton(
+                                  tooltip: 'Удалить',
+                                  onPressed: () => _delete(preset),
+                                  icon: Icon(
+                                    Icons.delete_outline_rounded,
+                                    color: colors.danger,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );

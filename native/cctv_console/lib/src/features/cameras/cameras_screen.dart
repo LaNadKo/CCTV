@@ -5,6 +5,8 @@ import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
+import '../modules/module_screens.dart'
+    show DialogField, cleanBody, confirmAction, textFormDialog;
 
 class CameraManagementScreen extends StatefulWidget {
   const CameraManagementScreen({super.key});
@@ -138,6 +140,96 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
     });
   }
 
+  Future<void> _manualCreateCamera() async {
+    final values = await textFormDialog(
+      context,
+      title: 'Ручное добавление камеры',
+      fields: const [
+        DialogField('name', 'Название', isRequired: true),
+        DialogField('ip_address', 'IP / host'),
+        DialogField('stream_url', 'RTSP/HTTP поток', isRequired: true),
+        DialogField('location', 'Локация'),
+        DialogField(
+          'connection_kind',
+          'Тип: manual, rtsp, http, onvif',
+          initialValue: 'manual',
+        ),
+        DialogField(
+          'recording_mode',
+          'Запись: continuous или event',
+          initialValue: 'continuous',
+        ),
+      ],
+    );
+    if (values == null) return;
+    await _run(() async {
+      final (api, token) = _deps();
+      final body = cleanBody(values);
+      final streamUrl = '${body['stream_url'] ?? ''}';
+      final kind = '${body['connection_kind'] ?? 'manual'}';
+      await api.postJson(
+        '/admin/cameras',
+        token: token,
+        body: {
+          ...body,
+          'detection_enabled': true,
+          'recording_mode': body['recording_mode'] ?? 'continuous',
+          'connection_kind': kind,
+          'endpoints': [
+            if (streamUrl.isNotEmpty)
+              {
+                'endpoint_kind': streamUrl.startsWith('rtsp://')
+                    ? 'rtsp'
+                    : 'http',
+                'endpoint_url': streamUrl,
+                'is_primary': true,
+              },
+          ],
+        },
+      );
+      _toast('Камера добавлена вручную');
+      await _load();
+    });
+  }
+
+  Future<void> _editCamera(Map<String, dynamic> camera) async {
+    final cameraId = camera['camera_id'] as int;
+    await _run(() async {
+      final (api, token) = _deps();
+      final detail = await api.getJson(
+        '/admin/cameras/$cameraId',
+        token: token,
+      );
+      if (!mounted) return;
+      final values = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (_) => _CameraEditDialog(detail: _asMap(detail)),
+      );
+      if (values == null) return;
+      await api.patchJson(
+        '/admin/cameras/$cameraId',
+        token: token,
+        body: values,
+      );
+      _toast('Камера сохранена');
+      await _load();
+    });
+  }
+
+  Future<void> _manageRoiZones(Map<String, dynamic> camera) async {
+    final cameraId = camera['camera_id'] as int;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _RoiZonesSheet(
+        cameraId: cameraId,
+        cameraName: '${camera['name'] ?? 'Камера'}',
+      ),
+    );
+    await _load();
+  }
+
   Future<void> _refreshOnvif(int cameraId) async {
     await _run(() async {
       final (api, token) = _deps();
@@ -242,6 +334,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
                       'Автоопределение протоколов управления и видеопотока: ONVIF, RTSP, HTTP.',
                   busy: _busy,
                   onRefresh: _load,
+                  onManualCreate: _manualCreateCamera,
                 ),
                 const SizedBox(height: 14),
                 Wrap(
@@ -298,6 +391,8 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
                 final camera = _cameras[index];
                 return _CameraCard(
                   camera: camera,
+                  onEdit: () => _editCamera(camera),
+                  onManageRoi: () => _manageRoiZones(camera),
                   onRefreshOnvif: () =>
                       _refreshOnvif(camera['camera_id'] as int),
                   onDelete: () => _deleteCamera(camera['camera_id'] as int),
@@ -534,11 +629,15 @@ class _ProbeResult extends StatelessWidget {
 class _CameraCard extends StatelessWidget {
   const _CameraCard({
     required this.camera,
+    required this.onEdit,
+    required this.onManageRoi,
     required this.onRefreshOnvif,
     required this.onDelete,
   });
 
   final Map<String, dynamic> camera;
+  final VoidCallback onEdit;
+  final VoidCallback onManageRoi;
   final VoidCallback onRefreshOnvif;
   final VoidCallback onDelete;
 
@@ -609,6 +708,16 @@ class _CameraCard extends StatelessWidget {
             runSpacing: 8,
             children: [
               OutlinedButton.icon(
+                onPressed: onEdit,
+                icon: const Icon(Icons.edit_rounded, size: 18),
+                label: const Text('Редактировать'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onManageRoi,
+                icon: const Icon(Icons.crop_free_rounded, size: 18),
+                label: const Text('ROI зоны'),
+              ),
+              OutlinedButton.icon(
                 onPressed: camera['onvif_enabled'] == true
                     ? onRefreshOnvif
                     : null,
@@ -634,12 +743,14 @@ class _Header extends StatelessWidget {
     required this.subtitle,
     required this.busy,
     required this.onRefresh,
+    required this.onManualCreate,
   });
 
   final String title;
   final String subtitle;
   final bool busy;
   final VoidCallback onRefresh;
+  final VoidCallback onManualCreate;
 
   @override
   Widget build(BuildContext context) {
@@ -675,6 +786,12 @@ class _Header extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.refresh_rounded),
+        ),
+        const SizedBox(width: 8),
+        ElevatedButton.icon(
+          onPressed: busy ? null : onManualCreate,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Ручное добавление'),
         ),
       ],
     );
@@ -805,6 +922,395 @@ class _InlineError extends StatelessWidget {
   }
 }
 
+class _CameraEditDialog extends StatefulWidget {
+  const _CameraEditDialog({required this.detail});
+
+  final Map<String, dynamic> detail;
+
+  @override
+  State<_CameraEditDialog> createState() => _CameraEditDialogState();
+}
+
+class _CameraEditDialogState extends State<_CameraEditDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _location;
+  late final TextEditingController _ipAddress;
+  late final TextEditingController _streamUrl;
+  late final TextEditingController _endpoints;
+  late bool _detectionEnabled;
+  late bool _trackingEnabled;
+  late bool _supportsPtz;
+  late String _recordingMode;
+  late String _trackingMode;
+  late String _connectionKind;
+
+  @override
+  void initState() {
+    super.initState();
+    final detail = widget.detail;
+    _name = TextEditingController(text: '${detail['name'] ?? ''}');
+    _location = TextEditingController(text: '${detail['location'] ?? ''}');
+    _ipAddress = TextEditingController(text: '${detail['ip_address'] ?? ''}');
+    _streamUrl = TextEditingController(text: '${detail['stream_url'] ?? ''}');
+    _endpoints = TextEditingController(
+      text: _endpointsText(_mapList(detail['endpoints'])),
+    );
+    _detectionEnabled = detail['detection_enabled'] == true;
+    _trackingEnabled = detail['tracking_enabled'] == true;
+    _supportsPtz = detail['supports_ptz'] == true;
+    _recordingMode = '${detail['recording_mode'] ?? 'continuous'}';
+    _trackingMode = '${detail['tracking_mode'] ?? 'off'}';
+    _connectionKind = '${detail['connection_kind'] ?? 'manual'}';
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _location.dispose();
+    _ipAddress.dispose();
+    _streamUrl.dispose();
+    _endpoints.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Редактировать камеру'),
+      content: SizedBox(
+        width: 640,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(
+                controller: _name,
+                decoration: const InputDecoration(labelText: 'Название'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _location,
+                decoration: const InputDecoration(labelText: 'Локация'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _ipAddress,
+                decoration: const InputDecoration(labelText: 'IP / host'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _streamUrl,
+                decoration: const InputDecoration(labelText: 'Основной поток'),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _recordingMode,
+                      decoration: const InputDecoration(
+                        labelText: 'Режим записи',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'continuous',
+                          child: Text('Постоянная'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'event',
+                          child: Text('По событиям'),
+                        ),
+                      ],
+                      onChanged: (value) => setState(
+                        () => _recordingMode = value ?? 'continuous',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _connectionKind,
+                      decoration: const InputDecoration(
+                        labelText: 'Тип подключения',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'manual',
+                          child: Text('manual'),
+                        ),
+                        DropdownMenuItem(value: 'onvif', child: Text('onvif')),
+                        DropdownMenuItem(value: 'rtsp', child: Text('rtsp')),
+                        DropdownMenuItem(value: 'http', child: Text('http')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _connectionKind = value ?? 'manual'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Детекция'),
+                      value: _detectionEnabled,
+                      onChanged: (value) =>
+                          setState(() => _detectionEnabled = value),
+                    ),
+                  ),
+                  Expanded(
+                    child: SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('PTZ'),
+                      value: _supportsPtz,
+                      onChanged: (value) =>
+                          setState(() => _supportsPtz = value),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Трекинг камерой'),
+                      value: _trackingEnabled,
+                      onChanged: (value) =>
+                          setState(() => _trackingEnabled = value),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _trackingMode,
+                      decoration: const InputDecoration(
+                        labelText: 'Режим трекинга',
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 'off', child: Text('off')),
+                        DropdownMenuItem(value: 'auto', child: Text('auto')),
+                        DropdownMenuItem(
+                          value: 'patrol',
+                          child: Text('patrol'),
+                        ),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _trackingMode = value ?? 'off'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _endpoints,
+                minLines: 4,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  labelText: 'Endpoints',
+                  helperText:
+                      'Формат строки: kind|url|username|password|primary',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, {
+            'name': _name.text.trim(),
+            'location': _emptyToNull(_location.text),
+            'ip_address': _emptyToNull(_ipAddress.text),
+            'stream_url': _emptyToNull(_streamUrl.text),
+            'detection_enabled': _detectionEnabled,
+            'recording_mode': _recordingMode,
+            'tracking_enabled': _trackingEnabled,
+            'tracking_mode': _trackingMode,
+            'connection_kind': _connectionKind,
+            'supports_ptz': _supportsPtz,
+            'endpoints': _parseEndpoints(_endpoints.text),
+          }),
+          child: const Text('Сохранить'),
+        ),
+      ],
+    );
+  }
+}
+
+class _RoiZonesSheet extends StatefulWidget {
+  const _RoiZonesSheet({required this.cameraId, required this.cameraName});
+
+  final int cameraId;
+  final String cameraName;
+
+  @override
+  State<_RoiZonesSheet> createState() => _RoiZonesSheetState();
+}
+
+class _RoiZonesSheetState extends State<_RoiZonesSheet> {
+  bool _loading = false;
+  String? _error;
+  List<Map<String, dynamic>> _zones = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  Future<void> _load() async {
+    final token = context.read<AuthController>().accessToken;
+    if (token == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final zones = await context.read<ApiClient>().getJsonList(
+        '/admin/cameras/${widget.cameraId}/roi-zones',
+        token: token,
+      );
+      if (mounted) setState(() => _zones = zones);
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _create() async {
+    final values = await textFormDialog(
+      context,
+      title: 'Новая ROI зона',
+      fields: const [
+        DialogField('name', 'Название', isRequired: true),
+        DialogField(
+          'zone_type',
+          'Тип: include или exclude',
+          initialValue: 'include',
+        ),
+        DialogField('polygon_points', 'Точки polygon JSON/строка', maxLines: 4),
+      ],
+    );
+    if (values == null) return;
+    try {
+      await context.read<ApiClient>().postJson(
+        '/admin/cameras/${widget.cameraId}/roi-zones',
+        token: context.read<AuthController>().accessToken,
+        body: cleanBody(values),
+      );
+      await _load();
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> zone) async {
+    final id = zone['roi_zone_id'] as int?;
+    if (id == null) return;
+    final ok = await confirmAction(
+      context,
+      title: 'Удалить ROI зону?',
+      message: 'Зона будет удалена из настроек камеры.',
+    );
+    if (!ok) return;
+    try {
+      await context.read<ApiClient>().deleteVoid(
+        '/admin/cameras/${widget.cameraId}/roi-zones/$id',
+        token: context.read<AuthController>().accessToken,
+      );
+      await _load();
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.all(18),
+      child: GlassPanel(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 520,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'ROI зоны: ${widget.cameraName}',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton.icon(
+                onPressed: _loading ? null : _create,
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Добавить зону'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, style: TextStyle(color: colors.danger)),
+              ],
+              const SizedBox(height: 12),
+              Expanded(
+                child: _zones.isEmpty
+                    ? Center(
+                        child: Text(
+                          'ROI зон пока нет.',
+                          style: TextStyle(color: colors.muted),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: _zones.length,
+                        itemBuilder: (context, index) {
+                          final zone = _zones[index];
+                          return ListTile(
+                            title: Text('${zone['name'] ?? 'ROI'}'),
+                            subtitle: Text(
+                              '${zone['zone_type'] ?? '-'} · ${zone['polygon_points'] ?? 'точки не заданы'}',
+                            ),
+                            trailing: IconButton(
+                              onPressed: () => _delete(zone),
+                              icon: Icon(
+                                Icons.delete_outline_rounded,
+                                color: colors.danger,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 List<Map<String, dynamic>> _mapList(Object? value) {
   if (value is List) {
     return value
@@ -813,6 +1319,51 @@ List<Map<String, dynamic>> _mapList(Object? value) {
         .toList();
   }
   return const [];
+}
+
+Map<String, dynamic> _asMap(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return value.map((key, item) => MapEntry('$key', item));
+  return <String, dynamic>{};
+}
+
+String _endpointsText(List<Map<String, dynamic>> endpoints) {
+  return endpoints
+      .map(
+        (endpoint) => [
+          endpoint['endpoint_kind'] ?? '',
+          endpoint['endpoint_url'] ?? '',
+          endpoint['username'] ?? '',
+          '',
+          endpoint['is_primary'] == true ? 'true' : 'false',
+        ].join('|'),
+      )
+      .join('\n');
+}
+
+List<Map<String, dynamic>> _parseEndpoints(String value) {
+  final endpoints = <Map<String, dynamic>>[];
+  for (final line in value.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) continue;
+    final parts = trimmed.split('|');
+    if (parts.length < 2) continue;
+    final kind = parts[0].trim();
+    final url = parts[1].trim();
+    if (!const ['onvif', 'rtsp', 'http'].contains(kind) || url.isEmpty) {
+      continue;
+    }
+    endpoints.add({
+      'endpoint_kind': kind,
+      'endpoint_url': url,
+      if (parts.length > 2 && parts[2].trim().isNotEmpty)
+        'username': parts[2].trim(),
+      if (parts.length > 3 && parts[3].trim().isNotEmpty)
+        'password_secret': parts[3].trim(),
+      'is_primary': parts.length > 4 && parts[4].trim().toLowerCase() == 'true',
+    });
+  }
+  return endpoints;
 }
 
 String? _emptyToNull(String value) {

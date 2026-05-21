@@ -53,6 +53,18 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text,
         totpCode: totpCode,
       );
+      if (!mounted) return;
+      if (auth.user?.mustChangePassword == true) {
+        final changed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) =>
+              _ForcedPasswordDialog(currentPassword: _passwordController.text),
+        );
+        if (changed != true) {
+          await auth.logout();
+        }
+      }
     } on ApiException catch (error) {
       if (!mounted) return;
       if (error.statusCode == 400 &&
@@ -186,6 +198,134 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ForcedPasswordDialog extends StatefulWidget {
+  const _ForcedPasswordDialog({required this.currentPassword});
+
+  final String currentPassword;
+
+  @override
+  State<_ForcedPasswordDialog> createState() => _ForcedPasswordDialogState();
+}
+
+class _ForcedPasswordDialogState extends State<_ForcedPasswordDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _newPassword = TextEditingController();
+  final _repeatPassword = TextEditingController();
+  var _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _newPassword.dispose();
+    _repeatPassword.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await context.read<AuthController>().changePassword(
+        currentPassword: widget.currentPassword,
+        newPassword: _newPassword.text,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = '$error';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      title: const Text('Требуется смена пароля'),
+      content: SizedBox(
+        width: 390,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Учётная запись помечена как временная. Перед продолжением задайте новый пароль.',
+                style: TextStyle(color: colors.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _newPassword,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Новый пароль'),
+                validator: (value) {
+                  final text = value ?? '';
+                  if (text.length < 8) return 'Минимум 8 символов';
+                  if (text == widget.currentPassword) {
+                    return 'Новый пароль должен отличаться от временного';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _repeatPassword,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Повтор пароля'),
+                validator: (value) =>
+                    value == _newPassword.text ? null : 'Пароли не совпадают',
+                onFieldSubmitted: (_) => _submit(),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _error!,
+                  style: TextStyle(
+                    color: colors.danger,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy
+              ? null
+              : () async {
+                  await context.read<AuthController>().logout();
+                  if (context.mounted) Navigator.of(context).pop(false);
+                },
+          child: const Text('Выйти'),
+        ),
+        ElevatedButton(
+          onPressed: _busy ? null : _submit,
+          child: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Сменить пароль'),
+        ),
+      ],
     );
   }
 }
