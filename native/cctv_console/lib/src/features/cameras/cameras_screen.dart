@@ -8,6 +8,9 @@ import '../auth/auth_controller.dart';
 import '../modules/module_screens.dart'
     show DialogField, cleanBody, confirmAction, textFormDialog;
 
+const _cameraDiscoveryTimeout = Duration(seconds: 75);
+const _cameraWriteTimeout = Duration(seconds: 60);
+
 class CameraManagementScreen extends StatefulWidget {
   const CameraManagementScreen({super.key});
 
@@ -77,6 +80,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       final result = await api.postJson(
         '/admin/cameras/discovery/probe',
         token: token,
+        timeout: _cameraDiscoveryTimeout,
         body: {
           'host': host,
           'username': _emptyToNull(_username.text),
@@ -109,6 +113,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       await api.postJson(
         '/admin/cameras',
         token: token,
+        timeout: _cameraWriteTimeout,
         body: {
           'name':
               _emptyToNull(_name.text) ?? probe['name'] ?? _host.text.trim(),
@@ -170,6 +175,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       await api.postJson(
         '/admin/cameras',
         token: token,
+        timeout: _cameraWriteTimeout,
         body: {
           ...body,
           'detection_enabled': true,
@@ -236,6 +242,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen> {
       await api.postJson(
         '/admin/cameras/$cameraId/onvif/refresh',
         token: token,
+        timeout: _cameraDiscoveryTimeout,
       );
       _toast('ONVIF данные обновлены');
       await _load();
@@ -455,7 +462,7 @@ class _DiscoveryPanel extends StatelessWidget {
                 child: _SectionTitle(
                   title: 'Мастер подключения камеры',
                   subtitle:
-                      'Поиск ONVIF в сети и probe по IP: определяем управление, поток и PTZ.',
+                      'Поиск ONVIF в сети и probe по IP: определяем управление, поток и PTZ. Проверка некоторых камер может занимать до минуты.',
                 ),
               ),
               OutlinedButton.icon(
