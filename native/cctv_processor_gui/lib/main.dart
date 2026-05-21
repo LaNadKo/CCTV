@@ -357,8 +357,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       setState(() => _statusMessage = 'Нужны URL backend и код подключения.');
       return;
     }
-    await _saveSettings();
-    if (!mounted) return;
+    final connectConfig = _configFromControllers();
     setState(() {
       _busy = true;
       _statusMessage = 'Подключение Processor к backend...';
@@ -376,6 +375,22 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             : _nameController.text.trim(),
         '--processor-accel',
         _accelPreference,
+        '--max-workers',
+        '${connectConfig['max_workers']}',
+        '--motion-threshold',
+        '${connectConfig['motion_threshold']}',
+        '--face-scan-interval',
+        '${connectConfig['face_scan_interval']}',
+        '--recording-segment-seconds',
+        '${connectConfig['recording_segment_seconds']}',
+        '--recordings-dir',
+        '${connectConfig['recordings_dir']}',
+        '--snapshots-dir',
+        '${connectConfig['snapshots_dir']}',
+        '--media-port',
+        '${connectConfig['media_port']}',
+        '--media-token',
+        '${connectConfig['media_token']}',
         '--json',
       ];
       final payload = await bridge.runCliJson(
@@ -1446,9 +1461,7 @@ class RuntimeBridge {
   Future<Map<String, dynamic>> readConfig() async {
     final file = File(configPath);
     if (!await file.exists()) {
-      final config = defaultProcessorConfig(runtimeDir: runtimeDir.path);
-      await writeConfig(config);
-      return config;
+      return defaultProcessorConfig(runtimeDir: runtimeDir.path);
     }
     try {
       final raw = jsonDecode(await file.readAsString());
