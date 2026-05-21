@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
@@ -15,14 +17,24 @@ class ReportsDashboardScreen extends StatefulWidget {
 }
 
 class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
-  final _dateFrom = TextEditingController();
-  final _dateTo = TextEditingController();
-  final _personId = TextEditingController();
-
   bool _busy = false;
   String? _error;
+
+  DateTime? _dateFrom;
+  DateTime? _dateTo;
+  int? _groupId;
+  int? _cameraId;
+  int? _processorId;
+  int? _userId;
+  int? _personId;
+
   Map<String, dynamic>? _dashboard;
   Map<String, dynamic>? _appearances;
+  List<Map<String, dynamic>> _groups = const [];
+  List<Map<String, dynamic>> _users = const [];
+  List<Map<String, dynamic>> _persons = const [];
+  List<CameraSummary> _cameras = const [];
+  List<ProcessorOut> _processors = const [];
 
   static const _sections = [
     _ReportSection(
@@ -45,38 +57,73 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
-  @override
-  void dispose() {
-    _dateFrom.dispose();
-    _dateTo.dispose();
-    _personId.dispose();
-    super.dispose();
-  }
-
   Future<void> _load() async {
     await _run(() async {
-      final (api, token) = _deps();
-      _dashboard = await api
-          .getJson(
-            '/reports/dashboard',
-            token: token,
-            query: {
-              'date_from': _clean(_dateFrom.text),
-              'date_to': _clean(_dateTo.text),
-            },
-          )
-          .then(_map);
-      _appearances = await api
-          .getJson(
-            '/reports/appearances',
-            token: token,
-            query: {
-              'date_from': _clean(_dateFrom.text),
-              'date_to': _clean(_dateTo.text),
-              'person_id': _clean(_personId.text),
-            },
-          )
-          .then(_map);
+      await _loadReferences();
+      await _loadReports();
+    });
+  }
+
+  Future<void> _applyFilters() async {
+    await _run(_loadReports);
+  }
+
+  Future<void> _loadReferences() async {
+    final (api, token) = _deps();
+    final user = context.read<AuthController>().user;
+    final isAdmin = user?.isAdmin ?? false;
+
+    final results = await Future.wait<Object>([
+      api.getJsonList('/groups', token: token),
+      api.listCameras(token),
+      isAdmin
+          ? api.listProcessors(token)
+          : Future<List<ProcessorOut>>.value(const []),
+      isAdmin
+          ? api.getJsonList('/admin/users', token: token)
+          : Future<List<Map<String, dynamic>>>.value(
+              user == null
+                  ? const []
+                  : [
+                      {
+                        'user_id': user.userId,
+                        'login': user.login,
+                        'first_name': user.firstName,
+                        'last_name': user.lastName,
+                        'middle_name': user.middleName,
+                      },
+                    ],
+            ),
+      api.getJsonList('/persons', token: token),
+    ]);
+
+    if (!mounted) return;
+    setState(() {
+      _groups = results[0] as List<Map<String, dynamic>>;
+      _cameras = results[1] as List<CameraSummary>;
+      _processors = results[2] as List<ProcessorOut>;
+      _users = results[3] as List<Map<String, dynamic>>;
+      _persons = results[4] as List<Map<String, dynamic>>;
+      _normalizeSelectedIds();
+    });
+  }
+
+  Future<void> _loadReports() async {
+    final (api, token) = _deps();
+    final dashboard = await api
+        .getJson('/reports/dashboard', token: token, query: _dashboardQuery())
+        .then(_map);
+    final appearances = await api
+        .getJson(
+          '/reports/appearances',
+          token: token,
+          query: _appearanceQuery(),
+        )
+        .then(_map);
+    if (!mounted) return;
+    setState(() {
+      _dashboard = dashboard;
+      _appearances = appearances;
     });
   }
 
@@ -87,20 +134,77 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
           ? await api.downloadAppearanceReport(
               token,
               format: format,
-              personId: int.tryParse(_personId.text.trim()),
-              dateFrom: _clean(_dateFrom.text),
-              dateTo: _clean(_dateTo.text),
+              personId: _personId,
+              dateFrom: _iso(_dateFrom),
+              dateTo: _iso(_dateTo),
             )
           : await api.downloadReportSection(
               token,
               section: section.id,
               format: format,
-              dateFrom: _clean(_dateFrom.text),
-              dateTo: _clean(_dateTo.text),
+              dateFrom: _iso(_dateFrom),
+              dateTo: _iso(_dateTo),
+              groupId: _groupId,
+              cameraId: _cameraId,
+              processorId: _processorId,
+              userId: _userId,
             );
       await OpenFilex.open(file.path);
       _toast('Отчёт сохранён: ${file.path}');
     });
+  }
+
+  Future<void> _pickDateTime({required bool from}) async {
+    final now = DateTime.now();
+    final current = (from ? _dateFrom : _dateTo) ?? now;
+    final initial = current.isAfter(now) ? now : current;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2020),
+      lastDate: now,
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (time == null) return;
+
+    var selected = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (selected.isAfter(now)) selected = now;
+    setState(() {
+      if (from) {
+        _dateFrom = selected;
+        if (_dateTo != null && _dateTo!.isBefore(selected)) {
+          _dateTo = selected;
+        }
+      } else {
+        _dateTo = selected;
+        if (_dateFrom != null && _dateFrom!.isAfter(selected)) {
+          _dateFrom = selected;
+        }
+      }
+    });
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _dateFrom = null;
+      _dateTo = null;
+      _groupId = null;
+      _cameraId = null;
+      _processorId = null;
+      _userId = null;
+      _personId = null;
+    });
+    _applyFilters();
   }
 
   (ApiClient, String) _deps() {
@@ -122,6 +226,43 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Map<String, String?> _dashboardQuery() => {
+    'date_from': _iso(_dateFrom),
+    'date_to': _iso(_dateTo),
+    if (_groupId != null) 'group_id': '$_groupId',
+    if (_cameraId != null) 'camera_id': '$_cameraId',
+    if (_processorId != null) 'processor_id': '$_processorId',
+    if (_userId != null) 'user_id': '$_userId',
+  };
+
+  Map<String, String?> _appearanceQuery() => {
+    'date_from': _iso(_dateFrom),
+    'date_to': _iso(_dateTo),
+    if (_personId != null) 'person_id': '$_personId',
+  };
+
+  void _normalizeSelectedIds() {
+    if (_groupId != null &&
+        !_groups.any((item) => item['group_id'] == _groupId)) {
+      _groupId = null;
+    }
+    if (_cameraId != null &&
+        !_cameras.any((item) => item.cameraId == _cameraId)) {
+      _cameraId = null;
+    }
+    if (_processorId != null &&
+        !_processors.any((item) => item.processorId == _processorId)) {
+      _processorId = null;
+    }
+    if (_userId != null && !_users.any((item) => item['user_id'] == _userId)) {
+      _userId = null;
+    }
+    if (_personId != null &&
+        !_persons.any((item) => item['person_id'] == _personId)) {
+      _personId = null;
     }
   }
 
@@ -148,6 +289,7 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverToBoxAdapter(
             child: Column(
@@ -156,11 +298,31 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
                 _Header(busy: _busy, onRefresh: _load),
                 const SizedBox(height: 14),
                 _Filters(
+                  busy: _busy,
                   dateFrom: _dateFrom,
                   dateTo: _dateTo,
+                  groups: _groupItems(),
+                  cameras: _cameraItems(),
+                  processors: _processorItems(),
+                  users: _userItems(),
+                  persons: _personItems(),
+                  groupId: _groupId,
+                  cameraId: _cameraId,
+                  processorId: _processorId,
+                  userId: _userId,
                   personId: _personId,
-                  busy: _busy,
-                  onApply: _load,
+                  onPickFrom: () => _pickDateTime(from: true),
+                  onPickTo: () => _pickDateTime(from: false),
+                  onClearFrom: () => setState(() => _dateFrom = null),
+                  onClearTo: () => setState(() => _dateTo = null),
+                  onGroupChanged: (value) => setState(() => _groupId = value),
+                  onCameraChanged: (value) => setState(() => _cameraId = value),
+                  onProcessorChanged: (value) =>
+                      setState(() => _processorId = value),
+                  onUserChanged: (value) => setState(() => _userId = value),
+                  onPersonChanged: (value) => setState(() => _personId = value),
+                  onApply: _applyFilters,
+                  onClear: _clearFilters,
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
@@ -266,6 +428,51 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen> {
       ),
     );
   }
+
+  List<_SelectItem> _groupItems() => [
+    for (final item in _groups)
+      _SelectItem(
+        id: item['group_id'] as int,
+        label: '${item['name'] ?? 'Группа #${item['group_id']}'}',
+        subtitle: 'Камер: ${item['camera_count'] ?? 0}',
+      ),
+  ];
+
+  List<_SelectItem> _cameraItems() => [
+    for (final item in _cameras)
+      _SelectItem(
+        id: item.cameraId,
+        label: item.name,
+        subtitle: item.location ?? item.ipAddress ?? 'Локация не указана',
+      ),
+  ];
+
+  List<_SelectItem> _processorItems() => [
+    for (final item in _processors)
+      _SelectItem(
+        id: item.processorId,
+        label: item.name,
+        subtitle: item.online ? 'online' : item.status,
+      ),
+  ];
+
+  List<_SelectItem> _userItems() => [
+    for (final item in _users)
+      _SelectItem(
+        id: item['user_id'] as int,
+        label: _userLabel(item),
+        subtitle: 'login: ${item['login'] ?? '-'}',
+      ),
+  ];
+
+  List<_SelectItem> _personItems() => [
+    for (final item in _persons)
+      _SelectItem(
+        id: item['person_id'] as int,
+        label: _personLabel(item),
+        subtitle: 'Эмбеддингов: ${item['embeddings_count'] ?? 0}',
+      ),
+  ];
 }
 
 class _Header extends StatelessWidget {
@@ -316,62 +523,434 @@ class _Header extends StatelessWidget {
 
 class _Filters extends StatelessWidget {
   const _Filters({
+    required this.busy,
     required this.dateFrom,
     required this.dateTo,
+    required this.groups,
+    required this.cameras,
+    required this.processors,
+    required this.users,
+    required this.persons,
+    required this.groupId,
+    required this.cameraId,
+    required this.processorId,
+    required this.userId,
     required this.personId,
-    required this.busy,
+    required this.onPickFrom,
+    required this.onPickTo,
+    required this.onClearFrom,
+    required this.onClearTo,
+    required this.onGroupChanged,
+    required this.onCameraChanged,
+    required this.onProcessorChanged,
+    required this.onUserChanged,
+    required this.onPersonChanged,
     required this.onApply,
+    required this.onClear,
   });
 
-  final TextEditingController dateFrom;
-  final TextEditingController dateTo;
-  final TextEditingController personId;
   final bool busy;
+  final DateTime? dateFrom;
+  final DateTime? dateTo;
+  final List<_SelectItem> groups;
+  final List<_SelectItem> cameras;
+  final List<_SelectItem> processors;
+  final List<_SelectItem> users;
+  final List<_SelectItem> persons;
+  final int? groupId;
+  final int? cameraId;
+  final int? processorId;
+  final int? userId;
+  final int? personId;
+  final VoidCallback onPickFrom;
+  final VoidCallback onPickTo;
+  final VoidCallback onClearFrom;
+  final VoidCallback onClearTo;
+  final ValueChanged<int?> onGroupChanged;
+  final ValueChanged<int?> onCameraChanged;
+  final ValueChanged<int?> onProcessorChanged;
+  final ValueChanged<int?> onUserChanged;
+  final ValueChanged<int?> onPersonChanged;
   final VoidCallback onApply;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
     return GlassPanel(
       padding: const EdgeInsets.all(16),
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _SizedField(
-            width: 220,
-            child: TextField(
-              controller: dateFrom,
-              decoration: const InputDecoration(
-                labelText: 'Дата/время от',
-                hintText: '2026-05-20T00:00:00',
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _DateTimeButton(
+                label: 'Дата/время от',
+                value: dateFrom,
+                onPick: onPickFrom,
+                onClear: onClearFrom,
               ),
-            ),
-          ),
-          _SizedField(
-            width: 220,
-            child: TextField(
-              controller: dateTo,
-              decoration: const InputDecoration(
-                labelText: 'Дата/время до',
-                hintText: '2026-05-20T23:59:59',
+              _DateTimeButton(
+                label: 'Дата/время до',
+                value: dateTo,
+                onPick: onPickTo,
+                onClear: onClearTo,
               ),
-            ),
+              _SearchableSelect(
+                label: 'Группа',
+                value: groupId,
+                items: groups,
+                icon: Icons.account_tree_rounded,
+                onChanged: onGroupChanged,
+              ),
+              _SearchableSelect(
+                label: 'Камера',
+                value: cameraId,
+                items: cameras,
+                icon: Icons.videocam_rounded,
+                onChanged: onCameraChanged,
+              ),
+              _SearchableSelect(
+                label: 'Processor',
+                value: processorId,
+                items: processors,
+                icon: Icons.memory_rounded,
+                onChanged: onProcessorChanged,
+              ),
+              _SearchableSelect(
+                label: 'Пользователь',
+                value: userId,
+                items: users,
+                icon: Icons.manage_accounts_rounded,
+                onChanged: onUserChanged,
+              ),
+              _SearchableSelect(
+                label: 'Персона для появлений',
+                value: personId,
+                items: persons,
+                icon: Icons.badge_rounded,
+                onChanged: onPersonChanged,
+              ),
+            ],
           ),
-          _SizedField(
-            width: 160,
-            child: TextField(
-              controller: personId,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'ID персоны'),
-            ),
-          ),
-          ElevatedButton.icon(
-            onPressed: busy ? null : onApply,
-            icon: const Icon(Icons.filter_alt_rounded, size: 18),
-            label: const Text('Применить'),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: busy ? null : onApply,
+                icon: const Icon(Icons.filter_alt_rounded, size: 18),
+                label: const Text('Применить'),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy ? null : onClear,
+                icon: const Icon(Icons.filter_alt_off_rounded, size: 18),
+                label: const Text('Сбросить'),
+              ),
+              Text(
+                'Экспорт использует текущие фильтры экрана.',
+                style: TextStyle(color: context.colors.muted, fontSize: 12),
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DateTimeButton extends StatelessWidget {
+  const _DateTimeButton({
+    required this.label,
+    required this.value,
+    required this.onPick,
+    required this.onClear,
+  });
+
+  final String label;
+  final DateTime? value;
+  final VoidCallback onPick;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SizedBox(
+      width: 230,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onPick,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: colors.surfaceMuted,
+            border: Border.all(color: colors.border),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.calendar_month_rounded, color: colors.primaryAccent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(color: colors.muted, fontSize: 12),
+                    ),
+                    Text(
+                      value == null ? 'Не выбрано' : _displayDate(value!),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textStrong,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (value != null)
+                IconButton(
+                  tooltip: 'Очистить',
+                  onPressed: onClear,
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                )
+              else
+                Icon(Icons.expand_more_rounded, color: colors.muted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchableSelect extends StatelessWidget {
+  const _SearchableSelect({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.icon,
+    required this.onChanged,
+  });
+
+  final String label;
+  final int? value;
+  final List<_SelectItem> items;
+  final IconData icon;
+  final ValueChanged<int?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final selected = _itemById(items, value);
+    return SizedBox(
+      width: 248,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _openPicker(context),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: colors.surfaceMuted,
+            border: Border.all(color: colors.border),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: colors.primaryAccent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(color: colors.muted, fontSize: 12),
+                    ),
+                    Text(
+                      selected?.label ?? 'Все',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textStrong,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.search_rounded, color: colors.muted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPicker(BuildContext context) async {
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _SelectSheet(label: label, items: items),
+    );
+    if (selected == null || selected == _SelectSheet.cancelled) return;
+    if (selected == _SelectSheet.all) {
+      onChanged(null);
+      return;
+    }
+    onChanged(selected);
+  }
+}
+
+class _SelectSheet extends StatefulWidget {
+  const _SelectSheet({required this.label, required this.items});
+
+  static const int cancelled = -2147483648;
+  static const int all = -2147483647;
+
+  final String label;
+  final List<_SelectItem> items;
+
+  @override
+  State<_SelectSheet> createState() => _SelectSheetState();
+}
+
+class _SelectSheetState extends State<_SelectSheet> {
+  final _query = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _query.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final query = _query.text.trim().toLowerCase();
+    final filtered = query.isEmpty
+        ? widget.items
+        : widget.items
+              .where(
+                (item) =>
+                    item.label.toLowerCase().contains(query) ||
+                    item.subtitle.toLowerCase().contains(query) ||
+                    '${item.id}'.contains(query),
+              )
+              .toList();
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 18,
+        right: 18,
+        bottom: MediaQuery.viewInsetsOf(context).bottom + 18,
+      ),
+      child: GlassPanel(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 520,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      style: TextStyle(
+                        color: colors.textStrong,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () =>
+                        Navigator.pop(context, _SelectSheet.cancelled),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _query,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search_rounded),
+                  labelText: 'Поиск',
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.all_inclusive_rounded, color: colors.muted),
+                title: Text(
+                  'Все',
+                  style: TextStyle(
+                    color: colors.textStrong,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                onTap: () => Navigator.pop(context, _SelectSheet.all),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Ничего не найдено',
+                          style: TextStyle(color: colors.muted),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: filtered.length,
+                        itemExtent: 64,
+                        itemBuilder: (context, index) {
+                          final item = filtered[index];
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                              item.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: colors.textStrong,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            subtitle: item.subtitle.isEmpty
+                                ? null
+                                : Text(
+                                    item.subtitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: colors.muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                            onTap: () => Navigator.pop(context, item.id),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -403,6 +982,11 @@ class _ExportPanel extends StatelessWidget {
               fontWeight: FontWeight.w900,
               fontSize: 16,
             ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'PDF, Excel и Word формируются backend-ом по активным фильтрам.',
+            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -598,22 +1182,29 @@ class _ActivityColumn extends StatelessWidget {
         if (items.isEmpty)
           Text('Нет данных', style: TextStyle(color: colors.muted))
         else
-          for (final item in items.take(10))
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                '${item[primaryKey] ?? '-'}',
-                style: TextStyle(color: colors.textStrong),
-              ),
-              subtitle: Text(
-                secondaryKeys
-                    .map((key) => item[key])
-                    .where((value) => value != null)
-                    .join(' • '),
-                style: TextStyle(color: colors.muted, fontSize: 12),
-              ),
-            ),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: items.length > 10 ? 10 : items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
+              return ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  '${item[primaryKey] ?? '-'}',
+                  style: TextStyle(color: colors.textStrong),
+                ),
+                subtitle: Text(
+                  secondaryKeys
+                      .map((key) => item[key])
+                      .where((value) => value != null)
+                      .join(' • '),
+                  style: TextStyle(color: colors.muted, fontSize: 12),
+                ),
+              );
+            },
+          ),
       ],
     );
   }
@@ -655,16 +1246,6 @@ class _Metric extends StatelessWidget {
   }
 }
 
-class _SizedField extends StatelessWidget {
-  const _SizedField({required this.width, required this.child});
-
-  final double width;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(width: width, child: child);
-}
-
 class _InlineError extends StatelessWidget {
   const _InlineError({required this.message});
 
@@ -696,6 +1277,26 @@ class _ReportSection {
   final IconData icon;
 }
 
+class _SelectItem {
+  const _SelectItem({
+    required this.id,
+    required this.label,
+    this.subtitle = '',
+  });
+
+  final int id;
+  final String label;
+  final String subtitle;
+}
+
+_SelectItem? _itemById(List<_SelectItem> items, int? id) {
+  if (id == null) return null;
+  for (final item in items) {
+    if (item.id == id) return item;
+  }
+  return null;
+}
+
 Map<String, dynamic> _map(Object? value) {
   if (value is Map<String, dynamic>) return value;
   if (value is Map) return value.map((key, value) => MapEntry('$key', value));
@@ -712,7 +1313,25 @@ List<Map<String, dynamic>> _mapList(Object? value) {
   return const [];
 }
 
-String? _clean(String value) {
-  final text = value.trim();
-  return text.isEmpty ? null : text;
+String? _iso(DateTime? value) => value?.toIso8601String();
+
+String _displayDate(DateTime value) {
+  return DateFormat('dd.MM.yyyy HH:mm').format(value.toLocal());
+}
+
+String _personLabel(Map<String, dynamic> person) {
+  final parts =
+      [person['last_name'], person['first_name'], person['middle_name']]
+          .where((value) => value != null && '$value'.trim().isNotEmpty)
+          .map((value) => '$value');
+  final label = parts.join(' ').trim();
+  return label.isEmpty ? 'Персона #${person['person_id']}' : label;
+}
+
+String _userLabel(Map<String, dynamic> user) {
+  final parts = [user['last_name'], user['first_name'], user['middle_name']]
+      .where((value) => value != null && '$value'.trim().isNotEmpty)
+      .map((value) => '$value');
+  final label = parts.join(' ').trim();
+  return label.isEmpty ? '${user['login'] ?? 'ID ${user['user_id']}'}' : label;
 }

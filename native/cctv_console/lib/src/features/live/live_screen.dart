@@ -64,10 +64,13 @@ class _LiveScreenState extends State<LiveScreen> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final onlineProcessors = _processors.where((item) => item.online).length;
-    final density = context.watch<ThemeController>().liveDensity;
+    final settings = context.watch<ThemeController>();
+    final density = settings.liveDensity;
+    final cameras = _orderedCameras(_cameras, settings.liveCameraOrder);
     final crossAxisCount = _gridColumns(
       MediaQuery.sizeOf(context).width,
       density,
+      settings.liveGridColumns,
     );
 
     return RefreshIndicator(
@@ -172,10 +175,18 @@ class _LiveScreenState extends State<LiveScreen> {
                   },
                 ),
                 const SizedBox(height: 18),
+                _GridControls(
+                  columns: settings.liveGridColumns,
+                  onColumnsChanged: settings.setLiveGridColumns,
+                  onResetOrder: cameras.length < 2
+                      ? null
+                      : () => settings.setLiveCameraOrder(const []),
+                ),
+                const SizedBox(height: 18),
               ],
             ),
           ),
-          if (_cameras.isEmpty && !_loading)
+          if (cameras.isEmpty && !_loading)
             SliverFillRemaining(
               hasScrollBody: false,
               child: Center(
@@ -190,9 +201,12 @@ class _LiveScreenState extends State<LiveScreen> {
           else
             SliverGrid(
               delegate: SliverChildBuilderDelegate((context, index) {
-                final camera = _cameras[index];
-                return _CameraTile(camera: camera);
-              }, childCount: _cameras.length),
+                final camera = cameras[index];
+                return _DraggableCameraTile(
+                  camera: camera,
+                  onMoveBefore: _reorderCameras,
+                );
+              }, childCount: cameras.length),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: crossAxisCount,
                 crossAxisSpacing: 16,
@@ -205,11 +219,236 @@ class _LiveScreenState extends State<LiveScreen> {
     );
   }
 
-  int _gridColumns(double width, LiveDensity density) {
+  List<CameraSummary> _orderedCameras(
+    List<CameraSummary> cameras,
+    List<int> order,
+  ) {
+    if (order.isEmpty || cameras.length < 2) return cameras;
+    final byId = {for (final camera in cameras) camera.cameraId: camera};
+    final result = <CameraSummary>[];
+    for (final id in order) {
+      final camera = byId.remove(id);
+      if (camera != null) result.add(camera);
+    }
+    result.addAll(byId.values);
+    return result;
+  }
+
+  void _reorderCameras(int draggedId, int targetId) {
+    if (draggedId == targetId) return;
+    final settings = context.read<ThemeController>();
+    final ordered = _orderedCameras(
+      _cameras,
+      settings.liveCameraOrder,
+    ).map((camera) => camera.cameraId).toList();
+    final draggedIndex = ordered.indexOf(draggedId);
+    final targetIndex = ordered.indexOf(targetId);
+    if (draggedIndex < 0 || targetIndex < 0) return;
+    final dragged = ordered.removeAt(draggedIndex);
+    final insertIndex = ordered.indexOf(targetId);
+    ordered.insert(insertIndex < 0 ? targetIndex : insertIndex, dragged);
+    settings.setLiveCameraOrder(ordered);
+  }
+
+  int _gridColumns(double width, LiveDensity density, int forcedColumns) {
+    if (forcedColumns > 0) return forcedColumns;
     if (density == LiveDensity.focus) return 1;
     if (width >= 1240) return density == LiveDensity.compact ? 3 : 2;
     if (width >= 780) return 2;
     return 1;
+  }
+}
+
+class _GridControls extends StatelessWidget {
+  const _GridControls({
+    required this.columns,
+    required this.onColumnsChanged,
+    required this.onResetOrder,
+  });
+
+  final int columns;
+  final ValueChanged<int> onColumnsChanged;
+  final VoidCallback? onResetOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GlassPanel(
+      padding: const EdgeInsets.all(12),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            'Сетка Live',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontWeight: FontWeight.w900,
+              fontSize: 13,
+            ),
+          ),
+          _GridChoice(
+            label: 'Авто',
+            selected: columns == 0,
+            onTap: () => onColumnsChanged(0),
+          ),
+          _GridChoice(
+            label: '1 x 1',
+            selected: columns == 1,
+            onTap: () => onColumnsChanged(1),
+          ),
+          _GridChoice(
+            label: '2 x 2',
+            selected: columns == 2,
+            onTap: () => onColumnsChanged(2),
+          ),
+          _GridChoice(
+            label: '3 x 3',
+            selected: columns == 3,
+            onTap: () => onColumnsChanged(3),
+          ),
+          OutlinedButton.icon(
+            onPressed: onResetOrder,
+            icon: const Icon(Icons.restart_alt_rounded, size: 18),
+            label: const Text('Сбросить порядок'),
+          ),
+          Text(
+            'Перетаскивайте карточки долгим нажатием.',
+            style: TextStyle(color: colors.muted, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GridChoice extends StatelessWidget {
+  const _GridChoice({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        gradient: selected
+            ? LinearGradient(
+                colors: [colors.primaryAccent, colors.secondaryAccent],
+              )
+            : null,
+        color: selected ? null : colors.surfaceMuted,
+        border: Border.all(
+          color: selected ? Colors.transparent : colors.border,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? const Color(0xFF07111F) : colors.muted,
+              fontWeight: FontWeight.w800,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DraggableCameraTile extends StatefulWidget {
+  const _DraggableCameraTile({
+    required this.camera,
+    required this.onMoveBefore,
+  });
+
+  final CameraSummary camera;
+  final void Function(int draggedId, int targetId) onMoveBefore;
+
+  @override
+  State<_DraggableCameraTile> createState() => _DraggableCameraTileState();
+}
+
+class _DraggableCameraTileState extends State<_DraggableCameraTile> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return DragTarget<int>(
+      onWillAcceptWithDetails: (details) {
+        final accept = details.data != widget.camera.cameraId;
+        if (accept) setState(() => _hovered = true);
+        return accept;
+      },
+      onLeave: (_) => setState(() => _hovered = false),
+      onAcceptWithDetails: (details) {
+        setState(() => _hovered = false);
+        widget.onMoveBefore(details.data, widget.camera.cameraId);
+      },
+      builder: (context, candidateData, rejectedData) {
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppTheme.radiusLg),
+            border: Border.all(
+              color: _hovered ? colors.primaryAccent : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: LongPressDraggable<int>(
+            data: widget.camera.cameraId,
+            feedback: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: 220,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  color: colors.surfaceElevated,
+                  border: Border.all(color: colors.borderStrong),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.28),
+                      blurRadius: 22,
+                      offset: const Offset(0, 14),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  widget.camera.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.textStrong,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ),
+            childWhenDragging: Opacity(
+              opacity: 0.42,
+              child: _CameraTile(camera: widget.camera),
+            ),
+            child: _CameraTile(camera: widget.camera),
+          ),
+        );
+      },
+    );
   }
 }
 

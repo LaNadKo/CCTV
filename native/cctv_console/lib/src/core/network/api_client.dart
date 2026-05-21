@@ -393,12 +393,82 @@ class ApiClient {
 
   Uri cameraStreamUri(int cameraId) => uri('/cameras/$cameraId/stream');
 
+  Future<Map<String, dynamic>> uploadPersonPhoto(
+    String token,
+    int personId,
+    String filePath, {
+    int? cameraId,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      uri('/persons/$personId/embeddings/photo'),
+    );
+    request.headers['Accept'] = 'application/json';
+    request.headers['Authorization'] = 'Bearer $token';
+    if (cameraId != null) request.fields['camera_id'] = '$cameraId';
+    request.files.add(await http.MultipartFile.fromPath('file', filePath));
+
+    late http.StreamedResponse streamed;
+    try {
+      streamed = await _client.send(request).timeout(_requestTimeout);
+    } catch (_) {
+      throw ApiException(
+        'Не удалось отправить фото на backend (${baseUrlProvider()})',
+      );
+    }
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    if (response.bodyBytes.isEmpty) return <String, dynamic>{};
+    return _asMap(jsonDecode(utf8.decode(response.bodyBytes)));
+  }
+
+  Future<Map<String, dynamic>> uploadPersonPhotoStream(
+    String token,
+    int personId, {
+    required Stream<List<int>> stream,
+    required int length,
+    required String filename,
+    int? cameraId,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      uri('/persons/$personId/embeddings/photo'),
+    );
+    request.headers['Accept'] = 'application/json';
+    request.headers['Authorization'] = 'Bearer $token';
+    if (cameraId != null) request.fields['camera_id'] = '$cameraId';
+    request.files.add(
+      http.MultipartFile('file', stream, length, filename: filename),
+    );
+
+    late http.StreamedResponse streamed;
+    try {
+      streamed = await _client.send(request).timeout(_requestTimeout);
+    } catch (_) {
+      throw ApiException(
+        'Не удалось отправить фото на backend (${baseUrlProvider()})',
+      );
+    }
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    if (response.bodyBytes.isEmpty) return <String, dynamic>{};
+    return _asMap(jsonDecode(utf8.decode(response.bodyBytes)));
+  }
+
   Future<File> downloadReportSection(
     String token, {
     required String section,
     required String format,
     String? dateFrom,
     String? dateTo,
+    int? groupId,
+    int? cameraId,
+    int? processorId,
+    int? userId,
   }) {
     return downloadFile(
       '/reports/export',
@@ -408,6 +478,10 @@ class ApiClient {
         'format': format,
         'date_from': dateFrom,
         'date_to': dateTo,
+        if (groupId != null) 'group_id': '$groupId',
+        if (cameraId != null) 'camera_id': '$cameraId',
+        if (processorId != null) 'processor_id': '$processorId',
+        if (userId != null) 'user_id': '$userId',
       },
       filename: 'cctv-$section.$format',
     );
