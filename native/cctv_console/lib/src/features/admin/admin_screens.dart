@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../auth/auth_controller.dart';
 import '../modules/module_screens.dart'
@@ -2078,6 +2079,7 @@ Future<Map<String, dynamic>?> _userDialog(
   final firstName = TextEditingController();
   final middleName = TextEditingController();
   var roleId = 3;
+  String? error;
   try {
     return showDialog<Map<String, dynamic>>(
       context: context,
@@ -2117,18 +2119,37 @@ Future<Map<String, dynamic>?> _userDialog(
                     const SizedBox(height: 10),
                     TextField(
                       controller: lastName,
+                      inputFormatters: humanNameInputFormatters(),
+                      textCapitalization: TextCapitalization.words,
+                      textInputAction: TextInputAction.next,
                       decoration: const InputDecoration(labelText: 'Фамилия'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: firstName,
+                      inputFormatters: humanNameInputFormatters(),
+                      textCapitalization: TextCapitalization.words,
+                      textInputAction: TextInputAction.next,
                       decoration: const InputDecoration(labelText: 'Имя'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: middleName,
+                      inputFormatters: humanNameInputFormatters(),
+                      textCapitalization: TextCapitalization.words,
+                      textInputAction: TextInputAction.done,
                       decoration: const InputDecoration(labelText: 'Отчество'),
                     ),
+                    if (error != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        error!,
+                        style: TextStyle(
+                          color: context.colors.danger,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -2140,16 +2161,31 @@ Future<Map<String, dynamic>?> _userDialog(
               ),
               ElevatedButton(
                 onPressed: () {
+                  final nameFields = {
+                    'Фамилия': lastName.text,
+                    'Имя': firstName.text,
+                    'Отчество': middleName.text,
+                  };
+                  for (final entry in nameFields.entries) {
+                    final validation = validateOptionalHumanName(
+                      entry.key,
+                      entry.value,
+                    );
+                    if (validation != null) {
+                      setState(() => error = validation);
+                      return;
+                    }
+                  }
                   Navigator.pop(context, {
                     'login': login.text.trim(),
                     'password': password.text,
                     'role_id': roleId,
-                    if (lastName.text.trim().isNotEmpty)
-                      'last_name': lastName.text.trim(),
-                    if (firstName.text.trim().isNotEmpty)
-                      'first_name': firstName.text.trim(),
-                    if (middleName.text.trim().isNotEmpty)
-                      'middle_name': middleName.text.trim(),
+                    if (normalizeHumanName(lastName.text).isNotEmpty)
+                      'last_name': normalizeHumanName(lastName.text),
+                    if (normalizeHumanName(firstName.text).isNotEmpty)
+                      'first_name': normalizeHumanName(firstName.text),
+                    if (normalizeHumanName(middleName.text).isNotEmpty)
+                      'middle_name': normalizeHumanName(middleName.text),
                   });
                 },
                 child: const Text('Сохранить'),

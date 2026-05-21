@@ -27,6 +27,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   String _selectedRoute = '/live';
   bool _routeRestored = false;
+  final Set<String> _visitedRoutes = {'/live'};
 
   @override
   void didChangeDependencies() {
@@ -43,8 +44,16 @@ class _AppShellState extends State<AppShell> {
     if (!tabs.any((tab) => tab.route == _selectedRoute)) {
       _selectedRoute = tabs.first.route;
     }
+    final allowedRoutes = tabs.map((tab) => tab.route).toSet();
+    _visitedRoutes.removeWhere((route) => !allowedRoutes.contains(route));
+    _visitedRoutes.add(_selectedRoute);
     final selected = tabs.firstWhere((tab) => tab.route == _selectedRoute);
     final compact = MediaQuery.sizeOf(context).width < 820;
+    final body = _ShellBody(
+      tabs: tabs,
+      selectedRoute: selected.route,
+      visitedRoutes: Set.unmodifiable(_visitedRoutes),
+    );
 
     return AppBackdrop(
       child: SafeArea(
@@ -53,20 +62,23 @@ class _AppShellState extends State<AppShell> {
                 tabs: tabs,
                 selected: selected,
                 onSelect: _selectRoute,
-                child: selected.builder(context),
+                child: body,
               )
             : _DesktopShell(
                 tabs: tabs,
                 selected: selected,
                 onSelect: _selectRoute,
-                child: selected.builder(context),
+                child: body,
               ),
       ),
     );
   }
 
   void _selectRoute(String route) {
-    setState(() => _selectedRoute = route);
+    setState(() {
+      _selectedRoute = route;
+      _visitedRoutes.add(route);
+    });
     context.read<ThemeController>().setLastRoute(route);
   }
 
@@ -204,8 +216,8 @@ class _DesktopShell extends StatelessWidget {
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final sideReserve = constraints.maxWidth < 1080
-                          ? 210.0
-                          : 310.0;
+                          ? 250.0
+                          : 500.0;
                       return Stack(
                         alignment: Alignment.center,
                         children: [
@@ -256,7 +268,15 @@ class _DesktopShell extends StatelessWidget {
                                   const SizedBox(width: 12),
                                 ],
                                 if (user != null)
-                                  _UserChip(user: user, onLogout: auth.logout),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: 390,
+                                    ),
+                                    child: _UserChip(
+                                      user: user,
+                                      onLogout: auth.logout,
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -359,6 +379,39 @@ class _MobileShell extends StatelessWidget {
   }
 }
 
+class _ShellBody extends StatelessWidget {
+  const _ShellBody({
+    required this.tabs,
+    required this.selectedRoute,
+    required this.visitedRoutes,
+  });
+
+  final List<_ShellTab> tabs;
+  final String selectedRoute;
+  final Set<String> visitedRoutes;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedIndex = tabs.indexWhere((tab) => tab.route == selectedRoute);
+    return IndexedStack(
+      index: selectedIndex < 0 ? 0 : selectedIndex,
+      sizing: StackFit.expand,
+      children: [
+        for (final tab in tabs)
+          if (visitedRoutes.contains(tab.route))
+            KeyedSubtree(
+              key: PageStorageKey<String>('shell-page:${tab.route}'),
+              child: tab.builder(context),
+            )
+          else
+            SizedBox.shrink(
+              key: ValueKey<String>('shell-placeholder:${tab.route}'),
+            ),
+      ],
+    );
+  }
+}
+
 class _Brand extends StatelessWidget {
   const _Brand({this.compact = false});
 
@@ -367,52 +420,68 @@ class _Brand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Row(
-      children: [
-        Container(
-          width: compact ? 42 : 50,
-          height: compact ? 42 : 50,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(17),
-            gradient: LinearGradient(
-              colors: [
-                colors.primaryAccent.withValues(alpha: 0.16),
-                colors.secondaryAccent.withValues(alpha: 0.22),
+    final size = compact ? 42.0 : 50.0;
+    return SizedBox(
+      height: size,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: size,
+            height: size,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(17),
+              gradient: LinearGradient(
+                colors: [
+                  colors.primaryAccent.withValues(alpha: 0.16),
+                  colors.secondaryAccent.withValues(alpha: 0.22),
+                ],
+              ),
+              border: Border.all(color: colors.borderStrong),
+            ),
+            child: Text(
+              'CCTV',
+              style: TextStyle(
+                color: colors.textStrong,
+                fontWeight: FontWeight.w900,
+                fontSize: compact ? 10 : 11,
+                letterSpacing: 1.4,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            height: size,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Console',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: colors.textStrong,
+                    fontSize: compact ? 17 : 19,
+                    height: 1.08,
+                  ),
+                ),
+                if (!compact) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    'Единый клиент для backend и Processor',
+                    style: TextStyle(
+                      color: colors.muted,
+                      fontSize: 12,
+                      height: 1.1,
+                    ),
+                  ),
+                ],
               ],
             ),
-            border: Border.all(color: colors.borderStrong),
           ),
-          child: Text(
-            'CCTV',
-            style: TextStyle(
-              color: colors.textStrong,
-              fontWeight: FontWeight.w900,
-              fontSize: compact ? 10 : 11,
-              letterSpacing: 1.4,
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Console',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
-                color: colors.textStrong,
-                fontSize: compact ? 17 : 19,
-              ),
-            ),
-            if (!compact)
-              Text(
-                'Единый клиент для backend и Processor',
-                style: TextStyle(color: colors.muted, fontSize: 12),
-              ),
-          ],
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -427,28 +496,38 @@ class _UserChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return Container(
-      padding: const EdgeInsets.all(9),
+      constraints: const BoxConstraints(maxWidth: 390),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(18),
         color: colors.surfaceMuted,
         border: Border.all(color: colors.border),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                user.displayName,
-                style: TextStyle(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 13,
-                ),
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 72, maxWidth: 250),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    user.displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: colors.textStrong,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  _RoleBadge(user: user),
+                ],
               ),
-              const SizedBox(height: 4),
-              _RoleBadge(user: user),
-            ],
+            ),
           ),
           const SizedBox(width: 10),
           OutlinedButton(onPressed: onLogout, child: const Text('Выйти')),
@@ -802,6 +881,8 @@ class _RoleBadge extends StatelessWidget {
       ),
       child: Text(
         user.roleLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: roleColor,
           fontWeight: FontWeight.w800,

@@ -176,7 +176,6 @@ class ThemeController extends ChangeNotifier {
   }
 
   Future<void> resetAppearance() async {
-    _themeMode = CctvThemeMode.system;
     _primaryAccent = const Color(0xFF5EF0FF);
     _secondaryAccent = const Color(0xFF6F7BFF);
     _liveDensity = LiveDensity.comfortable;
@@ -186,7 +185,6 @@ class ThemeController extends ChangeNotifier {
     notifyListeners();
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_themeModeKey);
     await prefs.remove(_primaryAccentKey);
     await prefs.remove(_secondaryAccentKey);
     await prefs.remove(_liveDensityKey);

@@ -100,30 +100,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const _SectionTitle(
                     title: 'Оформление',
-                    subtitle: 'Тема и акцентные цвета интерфейса.',
-                  ),
-                  const SizedBox(height: 14),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: [
-                      _ChoiceChipButton(
-                        label: 'Системная',
-                        selected: settings.themeMode == CctvThemeMode.system,
-                        onTap: () =>
-                            settings.setThemeMode(CctvThemeMode.system),
-                      ),
-                      _ChoiceChipButton(
-                        label: 'Тёмная',
-                        selected: settings.themeMode == CctvThemeMode.dark,
-                        onTap: () => settings.setThemeMode(CctvThemeMode.dark),
-                      ),
-                      _ChoiceChipButton(
-                        label: 'Светлая',
-                        selected: settings.themeMode == CctvThemeMode.light,
-                        onTap: () => settings.setThemeMode(CctvThemeMode.light),
-                      ),
-                    ],
+                    subtitle:
+                        'Акцентные цвета интерфейса. Тема переключается кнопкой рядом с меню.',
                   ),
                   const SizedBox(height: 14),
                   _PalettePresets(
