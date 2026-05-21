@@ -1,0 +1,26 @@
+[Unit]
+Description=CCTV Processor headless service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctv
+Group=cctv
+WorkingDirectory=/opt/cctv-complex
+EnvironmentFile=/etc/cctv-processor.env
+ExecStart=/opt/cctv-complex/.venv/bin/python -m processor.runtime
+Restart=on-failure
+RestartSec=5
+RuntimeMaxSec=infinity
+
+# Keep runtime/media writable while the rest of the system stays protected.
+StateDirectory=cctv-processor
+ReadWritePaths=/var/lib/cctv-processor
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -29,6 +29,7 @@ class ProcessorService:
         self._runtime_lock = RuntimeLock()
         self._assignment_lock = asyncio.Lock()
         self._assignment_refresh_event = asyncio.Event()
+        self._workers_paused = False
         self._system_info = get_system_info()
         self._acceleration_report = log_acceleration_report(logger, settings.processor_accel)
         self._system_info["acceleration"] = {
@@ -146,6 +147,9 @@ class ProcessorService:
                     self.workers[cid].stop()
                     del self.workers[cid]
                     logger.info("Stopped worker for camera %d", cid)
+            if self._workers_paused:
+                logger.info("Camera workers are paused; assignments synced without starting workers")
+                return
             now = asyncio.get_running_loop().time()
             if self._gallery_loaded_at <= 0.0 or (now - self._gallery_loaded_at) >= self._gallery_refresh_seconds:
                 self._gallery = await self.client.get_gallery(self.processor_id)
@@ -211,8 +215,13 @@ class ProcessorService:
                 await self._sync_assignments()
                 result = {"message": "Workers restarted", "active_cameras": len(self.workers)}
             elif command_type == "stop_all_cameras":
+                self._workers_paused = True
                 await self._stop_all_workers()
                 result = {"message": "All camera workers stopped", "active_cameras": len(self.workers)}
+            elif command_type == "resume_cameras":
+                self._workers_paused = False
+                await self._sync_assignments()
+                result = {"message": "Camera workers resumed", "active_cameras": len(self.workers)}
             elif command_type == "refresh_gallery":
                 self._gallery = await self.client.get_gallery(self.processor_id)
                 self._gallery_loaded_at = asyncio.get_running_loop().time()

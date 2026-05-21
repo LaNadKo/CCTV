@@ -100,7 +100,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
       }
 
       final cameras = await api.listCameras(token);
-      final activeCameraId = _cameraId ?? cameras.firstOrNull?.cameraId;
+      final activeCameraId = _cameraId;
       final offset = append ? _records.length : 0;
       final query = <String, String?>{
         if (activeCameraId != null) 'camera_id': '$activeCameraId',
@@ -522,7 +522,7 @@ class _ArchiveControls extends StatelessWidget {
         children: [
           SizedBox(
             width: 280,
-            child: DropdownButtonFormField<int>(
+            child: DropdownButtonFormField<int?>(
               initialValue: cameras.any((camera) => camera.cameraId == cameraId)
                   ? cameraId
                   : null,
@@ -532,8 +532,12 @@ class _ArchiveControls extends StatelessWidget {
                 prefixIcon: Icon(Icons.videocam_rounded),
               ),
               items: [
+                const DropdownMenuItem<int?>(
+                  value: null,
+                  child: Text('Все камеры'),
+                ),
                 for (final camera in cameras)
-                  DropdownMenuItem(
+                  DropdownMenuItem<int?>(
                     value: camera.cameraId,
                     child: Text('${camera.name} (#${camera.cameraId})'),
                   ),

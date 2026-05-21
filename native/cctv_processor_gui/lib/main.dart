@@ -1405,8 +1405,12 @@ class RuntimeBridge {
 
   static Future<RuntimeBridge> detect() async {
     final appDir = File(Platform.resolvedExecutable).parent;
+    final processorBinary = Platform.isWindows
+        ? 'CCTV-Processor.exe'
+        : 'CCTV-Processor';
+    final pythonExecutable = Platform.isWindows ? 'python' : 'python3';
     final bundledDir = Directory(joinPath(appDir.path, 'processor'));
-    final bundledExe = File(joinPath(bundledDir.path, 'CCTV-Processor.exe'));
+    final bundledExe = File(joinPath(bundledDir.path, processorBinary));
     if (await bundledExe.exists()) {
       return RuntimeBridge(
         runtimeDir: bundledDir,
@@ -1417,7 +1421,7 @@ class RuntimeBridge {
       );
     }
 
-    final localExe = File(joinPath(appDir.path, 'CCTV-Processor.exe'));
+    final localExe = File(joinPath(appDir.path, processorBinary));
     if (await localExe.exists()) {
       return RuntimeBridge(
         runtimeDir: appDir,
@@ -1433,7 +1437,7 @@ class RuntimeBridge {
       final distDir = Directory(
         joinPath(repo.path, 'processor', 'dist', 'CCTV-Processor'),
       );
-      final distExe = File(joinPath(distDir.path, 'CCTV-Processor.exe'));
+      final distExe = File(joinPath(distDir.path, processorBinary));
       if (await distExe.exists()) {
         return RuntimeBridge(
           runtimeDir: distDir,
@@ -1447,7 +1451,7 @@ class RuntimeBridge {
       return RuntimeBridge(
         runtimeDir: Directory(joinPath(repo.path, 'processor')),
         launcherDescription: 'source Python runtime',
-        executable: 'python',
+        executable: pythonExecutable,
         baseArgs: [runGui.path],
         workingDirectory: repo,
       );
@@ -2470,7 +2474,7 @@ class _HelpGrid extends StatelessWidget {
       ),
       (
         'Portable',
-        'Для портативной сборки рядом с GUI кладётся папка processor с CCTV-Processor.exe и Python runtime.',
+        'Для портативной сборки рядом с GUI кладётся папка processor с бинарником CCTV-Processor и Python runtime.',
       ),
     ];
     return GridView.count(
