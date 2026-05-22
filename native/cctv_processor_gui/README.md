@@ -5,20 +5,20 @@
 GUI не переписывает Python-детекцию. Он управляет существующим runtime через:
 
 - `processor_config.json`;
-- `CCTV-Processor --headless`;
-- `CCTV-Processor --cli ...`;
+- `CCTV-Processor-Runtime --headless`;
+- `CCTV-Processor-CLI ...`;
 - `processor.log`.
 
 ## Runtime Lookup
 
 При запуске GUI ищет Processor в таком порядке:
 
-1. `processor/CCTV-Processor.exe` или `processor/CCTV-Processor` рядом с GUI;
-2. `CCTV-Processor.exe` или `CCTV-Processor` рядом с GUI;
-3. `processor/dist/CCTV-Processor/CCTV-Processor.exe` или `processor/dist/CCTV-Processor/CCTV-Processor` в репозитории;
-4. `processor/run_gui.py` в репозитории как dev fallback (`python` на Windows, `python3` на Linux).
+1. `processor/CCTV-Processor-Runtime.exe` или `processor/CCTV-Processor-Runtime` рядом с GUI;
+2. `CCTV-Processor-Runtime.exe` или `CCTV-Processor-Runtime` рядом с GUI;
+3. `processor/dist/CCTV-Processor-Runtime/CCTV-Processor-Runtime.exe` или `processor/dist/CCTV-Processor-Runtime/CCTV-Processor-Runtime` в репозитории;
+4. `processor/run_runtime.py` и `processor/cli.py` в репозитории как dev fallback (`python` на Windows, `python3` на Linux).
 
-Для portable-сборки рядом с Flutter GUI кладётся папка `processor` из PyInstaller-сборки.
+Для portable-сборки рядом с Flutter GUI кладётся папка `processor` из headless PyInstaller runtime. Старый Python GUI в portable больше не нужен.
 
 ## Linux Server
 

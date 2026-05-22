@@ -111,7 +111,7 @@ class PtzContinuousMoveIn(BaseModel):
     pan: float = Field(default=0.0, ge=-1.0, le=1.0)
     tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
     zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
-    timeout_seconds: Optional[float] = Field(default=0.6, ge=0.1, le=10.0)
+    timeout_seconds: Optional[float] = Field(default=0.45, ge=0.1, le=1.5)
 
 
 class PtzAbsoluteMoveIn(BaseModel):

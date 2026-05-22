@@ -1874,17 +1874,26 @@ class _UserCard extends StatelessWidget {
               ],
             ),
           ),
-          DropdownButton<int>(
-            value: roleId,
-            underline: const SizedBox.shrink(),
-            items: const [
-              DropdownMenuItem(value: 1, child: Text('Админ')),
-              DropdownMenuItem(value: 2, child: Text('Оператор')),
-              DropdownMenuItem(value: 3, child: Text('Смотрящий')),
-            ],
-            onChanged: (value) {
-              if (value != null && value != roleId) onRoleChanged(value);
-            },
+          Tooltip(
+            message: isCurrent
+                ? 'Роль текущего пользователя нельзя менять из активной сессии'
+                : 'Изменить роль',
+            child: DropdownButton<int>(
+              value: roleId,
+              underline: const SizedBox.shrink(),
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('Админ')),
+                DropdownMenuItem(value: 2, child: Text('Оператор')),
+                DropdownMenuItem(value: 3, child: Text('Смотрящий')),
+              ],
+              onChanged: isCurrent
+                  ? null
+                  : (value) {
+                      if (value != null && value != roleId) {
+                        onRoleChanged(value);
+                      }
+                    },
+            ),
           ),
           IconButton(
             tooltip: isCurrent

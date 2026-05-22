@@ -1,10 +1,10 @@
 ; Inno Setup script for CCTV Processor
-; Requires: PyInstaller output in dist\CCTV-Processor\
+; Requires: PyInstaller output in dist\CCTV-Processor-Runtime\
 
 #define MyAppName "CCTV Processor"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "CCTV System"
-#define MyAppExeName "CCTV-Processor.exe"
+#define MyAppExeName "CCTV-Processor-Runtime.exe"
 #define MyCliExeName "CCTV-Processor-CLI.exe"
 
 #ifdef FastBuild
@@ -15,7 +15,7 @@
   #define MySolidCompression "yes"
 #endif
 
-#ifexist "dist\CCTV-Processor-CLI.exe"
+#ifexist "dist\CCTV-Processor-CLI\CCTV-Processor-CLI.exe"
   #define HaveCli
 #endif
 
@@ -50,9 +50,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupheadless"; Description: "Запускать Processor в фоне при входе в Windows"; GroupDescription: "Автозапуск:"
 
 [Files]
-Source: "dist\CCTV-Processor\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\CCTV-Processor-Runtime\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 #ifdef HaveCli
-Source: "dist\{#MyCliExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\CCTV-Processor-CLI\{#MyCliExeName}"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 [Icons]

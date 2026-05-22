@@ -23,6 +23,19 @@ import '../settings/settings_screen.dart';
 
 const _changePollInterval = Duration(seconds: 5);
 const _changePollTimeout = Duration(seconds: 5);
+const _activeRefreshInterval = Duration(seconds: 15);
+const _activeAutoRefreshRoutes = <String>{
+  '/live',
+  '/recordings',
+  '/reviews',
+  '/reports',
+  '/cameras',
+  '/groups',
+  '/persons',
+  '/processors',
+  '/users',
+  '/api-keys',
+};
 const _changeSectionRoutes = <String, List<String>>{
   'cameras': ['/live', '/cameras', '/recordings', '/reports', '/processors'],
   'groups': ['/live', '/groups', '/cameras', '/reports'],
@@ -47,6 +60,7 @@ class _AppShellState extends State<AppShell> {
   bool _hasChangeSnapshot = false;
   bool _changePollInFlight = false;
   Timer? _changePollTimer;
+  Timer? _activeRefreshTimer;
   Map<String, String> _sectionRevisions = const {};
   final Set<String> _visitedRoutes = {'/live'};
 
@@ -58,6 +72,10 @@ class _AppShellState extends State<AppShell> {
       _changePollTimer = Timer.periodic(
         _changePollInterval,
         (_) => unawaited(_pollChanges()),
+      );
+      _activeRefreshTimer = Timer.periodic(
+        _activeRefreshInterval,
+        (_) => _refreshActiveRoute(),
       );
     });
   }
@@ -73,6 +91,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     _changePollTimer?.cancel();
+    _activeRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -170,6 +189,15 @@ class _AppShellState extends State<AppShell> {
     } finally {
       _changePollInFlight = false;
     }
+  }
+
+  void _refreshActiveRoute() {
+    if (!mounted || !_activeAutoRefreshRoutes.contains(_selectedRoute)) {
+      return;
+    }
+    final token = context.read<AuthController>().accessToken;
+    if (token == null || token.isEmpty) return;
+    context.read<RefreshBus>().markStale([_selectedRoute]);
   }
 
   List<_ShellTab> _tabsFor(CurrentUser? user) {
@@ -305,22 +333,18 @@ class _DesktopShell extends StatelessWidget {
                   height: 58,
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      final sideReserve = constraints.maxWidth < 1080
-                          ? 250.0
-                          : 500.0;
-                      return Stack(
-                        alignment: Alignment.center,
+                      final compact = constraints.maxWidth < 980;
+                      return Row(
                         children: [
-                          const Align(
-                            alignment: Alignment.centerLeft,
-                            child: _Brand(),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: sideReserve,
+                          ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: compact ? 180 : 340,
                             ),
-                            child: Align(
-                              alignment: Alignment.center,
+                            child: _Brand(compact: compact),
+                          ),
+                          SizedBox(width: compact ? 8 : 16),
+                          Expanded(
+                            child: ClipRect(
                               child: SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,
                                 child: Row(
@@ -342,33 +366,31 @@ class _DesktopShell extends StatelessWidget {
                               ),
                             ),
                           ),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const _ThemeToggleButton(),
-                                const SizedBox(width: 8),
-                                if (secondaryTabs.isNotEmpty) ...[
-                                  _DesktopMenu(
-                                    tabs: secondaryTabs,
-                                    active: menuActive,
-                                    onSelect: onSelect,
-                                  ),
-                                  const SizedBox(width: 12),
-                                ],
-                                if (user != null)
-                                  ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 390,
-                                    ),
-                                    child: _UserChip(
-                                      user: user,
-                                      onLogout: auth.logout,
-                                    ),
-                                  ),
+                          SizedBox(width: compact ? 8 : 16),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const _ThemeToggleButton(),
+                              const SizedBox(width: 8),
+                              if (secondaryTabs.isNotEmpty) ...[
+                                _DesktopMenu(
+                                  tabs: secondaryTabs,
+                                  active: menuActive,
+                                  onSelect: onSelect,
+                                ),
+                                const SizedBox(width: 12),
                               ],
-                            ),
+                              if (user != null)
+                                ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxWidth: compact ? 270 : 390,
+                                  ),
+                                  child: _UserChip(
+                                    user: user,
+                                    onLogout: auth.logout,
+                                  ),
+                                ),
+                            ],
                           ),
                         ],
                       );
@@ -421,8 +443,8 @@ class _MobileShell extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  const _Brand(compact: true),
-                  const Spacer(),
+                  const Expanded(child: _Brand(compact: true)),
+                  const SizedBox(width: 8),
                   const _ThemeToggleButton(compact: true),
                   const SizedBox(width: 8),
                   PopupMenuButton<String>(
@@ -437,9 +459,10 @@ class _MobileShell extends StatelessWidget {
                     child: _MenuChip(active: !visibleTabs.contains(selected)),
                   ),
                   const SizedBox(width: 8),
-                  OutlinedButton(
+                  IconButton.filledTonal(
                     onPressed: context.read<AuthController>().logout,
-                    child: const Text('Выйти'),
+                    tooltip: 'Выйти',
+                    icon: const Icon(Icons.logout_rounded),
                   ),
                 ],
               ),
@@ -541,33 +564,39 @@ class _Brand extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          SizedBox(
-            height: size,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Console',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w900,
-                    color: colors.textStrong,
-                    fontSize: compact ? 17 : 19,
-                    height: 1.08,
-                  ),
-                ),
-                if (!compact) ...[
-                  const SizedBox(height: 3),
+          Flexible(
+            child: SizedBox(
+              height: size,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    'Единый клиент для backend и Processor',
-                    style: TextStyle(
-                      color: colors.muted,
-                      fontSize: 12,
-                      height: 1.1,
+                    'Console',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color: colors.textStrong,
+                      fontSize: compact ? 17 : 19,
+                      height: 1.08,
                     ),
                   ),
+                  if (!compact) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      'Единый клиент для backend и Processor',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.muted,
+                        fontSize: 12,
+                        height: 1.1,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ],

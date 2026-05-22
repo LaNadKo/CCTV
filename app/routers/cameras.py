@@ -7,7 +7,7 @@ from urllib.parse import quote
 import cv2
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -34,6 +34,12 @@ from app.services.onvif import (
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 log = logging.getLogger("app.activity")
+_LIVE_STREAM_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "X-Accel-Buffering": "no",
+}
 
 
 async def _proxy_processor_camera_stream(
@@ -61,7 +67,7 @@ async def _proxy_processor_camera_stream_url(
     camera_id: int,
     overlay: bool,
 ) -> StreamingResponse:
-    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=3, read=10, write=10, pool=10))
+    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=10, write=5, pool=5))
     stream_cm = client.stream(
         "GET",
         f"{base_url}/cameras/{camera_id}/stream.mjpeg",
@@ -77,7 +83,7 @@ async def _proxy_processor_camera_stream_url(
 
     async def gen():
         try:
-            async for chunk in upstream.aiter_bytes():
+            async for chunk in upstream.aiter_raw(chunk_size=16384):
                 if chunk:
                     yield chunk
         finally:
@@ -88,6 +94,50 @@ async def _proxy_processor_camera_stream_url(
         gen(),
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace; boundary=frame"),
+        headers=_LIVE_STREAM_HEADERS,
+    )
+
+
+async def _proxy_processor_camera_snapshot(
+    proc: models.Processor,
+    camera_id: int,
+    overlay: bool,
+) -> Response:
+    errors: list[str] = []
+    for base_url in get_processor_media_base_urls(proc):
+        try:
+            return await _proxy_processor_camera_snapshot_url(
+                base_url,
+                proc,
+                camera_id,
+                overlay,
+            )
+        except Exception as exc:
+            errors.append(f"{base_url}: {exc!r}")
+    raise RuntimeError("; ".join(errors) or "processor media endpoint is unknown")
+
+
+async def _proxy_processor_camera_snapshot_url(
+    base_url: str,
+    proc: models.Processor,
+    camera_id: int,
+    overlay: bool,
+) -> Response:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=4, write=4, pool=4)) as client:
+        upstream = await client.get(
+            f"{base_url}/cameras/{camera_id}/snapshot.jpg",
+            headers=get_processor_media_headers(proc),
+            params={"overlay": "1" if overlay else "0"},
+        )
+    if upstream.status_code >= 400:
+        raise RuntimeError(
+            upstream.text or f"processor media status {upstream.status_code}"
+        )
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type", "image/jpeg"),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -150,6 +200,7 @@ def _open_direct_capture(source: str | int) -> cv2.VideoCapture:
     if isinstance(source, str) and source.lower().startswith("rtsp://"):
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
             "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
+            "|analyzeduration;0|probesize;32768|flush_packets;1"
         )
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     else:
@@ -172,6 +223,27 @@ def _read_direct_jpeg(cap: cv2.VideoCapture) -> bytes | None:
     if not ok:
         return None
     return buf.tobytes()
+
+
+async def _snapshot_direct_camera(camera: models.Camera) -> Response:
+    source = _resolve_direct_camera_source(camera)
+    if source is None:
+        raise RuntimeError("camera stream source is not configured")
+    cap = await asyncio.to_thread(_open_direct_capture, source)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError("cannot open camera stream directly")
+    try:
+        frame = await asyncio.to_thread(_read_direct_jpeg, cap)
+    finally:
+        cap.release()
+    if frame is None:
+        raise RuntimeError("cannot read camera frame directly")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
@@ -200,7 +272,11 @@ async def _stream_direct_camera(camera: models.Camera) -> StreamingResponse:
         finally:
             cap.release()
 
-    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(
+        gen(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers=_LIVE_STREAM_HEADERS,
+    )
 
 
 @router.get("", response_model=List[CameraOut])
@@ -346,5 +422,69 @@ async def stream_camera(
                 detail=(
                     "Live stream is unavailable: "
                     f"processor proxy failed ({exc!r}); direct stream failed ({fallback_exc})"
+                ),
+            ) from fallback_exc
+
+
+@router.get("/{camera_id}/snapshot")
+async def snapshot_camera(
+    camera_id: int,
+    annotate: bool = False,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user_allow_query),
+):
+    result = await session.execute(
+        select(models.Camera)
+        .where(models.Camera.camera_id == camera_id)
+        .options(selectinload(models.Camera.endpoints))
+    )
+    camera = result.scalar_one_or_none()
+    if camera is None or camera.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+
+    permission = user_camera_permission_sync(current_user)
+    if not check_permission(permission, "view"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this camera")
+
+    assignment_result = await session.execute(
+        select(models.ProcessorCameraAssignment, models.Processor)
+        .join(models.Processor, models.Processor.processor_id == models.ProcessorCameraAssignment.processor_id)
+        .where(
+            models.ProcessorCameraAssignment.camera_id == camera_id,
+            models.Processor.status == "online",
+        )
+    )
+    assignment_row = None
+    for row in assignment_result.all():
+        if is_processor_effectively_online(row[1]):
+            assignment_row = row
+            break
+    if assignment_row is None:
+        try:
+            return await _snapshot_direct_camera(camera)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Live snapshot is unavailable: no online processor and direct frame failed ({exc})",
+            ) from exc
+
+    _, processor = assignment_row
+    try:
+        return await _proxy_processor_camera_snapshot(processor, camera_id, overlay=annotate)
+    except Exception as exc:
+        log.warning(
+            "camera.snapshot.processor_proxy_failed camera=%s processor=%s reason=%s",
+            camera_id,
+            processor.processor_id,
+            repr(exc),
+        )
+        try:
+            return await _snapshot_direct_camera(camera)
+        except Exception as fallback_exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Live snapshot is unavailable: "
+                    f"processor proxy failed ({exc!r}); direct frame failed ({fallback_exc})"
                 ),
             ) from fallback_exc

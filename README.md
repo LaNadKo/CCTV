@@ -50,7 +50,7 @@
 - Electron
 - OpenCV
 - ONNX Runtime
-- MMDeploy Runtime
+- CUDA/cuDNN runtime packages for ONNXRuntime GPU
 - MediaMTX
 - Docker Compose
 - Flutter — целевой стек для новых native-клиентов
@@ -221,10 +221,11 @@ npm run dev
 
 ### Processor
 
-GUI:
+Flutter Processor GUI:
 
 ```bash
-python processor/run_gui.py
+cd native/cctv_processor_gui
+flutter run -d windows
 ```
 
 CLI:
@@ -294,7 +295,7 @@ npx electron-builder --win portable --config.win.signAndEditExecutable=false
 
 ### Processor
 
-Portable GUI + CLI:
+Portable runtime + CLI для Flutter Processor GUI:
 
 ```bat
 py -3.11 -m venv .venv-processor311
@@ -304,8 +305,8 @@ py -3.11 -m venv .venv-processor311
 
 Артефакты:
 
-- `processor/dist/CCTV-Processor/` — folder-based portable GUI;
-- `processor/dist/CCTV-Processor-CLI.exe` — CLI executable.
+- `processor/dist/CCTV-Processor-Runtime/` — folder-based headless runtime;
+- `processor/dist/CCTV-Processor-CLI/CCTV-Processor-CLI.exe` — CLI executable.
 
 Полная Windows-сборка:
 
@@ -397,4 +398,4 @@ bash <(curl -Ls https://raw.githubusercontent.com/LaNadKo/CCTV/main/install.sh)
 ## Примечания
 
 - Runtime-конфиги и медиа-папки (`.env`, `recordings/`, `recordings_cache/`, `snapshots/`, `processor_config.json`) не хранятся в Git и создаются локально.
-- Текущий face/body runtime использует `ONNX Runtime + MMDeploy Runtime`; legacy-артефакты PyInstaller/YOLO в корне проекта не требуются.
+- Текущий face/body runtime использует `ONNX Runtime`; legacy-артефакты PyInstaller/YOLO в корне проекта не требуются.

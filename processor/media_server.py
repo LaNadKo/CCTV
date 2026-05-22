@@ -56,6 +56,10 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(403, {"detail": "Forbidden"})
                 return
 
+            if path.startswith("/cameras/") and path.endswith("/snapshot.jpg"):
+                self._serve_live_snapshot(path, parsed.query)
+                return
+
             if path.startswith("/cameras/") and path.endswith("/stream.mjpeg"):
                 self._serve_live_stream(path, parsed.query)
                 return
@@ -86,13 +90,14 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"detail": "Not found"})
         except FileNotFoundError:
             self._send_json(404, {"detail": "File missing"})
-        except BrokenPipeError:
-            pass
-        except ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as exc:
             log.exception("Processor media server request failed")
-            self._send_json(500, {"detail": str(exc)})
+            try:
+                self._send_json(500, {"detail": str(exc)})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -108,13 +113,14 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
                 return
 
             self._send_json(404, {"detail": "Not found"})
-        except BrokenPipeError:
-            pass
-        except ConnectionResetError:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as exc:
             log.exception("Processor media server POST failed")
-            self._send_json(500, {"detail": str(exc)})
+            try:
+                self._send_json(500, {"detail": str(exc)})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
     def _authorized(self) -> bool:
         expected = self.media_server.media_token
@@ -181,19 +187,58 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
         overlay = qs.get("overlay", ["1"])[0].lower() not in {"0", "false", "no"}
 
         self.send_response(200)
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "close")
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
 
-        while not self.media_server.stop_event.is_set():
+        try:
+            while not self.media_server.stop_event.is_set():
+                frame = worker.get_stream_frame(overlay=overlay)
+                if frame:
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                    self.wfile.write(frame)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                time.sleep(1 / 20)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            log.debug("media.live client disconnected camera=%s", camera_id)
+
+    def _serve_live_snapshot(self, path: str, query: str) -> None:
+        match = re.match(r"^/cameras/(\d+)/snapshot\.jpg$", path)
+        if not match:
+            self._send_json(404, {"detail": "Not found"})
+            return
+        camera_id = int(match.group(1))
+        worker = self.media_server.service.workers.get(camera_id)
+        if worker is None:
+            self._send_json(404, {"detail": "Camera worker not found"})
+            return
+
+        qs = parse_qs(query or "")
+        overlay = qs.get("overlay", ["1"])[0].lower() not in {"0", "false", "no"}
+        deadline = time.monotonic() + 2.0
+        frame = None
+        while time.monotonic() < deadline and not self.media_server.stop_event.is_set():
             frame = worker.get_stream_frame(overlay=overlay)
             if frame:
-                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
-                self.wfile.write(frame)
-                self.wfile.write(b"\r\n")
-                self.wfile.flush()
-            time.sleep(1 / 15)
+                break
+            time.sleep(0.03)
+        if not frame:
+            self._send_json(503, {"detail": "Live frame is not ready"})
+            return
+
+        self.send_response(200)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(frame)))
+        self.end_headers()
+        self.wfile.write(frame)
 
     def _serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():

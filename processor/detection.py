@@ -175,39 +175,12 @@ class CameraWorker:
         self._setup_tracking_runtime()
 
     def _setup_tracking_runtime(self) -> None:
-        tracking_enabled = bool(self.assignment.get("tracking_enabled"))
-        tracking_mode = str(self.assignment.get("tracking_mode") or "off")
-        has_onvif = bool(self.assignment.get("connection_kind") == "onvif" and self.assignment.get("supports_ptz"))
-        endpoints = self.assignment.get("endpoints") or []
-        has_onvif_endpoint = any(item.get("endpoint_kind") == "onvif" for item in endpoints)
-        if not tracking_enabled or tracking_mode == "off" or not has_onvif or not has_onvif_endpoint:
-            self._tracking_controller = None
-            self._auto_tracker = None
-            self._patrol_mode = None
-            self._tracking_last_target_monotonic = 0.0
-            return
-
-        from processor.tracking import AutoTracker, OnvifController, PatrolMode
-
-        if self._tracking_controller is None:
-            self._tracking_controller = OnvifController(self.assignment)
-        else:
-            self._tracking_controller.refresh_assignment(self.assignment)
-
-        if self._auto_tracker is None:
-            self._auto_tracker = AutoTracker(self._tracking_controller)
-        else:
-            self._auto_tracker.refresh_assignment(self.assignment)
-
-        presets = self.assignment.get("presets") or []
-        if presets:
-            if self._patrol_mode is None:
-                self._patrol_mode = PatrolMode(self._tracking_controller, presets)
-            else:
-                self._patrol_mode.refresh_assignment(self.assignment)
-                self._patrol_mode.refresh_presets(presets)
-        else:
-            self._patrol_mode = None
+        if self._auto_tracker:
+            self._auto_tracker.stop(force=True)
+        self._tracking_controller = None
+        self._auto_tracker = None
+        self._patrol_mode = None
+        self._tracking_last_target_monotonic = 0.0
 
     def _select_tracking_target(self, body_tracks: list[dict], frame_shape: tuple[int, ...]) -> tuple[int, int, int, int] | None:
         frame_h, frame_w = frame_shape[:2]
@@ -381,6 +354,7 @@ class CameraWorker:
         if isinstance(source, str) and source.lower().startswith("rtsp://"):
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
                 "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
+                "|analyzeduration;0|probesize;32768|flush_packets;1"
             )
             cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
         else:
@@ -424,12 +398,7 @@ class CameraWorker:
             faces = detect_faces(rgb)
             now = time.time()
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
-            want_body_support = (
-                bool(faces)
-                or (now - self._last_faces_ts) <= self._overlay_ttl
-                or (now - self._last_motion_ts) <= 1.2
-            )
-            bodies = self._get_body_support(frame, now) if want_body_support else []
+            bodies = self._get_body_support(frame, now)
             body_tracks = self._update_body_tracks(bodies, now)
 
             for face in faces:
@@ -438,7 +407,7 @@ class CameraWorker:
                 person_id, sim = match_embedding(face["embedding"], self._gallery)
                 if person_id is None:
                     if track_id is not None:
-                        person_id = self._recover_track_identity(track_id, sim, now)
+                        person_id = self._recover_track_identity(track_id, sim, now, box)
                 if person_id is None:
                     person_id = self._recover_recent_identity(box, sim, now)
                 recognized = person_id is not None
@@ -460,7 +429,7 @@ class CameraWorker:
                 if recognized:
                     self._remember_identity(box, person_id, sim, now)
                     if track_id is not None:
-                        self._remember_track_identity(track_id, person_id, label, now)
+                        self._remember_track_identity(track_id, person_id, label, now, box, sim)
                 if not recognized:
                     recent_motion = (time.time() - self._last_motion_ts) <= settings.unknown_face_requires_motion_seconds
                     if not recent_motion and track_id is not None:
@@ -516,7 +485,6 @@ class CameraWorker:
                 }
                 self._dispatch_event(payload, local_snapshot=snapshot if snapshot_b64 else None)
 
-            self._apply_tracking(body_tracks, frame.shape)
             body_overlay_items = self._build_body_overlay_items(body_tracks, now)
             if overlay_items:
                 self._last_faces_info = overlay_items
@@ -661,11 +629,13 @@ class CameraWorker:
                 }
                 keypoints = body.get("keypoints")
                 if isinstance(keypoints, list):
-                    payload["keypoints"] = [
-                        [float(point[0]) * scale_x, float(point[1]) * scale_y]
-                        for point in keypoints
-                        if isinstance(point, list) or isinstance(point, tuple)
-                    ]
+                    mapped_keypoints = []
+                    for point in keypoints:
+                        if isinstance(point, (list, tuple)) and len(point) >= 2:
+                            mapped_keypoints.append([float(point[0]) * scale_x, float(point[1]) * scale_y])
+                        else:
+                            mapped_keypoints.append([0.0, 0.0])
+                    payload["keypoints"] = mapped_keypoints
                 keypoint_conf = body.get("keypoint_conf")
                 if isinstance(keypoint_conf, list):
                     payload["keypoint_conf"] = [float(value) for value in keypoint_conf]
@@ -755,6 +725,12 @@ class CameraWorker:
         return None
 
     def _body_track_match_score(self, body: dict[str, object], state: dict[str, object]) -> float:
+        iou_score, anchor_score = self._track_geometry_scores(body, state)
+        if iou_score >= 0.18:
+            return max(iou_score, (iou_score * 0.72) + (anchor_score * 0.28))
+        return max(iou_score, anchor_score * 0.88)
+
+    def _track_geometry_scores(self, body: dict[str, object], state: dict[str, object]) -> tuple[float, float]:
         body_box = body.get("tracking_box")
         if not isinstance(body_box, tuple):
             body_box = body.get("box")
@@ -762,7 +738,7 @@ class CameraWorker:
         if not isinstance(state_box, tuple):
             state_box = state.get("box")
         if not isinstance(body_box, tuple) or not isinstance(state_box, tuple):
-            return 0.0
+            return 0.0, 0.0
 
         iou_score = self._box_iou(body_box, state_box)
         anchor_score = 0.0
@@ -773,9 +749,7 @@ class CameraWorker:
             max_side = max(body_box[2] - body_box[0], body_box[3] - body_box[1], state_box[2] - state_box[0], state_box[3] - state_box[1], 1)
             max_dist = max(32.0, max_side * 0.9)
             anchor_score = 1.0 - min(1.0, dist / max_dist)
-        if iou_score >= 0.18:
-            return max(iou_score, (iou_score * 0.72) + (anchor_score * 0.28))
-        return max(iou_score, anchor_score * 0.88)
+        return iou_score, anchor_score
 
     def _track_has_recent_identity(self, state: dict[str, object], now: float) -> bool:
         if not state.get("recognized"):
@@ -790,40 +764,17 @@ class CameraWorker:
         if not self._track_has_recent_identity(state, now):
             return base_score
 
-        body_box = body.get("tracking_box")
-        if not isinstance(body_box, tuple):
-            body_box = body.get("box")
-        state_box = state.get("tracking_box")
-        if not isinstance(state_box, tuple):
-            state_box = state.get("box")
-        if not isinstance(body_box, tuple) or not isinstance(state_box, tuple):
-            return 0.0
-
-        iou_score = self._box_iou(body_box, state_box)
-        body_anchor = self._body_anchor(body)
-        state_anchor = self._body_anchor(state)
-        anchor_score = 0.0
-        if body_anchor and state_anchor:
-            dist = abs(body_anchor[0] - state_anchor[0]) + abs(body_anchor[1] - state_anchor[1])
-            max_side = max(
-                body_box[2] - body_box[0],
-                body_box[3] - body_box[1],
-                state_box[2] - state_box[0],
-                state_box[3] - state_box[1],
-                1,
-            )
-            max_dist = max(28.0, max_side * 0.55)
-            anchor_score = 1.0 - min(1.0, dist / max_dist)
+        iou_score, anchor_score = self._track_geometry_scores(body, state)
 
         # Recognized tracks should stay attached to the same body.
-        if iou_score < 0.08 and anchor_score < 0.5:
+        if iou_score < 0.12 and anchor_score < 0.62:
             return 0.0
 
-        locked_score = max(base_score, (iou_score * 0.6) + (anchor_score * 0.4) + 0.14)
+        locked_score = max(base_score, (iou_score * 0.58) + (anchor_score * 0.42) + 0.08)
         return min(1.0, locked_score)
 
     def _track_match_threshold(self, state: dict[str, object], now: float) -> float:
-        return 0.3 if self._track_has_recent_identity(state, now) else 0.16
+        return 0.46 if self._track_has_recent_identity(state, now) else 0.18
 
     def _box_iou(self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]) -> float:
         ax1, ay1, ax2, ay2 = box_a
@@ -838,9 +789,7 @@ class CameraWorker:
         return inter / float(area_a + area_b - inter + 1e-6)
 
     def _update_body_tracks(self, bodies: list[dict], now: float) -> list[dict]:
-        if bodies and all(isinstance(body.get("track_id"), int) for body in bodies):
-            return self._update_external_body_tracks(bodies, now)
-
+        # MMDeploy track ids may be reused after occlusions; keep identity on local geometry tracks.
         stale_track_ids = [
             track_id
             for track_id, state in self._body_tracks.items()
@@ -850,45 +799,58 @@ class CameraWorker:
         for track_id in stale_track_ids:
             self._body_tracks.pop(track_id, None)
 
-        unmatched_track_ids = set(self._body_tracks.keys())
+        normalized_bodies: list[dict[str, object]] = []
         for body in bodies:
             box = tuple(int(round(v)) for v in body["box"])
             tracking_box = body.get("tracking_box")
             if not isinstance(tracking_box, tuple):
                 tracking_box = box
-            best_track_id: int | None = None
-            best_score = 0.0
-            best_threshold = 0.16
-            for track_id in list(unmatched_track_ids):
+            normalized = dict(body)
+            normalized["box"] = box
+            normalized["tracking_box"] = tracking_box
+            normalized_bodies.append(normalized)
+
+        unmatched_body_indices = set(range(len(normalized_bodies)))
+        unmatched_track_ids = set(self._body_tracks.keys())
+        candidates: list[tuple[float, int, int]] = []
+        for body_idx, body in enumerate(normalized_bodies):
+            for track_id in unmatched_track_ids:
                 state = self._body_tracks.get(track_id)
                 if not state:
                     continue
                 score = self._track_match_score(body, state, now)
-                if score > best_score:
-                    best_score = score
-                    best_track_id = track_id
-                    best_threshold = self._track_match_threshold(state, now)
-            if best_track_id is not None and best_score >= best_threshold:
-                state = self._body_tracks[best_track_id]
-                state["box"] = box
-                state["tracking_box"] = tracking_box
-                state["confidence"] = body.get("confidence")
-                state["keypoints"] = body.get("keypoints")
-                state["keypoint_conf"] = body.get("keypoint_conf")
-                state["head_points"] = body.get("head_points")
-                state["head_box"] = body.get("head_box")
-                state["head_only"] = bool(body.get("head_only"))
-                state["last_seen"] = now
-                state["hits"] = int(state.get("hits", 0)) + 1
-                unmatched_track_ids.discard(best_track_id)
-                continue
+                if score >= self._track_match_threshold(state, now):
+                    candidates.append((score, body_idx, track_id))
+        candidates.sort(reverse=True, key=lambda item: item[0])
 
+        for _score, body_idx, track_id in candidates:
+            if body_idx not in unmatched_body_indices or track_id not in unmatched_track_ids:
+                continue
+            state = self._body_tracks[track_id]
+            body = normalized_bodies[body_idx]
+            state["box"] = body["box"]
+            state["tracking_box"] = body["tracking_box"]
+            state["confidence"] = body.get("confidence")
+            state["keypoints"] = body.get("keypoints")
+            state["keypoint_conf"] = body.get("keypoint_conf")
+            state["head_points"] = body.get("head_points")
+            state["head_box"] = body.get("head_box")
+            state["head_only"] = bool(body.get("head_only"))
+            state["external_track_id"] = body.get("track_id")
+            state["last_seen"] = now
+            state["hits"] = int(state.get("hits", 0)) + 1
+            unmatched_body_indices.discard(body_idx)
+            unmatched_track_ids.discard(track_id)
+
+        for body_idx in sorted(unmatched_body_indices):
+            body = normalized_bodies[body_idx]
             track_id = self._next_body_track_id
             self._next_body_track_id += 1
             self._body_tracks[track_id] = {
                 "track_id": track_id,
-                "box": box,
-                "tracking_box": tracking_box,
+                "external_track_id": body.get("track_id"),
+                "box": body["box"],
+                "tracking_box": body["tracking_box"],
                 "confidence": body.get("confidence"),
                 "last_seen": now,
                 "hits": 1,
@@ -1023,10 +985,9 @@ class CameraWorker:
             if not isinstance(body_box, tuple) or track_id is None:
                 continue
             head_only = bool(state.get("head_only"))
-            recognized_bias = 0.08 if bool(state.get("recognized")) else 0.0
             pose_score = self._face_pose_support_score(face_box, state, strict=head_only)
             if pose_score > 0.0:
-                score = 0.62 + (pose_score * 0.38) + recognized_bias
+                score = 0.62 + (pose_score * 0.38)
                 if score > best_score:
                     best_score = score
                     best_track_id = int(track_id)
@@ -1047,28 +1008,56 @@ class CameraWorker:
             center_score = 1.0 - min(1.0, abs(face_cx - body_cx) / max(body_width * (0.48 if head_only else 0.35), 1.0))
             target_ratio = 0.46 if head_only else 0.24
             scale_score = 1.0 - min(1.0, abs(width_ratio - target_ratio) / max(target_ratio, 0.12))
-            score = (center_score * 0.7) + (scale_score * 0.3) + recognized_bias
+            score = (center_score * 0.7) + (scale_score * 0.3)
             if score > best_score:
                 best_score = score
                 best_track_id = int(track_id)
-        return best_track_id
+        return best_track_id if best_score >= 0.55 else None
 
-    def _remember_track_identity(self, track_id: int, person_id: int | None, label: str, now: float) -> None:
+    def _remember_track_identity(
+        self,
+        track_id: int,
+        person_id: int | None,
+        label: str,
+        now: float,
+        face_box: tuple[int, int, int, int] | None = None,
+        sim: float | None = None,
+    ) -> None:
         if person_id is None:
             return
         state = self._body_tracks.get(track_id)
         if not state:
             return
+        previous_person_id = state.get("person_id")
+        if (
+            previous_person_id is not None
+            and previous_person_id != person_id
+            and self._track_has_recent_identity(state, now)
+            and (sim is None or sim < max(settings.face_match_threshold + 0.08, 0.66))
+        ):
+            return
+        if face_box is not None and self._face_pose_support_score(face_box, state, strict=False) < 0.72:
+            return
         state["person_id"] = person_id
         state["label"] = label
         state["recognized"] = True
         state["last_identity_seen"] = now
+        state["identity_face_box"] = face_box
+        state["identity_sim"] = float(sim or 0.0)
 
-    def _recover_track_identity(self, track_id: int, sim: float | None, now: float) -> int | None:
+    def _recover_track_identity(
+        self,
+        track_id: int,
+        sim: float | None,
+        now: float,
+        face_box: tuple[int, int, int, int] | None = None,
+    ) -> int | None:
         state = self._body_tracks.get(track_id)
-        if not state or not state.get("recognized"):
+        if not state or not self._track_has_recent_identity(state, now):
             return None
-        if sim is not None and sim < max(settings.face_match_threshold - 0.08, 0.5):
+        if sim is None or sim < max(settings.face_match_threshold + 0.04, 0.60):
+            return None
+        if face_box is not None and self._face_pose_support_score(face_box, state, strict=False) < 0.72:
             return None
         person_id = state.get("person_id")
         return int(person_id) if person_id is not None else None
@@ -1080,7 +1069,7 @@ class CameraWorker:
     ) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
         for state in body_tracks:
-            recognized = bool(state.get("recognized"))
+            recognized = bool(state.get("recognized")) and self._track_has_recent_identity(state, now)
             box = state.get("tracking_box")
             if not isinstance(box, tuple):
                 box = state.get("box")

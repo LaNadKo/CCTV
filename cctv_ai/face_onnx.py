@@ -142,11 +142,22 @@ def _prepare_onnxruntime(prefer_gpu: bool = True) -> None:
     _ort_env_ready = True
 
 
+def _session_options() -> ort.SessionOptions:
+    options = ort.SessionOptions()
+    options.log_severity_level = 3
+    options.log_verbosity_level = 0
+    return options
+
+
 def _create_session(model_path: Path, prefer_gpu: bool = True) -> tuple[ort.InferenceSession, str]:
     _prepare_onnxruntime(prefer_gpu=prefer_gpu)
     providers, requested_device = _select_providers(prefer_gpu=prefer_gpu)
     try:
-        session = ort.InferenceSession(str(model_path), providers=providers)
+        session = ort.InferenceSession(
+            str(model_path),
+            sess_options=_session_options(),
+            providers=providers,
+        )
         active = session.get_providers()
         if requested_device != "cpu" and providers[0] in active:
             return session, requested_device
@@ -161,7 +172,11 @@ def _create_session(model_path: Path, prefer_gpu: bool = True) -> tuple[ort.Infe
     except Exception:
         if requested_device != "cpu":
             logger.warning("Failed to initialize accelerated face runtime for %s providers=%s", model_path.name, providers, exc_info=True)
-        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(
+            str(model_path),
+            sess_options=_session_options(),
+            providers=["CPUExecutionProvider"],
+        )
         return session, "cpu"
 
 

@@ -10,6 +10,7 @@ import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/mjpeg_stream_view.dart';
 import '../auth/auth_controller.dart';
 
 const int _minLiveCaptureIntervalMs = 100;
@@ -668,8 +669,16 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final auth = context.watch<AuthController>();
+    final token = auth.accessToken;
     final filtered = _filteredPersons;
     final selected = _selectedPerson();
+    final livePreviewUri = _embeddingCameraId == null || token == null
+        ? null
+        : auth.apiClient.cameraStreamUri(_embeddingCameraId!, annotate: false);
+    final livePreviewHeaders = token == null
+        ? const <String, String>{}
+        : {'Authorization': 'Bearer $token'};
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -741,6 +750,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
                   ],
                 ),
                 const SizedBox(height: 14),
+                _CreatePersonPanel(
+                  busy: _busy,
+                  firstName: _createFirstName,
+                  lastName: _createLastName,
+                  middleName: _createMiddleName,
+                  onCreate: _createPerson,
+                  onCreateFromPhoto: _createPersonFromPhoto,
+                ),
+                const SizedBox(height: 14),
                 LayoutBuilder(
                   builder: (context, constraints) {
                     final narrow = constraints.maxWidth < 960;
@@ -756,9 +774,6 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
                       firstName: _editFirstName,
                       lastName: _editLastName,
                       middleName: _editMiddleName,
-                      createFirstName: _createFirstName,
-                      createLastName: _createLastName,
-                      createMiddleName: _createMiddleName,
                       cameras: _cameras,
                       embeddingCameraId: _embeddingCameraId,
                       minLiveCaptureIntervalMs:
@@ -775,13 +790,13 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
                       liveCaptureRunning: _liveCaptureRunning,
                       liveCaptureBusy: _liveCaptureBusy,
                       liveCaptureStatus: _liveCaptureStatus,
+                      livePreviewUri: livePreviewUri,
+                      livePreviewHeaders: livePreviewHeaders,
                       onEmbeddingCameraChanged: _setEmbeddingCameraId,
                       onLiveCaptureIntervalChanged: _setLiveCaptureInterval,
                       onLiveCaptureTargetChanged: _setLiveCaptureTarget,
                       onStartLiveCapture: _startLiveAutoCapture,
                       onStopLiveCapture: _stopLiveAutoCapture,
-                      onCreate: _createPerson,
-                      onCreateFromPhoto: _createPersonFromPhoto,
                       onSave: _saveSelectedPerson,
                       onDelete: _deleteSelectedPerson,
                       onAddPhoto: _addPhotoEmbedding,
@@ -961,6 +976,68 @@ class _PersonListTile extends StatelessWidget {
   }
 }
 
+class _CreatePersonPanel extends StatelessWidget {
+  const _CreatePersonPanel({
+    required this.busy,
+    required this.firstName,
+    required this.lastName,
+    required this.middleName,
+    required this.onCreate,
+    required this.onCreateFromPhoto,
+  });
+
+  final bool busy;
+  final TextEditingController firstName;
+  final TextEditingController lastName;
+  final TextEditingController middleName;
+  final VoidCallback onCreate;
+  final VoidCallback onCreateFromPhoto;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Новая персона',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _NameFields(
+            firstName: firstName,
+            lastName: lastName,
+            middleName: middleName,
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              ElevatedButton.icon(
+                onPressed: busy ? null : onCreate,
+                icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                label: const Text('Создать персону'),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy ? null : onCreateFromPhoto,
+                icon: const Icon(Icons.add_a_photo_rounded, size: 18),
+                label: const Text('Создать из фото'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PersonDetailPanel extends StatelessWidget {
   const _PersonDetailPanel({
     required this.person,
@@ -968,9 +1045,6 @@ class _PersonDetailPanel extends StatelessWidget {
     required this.firstName,
     required this.lastName,
     required this.middleName,
-    required this.createFirstName,
-    required this.createLastName,
-    required this.createMiddleName,
     required this.cameras,
     required this.embeddingCameraId,
     required this.minLiveCaptureIntervalMs,
@@ -982,13 +1056,13 @@ class _PersonDetailPanel extends StatelessWidget {
     required this.liveCaptureRunning,
     required this.liveCaptureBusy,
     required this.liveCaptureStatus,
+    required this.livePreviewUri,
+    required this.livePreviewHeaders,
     required this.onEmbeddingCameraChanged,
     required this.onLiveCaptureIntervalChanged,
     required this.onLiveCaptureTargetChanged,
     required this.onStartLiveCapture,
     required this.onStopLiveCapture,
-    required this.onCreate,
-    required this.onCreateFromPhoto,
     required this.onSave,
     required this.onDelete,
     required this.onAddPhoto,
@@ -1001,9 +1075,6 @@ class _PersonDetailPanel extends StatelessWidget {
   final TextEditingController firstName;
   final TextEditingController lastName;
   final TextEditingController middleName;
-  final TextEditingController createFirstName;
-  final TextEditingController createLastName;
-  final TextEditingController createMiddleName;
   final List<CameraSummary> cameras;
   final int? embeddingCameraId;
   final int minLiveCaptureIntervalMs;
@@ -1015,13 +1086,13 @@ class _PersonDetailPanel extends StatelessWidget {
   final bool liveCaptureRunning;
   final bool liveCaptureBusy;
   final String? liveCaptureStatus;
+  final Uri? livePreviewUri;
+  final Map<String, String> livePreviewHeaders;
   final ValueChanged<int?> onEmbeddingCameraChanged;
   final ValueChanged<double> onLiveCaptureIntervalChanged;
   final ValueChanged<double> onLiveCaptureTargetChanged;
   final VoidCallback onStartLiveCapture;
   final VoidCallback onStopLiveCapture;
-  final VoidCallback onCreate;
-  final VoidCallback onCreateFromPhoto;
   final VoidCallback onSave;
   final VoidCallback onDelete;
   final VoidCallback onAddPhoto;
@@ -1117,6 +1188,8 @@ class _PersonDetailPanel extends StatelessWidget {
                       attempts: liveCaptureAttempts,
                       duplicates: liveCaptureDuplicates,
                       status: liveCaptureStatus,
+                      livePreviewUri: livePreviewUri,
+                      livePreviewHeaders: livePreviewHeaders,
                       onIntervalChanged: onLiveCaptureIntervalChanged,
                       onTargetChanged: onLiveCaptureTargetChanged,
                       onStart: onStartLiveCapture,
@@ -1127,41 +1200,6 @@ class _PersonDetailPanel extends StatelessWidget {
                     _AppearancesPanel(items: appearances),
                   ],
                 ),
-        ),
-        const SizedBox(height: 14),
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Новая персона',
-                style: TextStyle(
-                  color: colors.textStrong,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 12),
-              _NameFields(
-                firstName: createFirstName,
-                lastName: createLastName,
-                middleName: createMiddleName,
-              ),
-              const SizedBox(height: 14),
-              ElevatedButton.icon(
-                onPressed: busy ? null : onCreate,
-                icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
-                label: const Text('Создать персону'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                onPressed: busy ? null : onCreateFromPhoto,
-                icon: const Icon(Icons.add_a_photo_rounded, size: 18),
-                label: const Text('Создать из фото'),
-              ),
-            ],
-          ),
         ),
       ],
     );
@@ -1240,6 +1278,8 @@ class _LiveCapturePanel extends StatelessWidget {
     required this.attempts,
     required this.duplicates,
     required this.status,
+    required this.livePreviewUri,
+    required this.livePreviewHeaders,
     required this.onIntervalChanged,
     required this.onTargetChanged,
     required this.onStart,
@@ -1258,6 +1298,8 @@ class _LiveCapturePanel extends StatelessWidget {
   final int attempts;
   final int duplicates;
   final String? status;
+  final Uri? livePreviewUri;
+  final Map<String, String> livePreviewHeaders;
   final ValueChanged<double> onIntervalChanged;
   final ValueChanged<double> onTargetChanged;
   final VoidCallback onStart;
@@ -1314,6 +1356,45 @@ class _LiveCapturePanel extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
             ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: colors.surfaceElevated),
+                child: livePreviewUri == null
+                    ? Center(
+                        child: Text(
+                          'Выберите камеру для live-сбора',
+                          style: TextStyle(color: colors.muted, fontSize: 12),
+                        ),
+                      )
+                    : MjpegStreamView(
+                        uri: livePreviewUri!,
+                        headers: livePreviewHeaders,
+                        fit: BoxFit.contain,
+                        placeholder: const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        errorBuilder: (context, error) => Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(
+                              '$error',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: colors.danger,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+            ),
           ),
           const SizedBox(height: 12),
           ClipRRect(
@@ -1381,9 +1462,9 @@ class _LiveCapturePanel extends StatelessWidget {
                 label: const Text('Снимок из Live'),
               ),
               ElevatedButton.icon(
-                onPressed: busy || captureBusy || !cameraSelected
+                onPressed: busy || !cameraSelected
                     ? null
-                    : (running ? onStop : onStart),
+                    : (running ? onStop : (captureBusy ? null : onStart)),
                 icon: Icon(
                   running
                       ? Icons.stop_circle_rounded

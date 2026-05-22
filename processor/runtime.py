@@ -86,6 +86,8 @@ def default_config() -> dict[str, Any]:
         "processor_name": socket.gethostname(),
         "processor_node_uid": uuid.uuid4().hex,
         "advertised_ip": "",
+        "poll_interval": 1,
+        "heartbeat_interval": 10,
         "max_workers": 4,
         "processor_accel": "auto",
         "motion_threshold": 25.0,
@@ -138,6 +140,8 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "PROCESSOR_NAME": ("processor_name", "str"),
         "PROCESSOR_NODE_UID": ("processor_node_uid", "str"),
         "PROCESSOR_ADVERTISED_IP": ("advertised_ip", "str"),
+        "POLL_INTERVAL": ("poll_interval", "int"),
+        "HEARTBEAT_INTERVAL": ("heartbeat_interval", "int"),
         "MAX_WORKERS": ("max_workers", "int"),
         "PROCESSOR_ACCEL": ("processor_accel", "str"),
         "MOTION_THRESHOLD": ("motion_threshold", "float"),
@@ -171,6 +175,8 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["PROCESSOR_NAME"] = str(config.get("processor_name") or socket.gethostname())
     os.environ["PROCESSOR_NODE_UID"] = str(config.get("processor_node_uid") or "")
     os.environ["PROCESSOR_ADVERTISED_IP"] = str(config.get("advertised_ip") or "")
+    os.environ["POLL_INTERVAL"] = str(config.get("poll_interval", 1))
+    os.environ["HEARTBEAT_INTERVAL"] = str(config.get("heartbeat_interval", 10))
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
     os.environ["PROCESSOR_ACCEL"] = str(config.get("processor_accel") or "auto")
     os.environ["MOTION_THRESHOLD"] = str(config.get("motion_threshold", 25.0))
