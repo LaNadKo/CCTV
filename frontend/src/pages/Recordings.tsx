@@ -278,6 +278,14 @@ const RecordingsPage: React.FC = () => {
     : null;
   const selectedRecordingMjpegUrl =
     selectedRecording && mediaQueryToken ? recordingMjpegUrl(selectedRecording.recording_file_id, mediaQueryToken) : null;
+  const stitchedArchiveUrl = useMemo(() => {
+    if (!records.length || !mediaQueryToken) return null;
+    const params = new URLSearchParams();
+    params.set("token", mediaQueryToken);
+    params.set("ids", records.map((record) => record.recording_file_id).join(","));
+    params.set("limit", String(records.length));
+    return `${API_URL}/recordings/stitch?${params.toString()}`;
+  }, [records, mediaQueryToken]);
 
   const selectedRecordingEvents = selectedRecording ? recordingEventsMap[selectedRecording.recording_file_id] || [] : [];
 
@@ -387,7 +395,7 @@ const RecordingsPage: React.FC = () => {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <div className="stack" style={{ gap: 4 }}>
           <h2 className="title">Записи</h2>
-          <div className="muted">Показаны записи, доступные через назначенный Processor.</div>
+          <div className="muted">Показаны записи из backend-архива.</div>
         </div>
           <div className="row recordings-toolbar">
           <select
@@ -613,7 +621,14 @@ const RecordingsPage: React.FC = () => {
                 {activeCamera?.name || "Камера"} · {records.length} клипов за день
               </div>
             </div>
-            <span className="pill">{formatDayLabel(selectedDate)}</span>
+            <div className="row" style={{ gap: 8 }}>
+              {stitchedArchiveUrl && (
+                <a className="btn" href={stitchedArchiveUrl} target="_blank" rel="noreferrer">
+                  Сшить в один файл
+                </a>
+              )}
+              <span className="pill">{formatDayLabel(selectedDate)}</span>
+            </div>
           </div>
 
           <div className="recordings-archive-grid">

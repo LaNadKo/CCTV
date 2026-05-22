@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     auth_rate_limit_attempts: int = Field(default=8, validation_alias="AUTH_RATE_LIMIT_ATTEMPTS")
     auth_rate_limit_window_seconds: int = Field(default=60, validation_alias="AUTH_RATE_LIMIT_WINDOW_SECONDS")
 
+    # Backend-owned media archive. Processor keeps local edge copies, but the
+    # backend stores canonical recordings for archive playback and stitching.
+    recordings_path: str = Field(default="recordings", validation_alias="RECORDINGS_PATH")
+    snapshots_path: str = Field(default="snapshots", validation_alias="SNAPSHOTS_PATH")
+
     # Phase 1: embedded detector toggle
     enable_embedded_detector: bool = Field(
         default=False,

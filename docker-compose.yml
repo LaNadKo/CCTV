@@ -76,6 +76,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-cctv}:${POSTGRES_PASSWORD:-cctv}@db:5432/${POSTGRES_DB:-cctv}"
+      RECORDINGS_PATH: "/app/recordings"
+      SNAPSHOTS_PATH: "/app/snapshots"
     depends_on:
       db:
         condition: service_healthy

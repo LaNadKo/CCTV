@@ -43,6 +43,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   int? _cameraId;
   int? _selectedId;
   bool _chainPlayback = false;
+  bool _archivePlayback = false;
   String _eventTypeFilter = 'all';
   bool _loadingMore = false;
   bool _hasMore = true;
@@ -54,7 +55,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     _videoController = VideoController(_player);
     _scrollController = ScrollController()..addListener(_maybeLoadMore);
     _completedSub = _player.stream.completed.listen((completed) {
-      if (completed && _chainPlayback && mounted) {
+      if (completed && _chainPlayback && !_archivePlayback && mounted) {
         _playNextClip();
       }
     });
@@ -228,6 +229,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   }) async {
     if (!mounted) return;
     if (!keepChain) _chainPlayback = false;
+    _archivePlayback = false;
     setState(() {
       _selectedId = record.id;
     });
@@ -272,7 +274,11 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   Future<void> _playArchive() async {
     final first = _records.firstOrNull;
     if (first == null) return;
-    await _playFrom(first);
+    await _ensureMediaToken();
+    _chainPlayback = true;
+    _archivePlayback = true;
+    setState(() => _selectedId = first.id);
+    await _player.open(Media(_stitchedArchiveUri().toString()), play: true);
   }
 
   Future<void> _playNextClip() async {
@@ -296,6 +302,16 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     final token = context.read<AuthController>().mediaToken ?? '';
     return context.read<ApiClient>().uri('/recordings/file/${record.id}', {
       'token': token,
+    });
+  }
+
+  Uri _stitchedArchiveUri() {
+    final token = context.read<AuthController>().mediaToken ?? '';
+    final ids = _records.map((record) => record.id).join(',');
+    return context.read<ApiClient>().uri('/recordings/stitch', {
+      'token': token,
+      'ids': ids,
+      'limit': '${_records.length}',
     });
   }
 
@@ -420,6 +436,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                     controller: _videoController,
                     record: selectedRecord,
                     chainPlayback: _chainPlayback,
+                    archivePlayback: _archivePlayback,
                     events: selectedRecord == null
                         ? const []
                         : _eventsForClip(selectedRecord),
@@ -600,6 +617,7 @@ class _PlayerPanel extends StatelessWidget {
     required this.controller,
     required this.record,
     required this.chainPlayback,
+    required this.archivePlayback,
     required this.events,
     required this.onDownload,
     required this.onMjpegFallback,
@@ -608,6 +626,7 @@ class _PlayerPanel extends StatelessWidget {
   final VideoController controller;
   final _RecordingClip? record;
   final bool chainPlayback;
+  final bool archivePlayback;
   final List<_TimelineEvent> events;
   final VoidCallback? onDownload;
   final VoidCallback? onMjpegFallback;
@@ -620,14 +639,18 @@ class _PlayerPanel extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          current == null
+          archivePlayback
+              ? 'Сшитый архив'
+              : current == null
               ? 'Архивный медиаплеер'
               : 'Клип ${_timeRange(current)}',
           style: Theme.of(context).textTheme.headlineSmall,
         ),
         const SizedBox(height: 4),
         Text(
-          current == null
+          archivePlayback
+              ? 'Backend собирает выбранные клипы в единый поток.'
+              : current == null
               ? 'Выберите час или клип ниже.'
               : '${_formatDuration(current.durationSeconds)} · ${_formatBytes(current.sizeBytes)} · ${chainPlayback ? 'склейка включена' : 'одиночный просмотр'}',
           style: TextStyle(color: colors.muted, fontSize: 13),

@@ -15,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 fonts-dejavu-core && \
+    ffmpeg libgl1 libglib2.0-0 fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system cctv && \
     useradd --system --gid cctv --home-dir /app --shell /usr/sbin/nologin cctv

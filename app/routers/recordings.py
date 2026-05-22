@@ -1,4 +1,5 @@
 import os
+import hashlib
 from datetime import datetime
 from pathlib import Path
 import re
@@ -27,12 +28,29 @@ from app.processor_media import (
     is_processor_effectively_online,
     parse_processor_file_path,
 )
+from app.recording_storage import (
+    backend_recording_path,
+    ensure_backend_storage_target,
+    recording_local_path,
+    safe_recording_relative_path,
+    sha256_file,
+)
 from app.schemas.recordings import RecordingOut, LocalRecordingOut
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or r"C:\ffmpeg-essentials\ffmpeg.exe"
 CACHE_DIR = Path("recordings_cache")
 CACHE_DIR.mkdir(exist_ok=True)
+STITCH_DIR = CACHE_DIR / "stitches"
+STITCH_DIR.mkdir(exist_ok=True)
+
+
+def _ffmpeg_bin() -> str | None:
+    if not FFMPEG_BIN:
+        return None
+    if shutil.which(FFMPEG_BIN) or Path(FFMPEG_BIN).exists():
+        return FFMPEG_BIN
+    return None
 
 
 def _proxy_headers(upstream: httpx.Response) -> dict[str, str]:
@@ -128,6 +146,118 @@ async def _resolve_processor_media(
 
 def _processor_media_url(proc: models.Processor, prefix: str, relative_path: str) -> str:
     return f"{get_processor_media_base_url(proc)}{prefix}/{quote(relative_path.lstrip('/'), safe='/')}"
+
+
+def _media_type(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(path.name)
+    return mime or "video/mp4"
+
+
+def _file_response(path: Path, request: Request, media_type: str | None = None, filename: str | None = None):
+    mime = media_type or _media_type(path)
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if range_header:
+        m = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if m:
+            start = int(m.group(1))
+            end = int(m.group(2)) if m.group(2) else file_size - 1
+            end = min(end, file_size - 1)
+            if start >= file_size:
+                raise HTTPException(
+                    status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                    detail="Range not satisfiable",
+                )
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(end - start + 1),
+                "Content-Disposition": f'inline; filename="{filename or path.name}"',
+            }
+            return StreamingResponse(_range_stream(path, start, end), status_code=206, media_type=mime, headers=headers)
+    return FileResponse(
+        path,
+        media_type=mime,
+        filename=filename or path.name,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'inline; filename="{filename or path.name}"',
+        },
+    )
+
+
+def _concat_file_line(path: Path) -> str:
+    safe = str(path.resolve()).replace("\\", "/").replace("'", "\\'")
+    return f"file '{safe}'\n"
+
+
+async def _ensure_backend_recording_file(
+    session: AsyncSession,
+    recording: models.RecordingFile,
+    camera_id: int,
+) -> Path:
+    local_path = recording_local_path(recording.file_path)
+    if local_path is not None:
+        return local_path
+    file_path = recording.file_path or ""
+    if not file_path.startswith("processor://"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
+
+    processor_media = await _resolve_processor_media(session, file_path, camera_id=camera_id)
+    if processor_media is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor media not found")
+    proc, relative_path = processor_media
+    destination = backend_recording_path(
+        safe_recording_relative_path(
+            camera_id=camera_id,
+            started_at=recording.started_at,
+            source_path=relative_path,
+        )
+    )
+    if destination.is_file() and destination.stat().st_size > 0:
+        await _attach_backend_file(session, recording, destination)
+        return destination
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = destination.with_name(f".{destination.name}.{recording.recording_file_id}.download")
+    url = _processor_media_url(proc, "/media/recordings", relative_path)
+    size = 0
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=300, write=120, pool=120)) as client:
+            async with client.stream("GET", url, headers=get_processor_media_headers(proc)) as response:
+                if response.status_code >= 400:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Processor recording unavailable: {response.status_code}",
+                    )
+                with temp_path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        handle.write(chunk)
+        if size <= 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor returned empty recording")
+        temp_path.replace(destination)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    await _attach_backend_file(session, recording, destination)
+    return destination
+
+
+async def _attach_backend_file(session: AsyncSession, recording: models.RecordingFile, path: Path) -> None:
+    storage_target = await ensure_backend_storage_target(session)
+    recording.storage_target_id = storage_target.storage_target_id
+    recording.file_path = str(path)
+    recording.file_size_bytes = path.stat().st_size
+    recording.checksum = await asyncio.to_thread(sha256_file, path)
+    await session.commit()
 
 
 @router.get("", response_model=List[RecordingOut])
@@ -284,6 +414,134 @@ def _range_stream(path: Path, start: int, end: int, chunk_size: int = 1024 * 102
             yield chunk
 
 
+@router.get("/stitch")
+async def stitch_recordings(
+    request: Request,
+    ids: Optional[str] = Query(default=None, description="Comma-separated recording_file_id list"),
+    camera_id: Optional[int] = Query(default=None),
+    date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
+    date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
+    limit: int = Query(default=720, ge=1, le=2000),
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user_allow_query),
+):
+    ffmpeg_bin = _ffmpeg_bin()
+    if not ffmpeg_bin:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ffmpeg is not available")
+
+    requested_ids: list[int] = []
+    if ids:
+        try:
+            requested_ids = [int(item.strip()) for item in ids.split(",") if item.strip()]
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid recording ids")
+    if not requested_ids and camera_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="camera_id or ids is required")
+
+    stmt = (
+        select(models.RecordingFile, models.VideoStream.camera_id)
+        .join(models.VideoStream, models.VideoStream.video_stream_id == models.RecordingFile.video_stream_id)
+        .where(models.RecordingFile.file_kind == "video")
+        .order_by(models.RecordingFile.started_at.asc(), models.RecordingFile.recording_file_id.asc())
+        .limit(limit)
+    )
+    if requested_ids:
+        stmt = stmt.where(models.RecordingFile.recording_file_id.in_(requested_ids))
+    if camera_id:
+        stmt = stmt.where(models.VideoStream.camera_id == camera_id)
+    if date_from:
+        try:
+            stmt = stmt.where(models.RecordingFile.started_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid date_from")
+    if date_to:
+        try:
+            stmt = stmt.where(models.RecordingFile.started_at <= datetime.fromisoformat(date_to))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid date_to")
+
+    result = await session.execute(stmt)
+    rows = result.all()
+    if requested_ids:
+        order = {recording_id: index for index, recording_id in enumerate(requested_ids)}
+        rows = sorted(rows, key=lambda row: order.get(row[0].recording_file_id, len(order)))
+
+    paths: list[Path] = []
+    for recording, cam_id in rows:
+        perm = await user_camera_permission(session, current_user.user_id, cam_id)
+        if not check_permission(perm, "view") and current_user.role_id != 1:
+            continue
+        paths.append(await _ensure_backend_recording_file(session, recording, cam_id))
+
+    if not paths:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recordings to stitch")
+    if len(paths) == 1:
+        return _file_response(paths[0], request)
+
+    key_material = "|".join(
+        f"{path}:{path.stat().st_mtime_ns}:{path.stat().st_size}" for path in paths
+    )
+    cache_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:32]
+    list_path = STITCH_DIR / f"{cache_key}.txt"
+    output_path = STITCH_DIR / f"{cache_key}.mp4"
+
+    if not output_path.is_file() or output_path.stat().st_size <= 0:
+        list_path.write_text("".join(_concat_file_line(path) for path in paths), encoding="utf-8")
+        copy_cmd = [
+            ffmpeg_bin,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_path),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        proc = await asyncio.to_thread(subprocess.run, copy_cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+            transcode_cmd = [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_path),
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+            proc = await asyncio.to_thread(subprocess.run, transcode_cmd, capture_output=True, text=True)
+            if proc.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Failed to stitch recordings: {proc.stderr[-500:]}",
+                )
+
+    return _file_response(output_path, request, media_type="video/mp4", filename=f"recordings_{cache_key}.mp4")
+
+
 @router.get("/file/{recording_id}")
 async def download_recording(
     recording_id: int,
@@ -303,24 +561,13 @@ async def download_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
-    if processor_media is not None:
-        proc, relative_path = processor_media
-        return await _proxy_processor_stream(
-            _processor_media_url(proc, "/media/recordings", relative_path),
-            get_processor_media_headers(proc),
-            request=request,
-        )
-    path = Path(recording.file_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
+    path = await _ensure_backend_recording_file(session, recording, cam_id)
 
-    mime, _ = mimetypes.guess_type(path.name)
-    if not mime:
-        mime = "video/mp4"
+    mime = _media_type(path)
 
     # If AVI/MJPG: transcode to MP4 with ffmpeg once and cache
-    if mime == "video/avi" and FFMPEG_BIN:
+    ffmpeg_bin = _ffmpeg_bin()
+    if mime == "video/avi" and ffmpeg_bin:
         cached = CACHE_DIR / f"{recording.recording_file_id}.mp4"
         need_build = True
         if cached.exists():
@@ -331,7 +578,7 @@ async def download_recording(
                 need_build = True
         if need_build:
             cmd = [
-                FFMPEG_BIN,
+                ffmpeg_bin,
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -361,13 +608,11 @@ async def download_recording(
             path = cached
             mime = "video/mp4"
 
-    file_size = path.stat().st_size
-
     # if avi/mjpg — transcode to mp4 via ffmpeg (no Range support here)
-    if mime == "video/avi" and FFMPEG_BIN:
+    if mime == "video/avi" and ffmpeg_bin:
         async def _transcode():
             cmd = [
-                FFMPEG_BIN,
+                ffmpeg_bin,
                 "-hide_banner",
                 "-loglevel", "error",
                 "-i", str(path),
@@ -395,33 +640,7 @@ async def download_recording(
 
         return StreamingResponse(_transcode(), media_type="video/mp4")
 
-    file_size = path.stat().st_size
-    range_header = request.headers.get("range") or request.headers.get("Range")
-    if range_header:
-        m = re.match(r"bytes=(\d+)-(\d*)", range_header)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2)) if m.group(2) else file_size - 1
-            end = min(end, file_size - 1)
-            if start >= file_size:
-                raise HTTPException(status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE, detail="Range not satisfiable")
-            headers = {
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(end - start + 1),
-            }
-            return StreamingResponse(_range_stream(path, start, end), status_code=206, media_type=mime, headers=headers)
-    return FileResponse(
-        path,
-        media_type=mime,
-        filename=path.name,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-            # Safari иногда требует Content-Disposition для inline
-            "Content-Disposition": f'inline; filename="{path.name}"',
-        },
-    )
+    return _file_response(path, request, media_type=mime)
 
 
 @router.get("/file/{recording_id}/mjpeg")
@@ -443,16 +662,7 @@ async def stream_recording_mjpeg(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
-    if processor_media is not None:
-        proc, relative_path = processor_media
-        return await _proxy_processor_stream(
-            _processor_media_url(proc, "/media/recordings-mjpeg", relative_path),
-            get_processor_media_headers(proc),
-        )
-    path = Path(recording.file_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
+    path = await _ensure_backend_recording_file(session, recording, cam_id)
 
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -501,16 +711,7 @@ async def snapshot_recording(
     perm = await user_camera_permission(session, current_user.user_id, cam_id)
     if not check_permission(perm, "view") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    processor_media = await _resolve_processor_media(session, recording.file_path, camera_id=cam_id)
-    if processor_media is not None:
-        proc, relative_path = processor_media
-        url = _processor_media_url(proc, "/media/recordings-snapshot", relative_path)
-        if ts is not None:
-            url = f"{url}?ts={ts}"
-        return await _proxy_processor_bytes(url, get_processor_media_headers(proc))
-    path = Path(recording.file_path)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing")
+    path = await _ensure_backend_recording_file(session, recording, cam_id)
 
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():

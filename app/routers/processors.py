@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
 import secrets
@@ -9,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,6 +20,13 @@ from app.db import get_session
 from app.dependencies import get_current_user, get_service_identity, get_service_scopes
 from app.permissions import is_admin
 from app.processor_media import effective_processor_status
+from app.recording_storage import (
+    backend_recording_path,
+    ensure_backend_storage_target,
+    ensure_video_stream,
+    safe_recording_relative_path,
+    sha256_file,
+)
 from app.schemas.processors import (
     AssignCamerasIn,
     AssignedCameraInfo,
@@ -622,6 +630,97 @@ async def push_recording(
     await session.commit()
     await session.refresh(rf)
     return ProcessorRecordingOut(recording_file_id=rf.recording_file_id)
+
+
+@router.post("/{processor_id}/recordings/upload", response_model=ProcessorRecordingOut)
+async def upload_recording(
+    processor_id: int,
+    camera_id: int = Form(...),
+    file_path: str = Form(...),
+    file_kind: str = Form(default="video"),
+    started_at: datetime | None = Form(default=None),
+    ended_at: datetime | None = Form(default=None),
+    duration_seconds: float | None = Form(default=None),
+    file_size_bytes: int | None = Form(default=None),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    x_api_key: str = Header(...),
+):
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:write")
+    if file_kind not in {"video", "snapshot"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported file_kind")
+    cam = await session.get(models.Camera, camera_id)
+    if not cam or cam.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    await _ensure_processor_camera_assignment(session, processor_id, camera_id, scopes)
+
+    started = started_at or datetime.utcnow()
+    relative_path = safe_recording_relative_path(
+        camera_id=camera_id,
+        started_at=started,
+        source_path=file_path,
+    )
+    destination = backend_recording_path(relative_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = destination.with_name(f".{destination.name}.{int(time.time() * 1000)}.upload")
+
+    actual_size = 0
+    try:
+        with temp_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                actual_size += len(chunk)
+                handle.write(chunk)
+        if actual_size <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty recording upload")
+
+        checksum = await asyncio.to_thread(sha256_file, temp_path)
+        final_path = destination
+        if final_path.exists():
+            existing_checksum = await asyncio.to_thread(sha256_file, final_path)
+            if existing_checksum != checksum:
+                suffix = f"_p{processor_id}_{int(started.timestamp())}"
+                final_path = destination.with_name(f"{destination.stem}{suffix}{destination.suffix}")
+        temp_path.replace(final_path)
+
+        existing_result = await session.execute(
+            select(models.RecordingFile).where(models.RecordingFile.file_path == str(final_path))
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing is not None:
+            existing.file_size_bytes = actual_size
+            existing.checksum = checksum
+            existing.ended_at = ended_at or existing.ended_at
+            existing.duration_seconds = duration_seconds or existing.duration_seconds
+            await session.commit()
+            return ProcessorRecordingOut(recording_file_id=existing.recording_file_id)
+
+        video_stream = await ensure_video_stream(session, camera_id)
+        storage_target = await ensure_backend_storage_target(session)
+        recording = models.RecordingFile(
+            video_stream_id=video_stream.video_stream_id,
+            storage_target_id=storage_target.storage_target_id,
+            file_kind=file_kind,
+            file_path=str(final_path),
+            started_at=started,
+            ended_at=ended_at,
+            duration_seconds=duration_seconds,
+            file_size_bytes=actual_size if actual_size is not None else file_size_bytes,
+            checksum=checksum,
+        )
+        session.add(recording)
+        await session.commit()
+        await session.refresh(recording)
+        return ProcessorRecordingOut(recording_file_id=recording.recording_file_id)
+    finally:
+        await file.close()
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                log.warning("Failed to remove temporary upload %s", temp_path)
 
 
 @router.get("/{processor_id}/gallery", response_model=list[GalleryEntry])

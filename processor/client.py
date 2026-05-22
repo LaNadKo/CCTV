@@ -1,6 +1,7 @@
 """HTTP client for backend API."""
 from __future__ import annotations
 import logging
+from pathlib import Path
 import httpx
 from processor.config import settings
 
@@ -11,7 +12,8 @@ class BackendClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
         self.base = (base_url or settings.backend_url).rstrip("/")
         key = api_key or settings.api_key
-        self.headers = {"X-Api-Key": key, "Content-Type": "application/json"}
+        self.api_key = key
+        self.headers = {"X-Api-Key": key}
         self._http = httpx.AsyncClient(timeout=30, headers=self.headers)
 
     async def register(
@@ -89,6 +91,24 @@ class BackendClient:
 
     async def push_recording(self, processor_id: int, recording: dict) -> dict:
         r = await self._http.post(f"{self.base}/processors/{processor_id}/recordings", json=recording)
+        r.raise_for_status()
+        return r.json()
+
+    async def upload_recording(self, processor_id: int, recording: dict, path: Path) -> dict:
+        data = {
+            key: str(value)
+            for key, value in recording.items()
+            if value is not None
+        }
+        with path.open("rb") as handle:
+            files = {"file": (path.name, handle, "video/mp4")}
+            r = await self._http.post(
+                f"{self.base}/processors/{processor_id}/recordings/upload",
+                data=data,
+                files=files,
+                headers={"X-Api-Key": self.api_key},
+                timeout=None,
+            )
         r.raise_for_status()
         return r.json()
 

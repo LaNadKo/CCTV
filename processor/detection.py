@@ -1802,17 +1802,16 @@ class CameraWorker:
 
         ended_dt = datetime.now()
         duration = max((ended_dt - started_dt).total_seconds(), 0.0)
-        self._push_recording(
-            {
-                "camera_id": self.camera_id,
-                "file_path": f"processor://{self.processor_id}/{relative_path}",
-                "file_kind": "video",
-                "started_at": started_dt.isoformat(),
-                "ended_at": ended_dt.isoformat(),
-                "duration_seconds": round(duration, 3),
-                "file_size_bytes": size,
-            }
-        )
+        payload = {
+            "camera_id": self.camera_id,
+            "file_path": f"processor://{self.processor_id}/{relative_path}",
+            "file_kind": "video",
+            "started_at": started_dt.isoformat(),
+            "ended_at": ended_dt.isoformat(),
+            "duration_seconds": round(duration, 3),
+            "file_size_bytes": size,
+        }
+        self._push_recording(payload, local_path=path)
         logger.info("Recording saved camera=%s path=%s size=%s", self.camera_id, relative_path, size)
 
     def _dispatch_future(self, future: asyncio.Future, action: str, on_success=None) -> None:
@@ -1843,11 +1842,23 @@ class CameraWorker:
             ),
         )
 
-    def _push_recording(self, recording: dict) -> dict | None:
+    def _push_recording(self, recording: dict, local_path: Path | None = None) -> dict | None:
         if self._event_loop is None or self.processor_id is None:
             return None
+
+        async def _send_recording() -> dict:
+            if local_path is not None and local_path.exists():
+                try:
+                    return await self.client.upload_recording(self.processor_id, recording, local_path)
+                except Exception:
+                    logger.exception(
+                        "Failed to upload recording for camera %s; falling back to metadata registration",
+                        self.camera_id,
+                    )
+            return await self.client.push_recording(self.processor_id, recording)
+
         future = asyncio.run_coroutine_threadsafe(
-            self.client.push_recording(self.processor_id, recording),
+            _send_recording(),
             self._event_loop,
         )
         self._dispatch_future(future, "push recording")
