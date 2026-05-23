@@ -26,8 +26,8 @@ class ThemeController extends ChangeNotifier {
 
   String _apiBaseUrl = 'http://127.0.0.1:8001';
   CctvThemeMode _themeMode = CctvThemeMode.system;
-  Color _primaryAccent = const Color(0xFF8EDBFF);
-  Color _secondaryAccent = const Color(0xFF2F80ED);
+  Color _primaryAccent = const Color(0xFF5EF0FF);
+  Color _secondaryAccent = const Color(0xFF4C6FFF);
   LiveDensity _liveDensity = LiveDensity.comfortable;
   int _liveGridColumns = 0;
   List<int> _liveCameraOrder = const [];
@@ -176,8 +176,8 @@ class ThemeController extends ChangeNotifier {
   }
 
   Future<void> resetAppearance() async {
-    _primaryAccent = const Color(0xFF8EDBFF);
-    _secondaryAccent = const Color(0xFF2F80ED);
+    _primaryAccent = const Color(0xFF5EF0FF);
+    _secondaryAccent = const Color(0xFF4C6FFF);
     _liveDensity = LiveDensity.comfortable;
     _liveGridColumns = 0;
     _liveCameraOrder = const [];

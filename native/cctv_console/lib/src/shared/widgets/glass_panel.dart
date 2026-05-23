@@ -23,6 +23,7 @@ class GlassPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final platform = Theme.of(context).platform;
     final mobileWidth = MediaQuery.sizeOf(context).width < 700;
     final useBlur =
@@ -34,15 +35,40 @@ class GlassPanel extends StatelessWidget {
       margin: margin,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),
-        color: colors.surface,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            colors.surfaceElevated.withValues(alpha: dark ? 0.56 : 0.68),
+            colors.surface.withValues(alpha: dark ? 0.42 : 0.54),
+          ],
+        ),
         border: Border.all(color: colors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.14),
-            blurRadius: mobileWidth ? 18 : 36,
-            offset: Offset(0, mobileWidth ? 10 : 22),
+            color: Colors.black.withValues(alpha: dark ? 0.2 : 0.08),
+            blurRadius: mobileWidth ? 16 : 32,
+            offset: Offset(0, mobileWidth ? 8 : 18),
+          ),
+          BoxShadow(
+            color: colors.primaryAccent.withValues(alpha: dark ? 0.05 : 0.08),
+            blurRadius: mobileWidth ? 18 : 40,
+            offset: const Offset(0, 0),
           ),
         ],
+      ),
+      foregroundDecoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.white.withValues(alpha: dark ? 0.08 : 0.18),
+            Colors.white.withValues(alpha: 0),
+            colors.primaryAccent.withValues(alpha: dark ? 0.025 : 0.04),
+          ],
+          stops: const [0, 0.42, 1],
+        ),
       ),
       child: child,
     );

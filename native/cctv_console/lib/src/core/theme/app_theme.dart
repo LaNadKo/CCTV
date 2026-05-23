@@ -104,8 +104,8 @@ extension AppThemeContext on BuildContext {
 
 class AppTheme {
   static const radiusSm = 12.0;
-  static const radiusMd = 18.0;
-  static const radiusLg = 24.0;
+  static const radiusMd = 16.0;
+  static const radiusLg = 22.0;
 
   static ThemeData build({
     required ThemeController settings,
@@ -114,16 +114,16 @@ class AppTheme {
     final isDark = brightness == Brightness.dark;
     final colors = isDark
         ? AppColors(
-            bg: const Color(0xFF071013),
-            bgElevated: const Color(0xE60C151A),
-            surface: const Color(0xD10E171D),
-            surfaceElevated: const Color(0xEA101A21),
-            surfaceMuted: Colors.white.withValues(alpha: 0.035),
+            bg: const Color(0xFF050812),
+            bgElevated: const Color(0xE608101C),
+            surface: const Color(0xCC0C1422),
+            surfaceElevated: const Color(0xE6121B2B),
+            surfaceMuted: Colors.white.withValues(alpha: 0.055),
             text: const Color(0xFFF3F7FF),
             textStrong: Colors.white,
-            muted: const Color(0xFF94A3B8),
-            border: Colors.white.withValues(alpha: 0.08),
-            borderStrong: settings.primaryAccent.withValues(alpha: 0.24),
+            muted: const Color(0xFFA8B6CC),
+            border: Colors.white.withValues(alpha: 0.12),
+            borderStrong: settings.primaryAccent.withValues(alpha: 0.32),
             success: const Color(0xFF22C55E),
             warning: const Color(0xFFF59E0B),
             danger: const Color(0xFFEF4444),
@@ -131,16 +131,16 @@ class AppTheme {
             secondaryAccent: settings.secondaryAccent,
           )
         : AppColors(
-            bg: const Color(0xFFEEF4FF),
-            bgElevated: Colors.white.withValues(alpha: 0.84),
-            surface: Colors.white.withValues(alpha: 0.9),
-            surfaceElevated: Colors.white.withValues(alpha: 0.96),
-            surfaceMuted: const Color(0x0A0F172A),
-            text: const Color(0xFF10203A),
-            textStrong: const Color(0xFF091220),
+            bg: const Color(0xFFF4F8FC),
+            bgElevated: Colors.white.withValues(alpha: 0.72),
+            surface: Colors.white.withValues(alpha: 0.74),
+            surfaceElevated: Colors.white.withValues(alpha: 0.88),
+            surfaceMuted: const Color(0x0D172033),
+            text: const Color(0xFF172033),
+            textStrong: const Color(0xFF07101F),
             muted: const Color(0xFF5F718C),
             border: const Color(0x140F172A),
-            borderStrong: settings.secondaryAccent.withValues(alpha: 0.24),
+            borderStrong: settings.secondaryAccent.withValues(alpha: 0.28),
             success: const Color(0xFF16A34A),
             warning: const Color(0xFFD97706),
             danger: const Color(0xFFDC2626),

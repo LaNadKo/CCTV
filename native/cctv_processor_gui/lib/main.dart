@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -630,14 +631,15 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment(-0.8, -0.9),
-            radius: 1.2,
-            colors: [Color(0xFF12323B), Color(0xFF07111F), Color(0xFF04080E)],
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF08111F), Color(0xFF050812), Color(0xFF0C0716)],
           ),
         ),
         child: Stack(
           children: [
+            const Positioned.fill(child: _ProcessorAuroraBackdrop()),
             const Positioned.fill(child: _GridBackdrop()),
             SafeArea(
               child: Row(
@@ -2406,21 +2408,53 @@ class _GlassPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: AppPalette.surface.withValues(alpha: 0.82),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppPalette.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.18),
-            blurRadius: 36,
-            offset: const Offset(0, 24),
+    const radius = 24.0;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                AppPalette.surface.withValues(alpha: 0.58),
+                AppPalette.panel.withValues(alpha: 0.42),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(color: AppPalette.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.18),
+                blurRadius: 34,
+                offset: const Offset(0, 20),
+              ),
+              BoxShadow(
+                color: AppPalette.accent.withValues(alpha: 0.05),
+                blurRadius: 44,
+                offset: Offset.zero,
+              ),
+            ],
           ),
-        ],
+          foregroundDecoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: 0.1),
+                Colors.white.withValues(alpha: 0),
+                AppPalette.accent.withValues(alpha: 0.035),
+              ],
+              stops: const [0, 0.45, 1],
+            ),
+          ),
+          child: child,
+        ),
       ),
-      child: child,
     );
   }
 }
@@ -3107,6 +3141,74 @@ class _GridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
+class _ProcessorAuroraBackdrop extends StatelessWidget {
+  const _ProcessorAuroraBackdrop();
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(painter: _ProcessorAuroraPainter());
+  }
+}
+
+class _ProcessorAuroraPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final upperPaint = Paint()
+      ..shader = const LinearGradient(
+        colors: [Color(0x665EF0FF), Color(0x4D4C6FFF), Color(0x001643FF)],
+      ).createShader(Offset.zero & size)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 34);
+
+    final upperPath = Path()
+      ..moveTo(-size.width * 0.1, size.height * 0.16)
+      ..cubicTo(
+        size.width * 0.2,
+        -size.height * 0.02,
+        size.width * 0.54,
+        size.height * 0.24,
+        size.width * 1.1,
+        size.height * 0.04,
+      )
+      ..lineTo(size.width * 1.1, size.height * 0.24)
+      ..cubicTo(
+        size.width * 0.68,
+        size.height * 0.44,
+        size.width * 0.24,
+        size.height * 0.26,
+        -size.width * 0.1,
+        size.height * 0.48,
+      )
+      ..close();
+    canvas.drawPath(upperPath, upperPaint);
+
+    final lowerPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.bottomLeft,
+        end: Alignment.topRight,
+        colors: [Color(0x521643FF), Color(0x3D4C6FFF), Color(0x005EF0FF)],
+      ).createShader(Offset.zero & size)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 42);
+
+    final lowerPath = Path()
+      ..moveTo(-size.width * 0.12, size.height * 0.88)
+      ..cubicTo(
+        size.width * 0.24,
+        size.height * 0.72,
+        size.width * 0.6,
+        size.height * 1.02,
+        size.width * 1.12,
+        size.height * 0.76,
+      )
+      ..lineTo(size.width * 1.12, size.height * 1.08)
+      ..lineTo(-size.width * 0.12, size.height * 1.08)
+      ..close();
+    canvas.drawPath(lowerPath, lowerPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 class ProcessorTheme {
   static ThemeData dark() {
     final base = ThemeData(
@@ -3188,16 +3290,16 @@ class ProcessorTheme {
 }
 
 class AppPalette {
-  static const bg = Color(0xFF050B13);
-  static const panel = Color(0xFF0A1422);
-  static const surface = Color(0xFF0D1828);
+  static const bg = Color(0xFF050812);
+  static const panel = Color(0xFF0A1020);
+  static const surface = Color(0xFF121B2B);
   static const text = Color(0xFFE7EEF9);
   static const textStrong = Colors.white;
-  static const muted = Color(0xFF91A3BD);
-  static const border = Color(0x1FFFFFFF);
-  static const borderStrong = Color(0x3D5EF0FF);
+  static const muted = Color(0xFFA7B6CA);
+  static const border = Color(0x26FFFFFF);
+  static const borderStrong = Color(0x525EF0FF);
   static const accent = Color(0xFF5EF0FF);
-  static const secondary = Color(0xFF7C8CFF);
+  static const secondary = Color(0xFF4C6FFF);
   static const success = Color(0xFF22C55E);
   static const warning = Color(0xFFF59E0B);
   static const danger = Color(0xFFEF4444);

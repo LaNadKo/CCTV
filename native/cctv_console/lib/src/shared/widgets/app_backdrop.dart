@@ -39,12 +39,21 @@ class AppBackdrop extends StatelessWidget {
                     colors: [
                       Color(0xFFF8FBFF),
                       Color(0xFFEAF3FF),
-                      Color(0xFFF4F8EF),
+                      Color(0xFFF2F6FC),
                     ],
                   ),
           ),
           child: Stack(
             children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _AuroraPainter(
+                    primary: colors.primaryAccent,
+                    secondary: colors.secondaryAccent,
+                    dark: isDark,
+                  ),
+                ),
+              ),
               Positioned.fill(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
@@ -74,6 +83,88 @@ class AppBackdrop extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _AuroraPainter extends CustomPainter {
+  const _AuroraPainter({
+    required this.primary,
+    required this.secondary,
+    required this.dark,
+  });
+
+  final Color primary;
+  final Color secondary;
+  final bool dark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final alpha = dark ? 0.24 : 0.34;
+    final topBand = Paint()
+      ..shader = LinearGradient(
+        colors: [
+          primary.withValues(alpha: alpha),
+          secondary.withValues(alpha: alpha * 0.82),
+          Colors.transparent,
+        ],
+      ).createShader(Offset.zero & size)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28);
+
+    final topPath = Path()
+      ..moveTo(-size.width * 0.08, size.height * 0.18)
+      ..cubicTo(
+        size.width * 0.22,
+        size.height * 0.05,
+        size.width * 0.56,
+        size.height * 0.15,
+        size.width * 1.08,
+        size.height * 0.02,
+      )
+      ..lineTo(size.width * 1.08, size.height * 0.2)
+      ..cubicTo(
+        size.width * 0.68,
+        size.height * 0.34,
+        size.width * 0.24,
+        size.height * 0.27,
+        -size.width * 0.08,
+        size.height * 0.46,
+      )
+      ..close();
+    canvas.drawPath(topPath, topBand);
+
+    final bottomBand = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.bottomLeft,
+        end: Alignment.topRight,
+        colors: [
+          secondary.withValues(alpha: alpha * 0.72),
+          primary.withValues(alpha: alpha * 0.62),
+          Colors.transparent,
+        ],
+      ).createShader(Offset.zero & size)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 34);
+
+    final bottomPath = Path()
+      ..moveTo(-size.width * 0.12, size.height * 0.86)
+      ..cubicTo(
+        size.width * 0.24,
+        size.height * 0.7,
+        size.width * 0.56,
+        size.height * 0.94,
+        size.width * 1.1,
+        size.height * 0.72,
+      )
+      ..lineTo(size.width * 1.1, size.height * 1.08)
+      ..lineTo(-size.width * 0.12, size.height * 1.08)
+      ..close();
+    canvas.drawPath(bottomPath, bottomBand);
+  }
+
+  @override
+  bool shouldRepaint(covariant _AuroraPainter oldDelegate) {
+    return oldDelegate.primary != primary ||
+        oldDelegate.secondary != secondary ||
+        oldDelegate.dark != dark;
   }
 }
 
