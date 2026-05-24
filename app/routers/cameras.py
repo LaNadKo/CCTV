@@ -87,9 +87,18 @@ async def _proxy_processor_camera_stream_url(
 
     async def gen():
         try:
-            async for chunk in upstream.aiter_raw(chunk_size=16384):
-                if chunk:
-                    yield chunk
+            try:
+                async for chunk in upstream.aiter_raw(chunk_size=16384):
+                    if chunk:
+                        yield chunk
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                log.warning(
+                    "camera.stream.processor_upstream_interrupted camera=%s processor=%s base_url=%s reason=%r",
+                    camera_id,
+                    proc.processor_id,
+                    base_url,
+                    exc,
+                )
         finally:
             await stream_cm.__aexit__(None, None, None)
             await client.aclose()
