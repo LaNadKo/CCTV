@@ -186,13 +186,48 @@ sequenceDiagram
 
 ## Быстрый запуск
 
-Создайте `.env`:
+Основной способ запуска на Windows:
+
+```powershell
+.\scripts\cctv-up.ps1 -Profile server
+```
+
+Скрипт делает то, что обычно приходилось настраивать руками: создает `.env` из `.env.example`, генерирует `POSTGRES_PASSWORD`, `JWT_SECRET`, `PROCESSOR_API_KEY`, `TOTP_ENCRYPTION_KEY`, `PROCESSOR_MEDIA_TOKEN` и первичный `BOOTSTRAP_ADMIN_PASSWORD`, поднимает выбранный Docker-профиль и в конце показывает полезные адреса:
+
+- backend внутри Docker: `http://backend:8000`;
+- backend на сервере: `http://127.0.0.1:<BACKEND_PORT>`;
+- backend в локальной сети, если включен LAN bind;
+- логин и пароль администратора для чистой БД.
+
+Если Docker Desktop еще не установлен:
+
+```powershell
+.\scripts\cctv-up.ps1 -Profile server -InstallDocker
+```
+
+После установки Docker Desktop нужно запустить его, дождаться готовности движка и повторить запуск.
+
+Доступные профили:
+
+| Команда | Что поднимает |
+| --- | --- |
+| `.\scripts\cctv-up.ps1 -Profile core` | PostgreSQL, backend, MediaMTX |
+| `.\scripts\cctv-up.ps1 -Profile server` | backend, MediaMTX, web-консоль |
+| `.\scripts\cctv-up.ps1 -Profile server-cpu` | сервер и Docker Processor на CPU/auto |
+| `.\scripts\cctv-up.ps1 -Profile server-gpu` | сервер и Docker Processor с NVIDIA |
+| `.\scripts\cctv-up.ps1 -Profile public -Domain cctv.example.com -Email admin@example.com -IssueCertificate` | сервер, nginx, первичный сертификат Let's Encrypt и автопродление через certbot |
+
+Для обычного LAN-стенда backend публикуется на `0.0.0.0:<BACKEND_PORT>`, поэтому Native Console на телефоне может подключаться к адресу вида `http://192.168.x.x:8001`. Для режима с nginx/public backend по умолчанию закрывается на `127.0.0.1`, а внешний вход идет через nginx. Если прямой LAN-доступ к backend все равно нужен, добавьте `-ExposeBackend`.
+
+`BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD` применяются только при первой инициализации пустой БД. Если БД уже создана, изменение этих значений в `.env` не меняет пароль существующего администратора.
+
+Ручной запуск через Docker Compose тоже остается доступен. Для него сначала создайте `.env` и задайте секреты:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Для локальной разработки можно оставить `ENVIRONMENT=development`, но секреты лучше заменить сразу. Для стенда, доступного из сети, выставляйте `ENVIRONMENT=production`, задавайте сильные `JWT_SECRET`, `POSTGRES_PASSWORD`, `PROCESSOR_API_KEY`, `TOTP_ENCRYPTION_KEY`, `BOOTSTRAP_ADMIN_PASSWORD`, а `ALLOW_DEFAULT_ADMIN` переводите в `false`.
+Для стенда, доступного из сети, выставляйте `ENVIRONMENT=production`, задавайте сильные `JWT_SECRET`, `POSTGRES_PASSWORD`, `PROCESSOR_API_KEY`, `TOTP_ENCRYPTION_KEY`, `BOOTSTRAP_ADMIN_PASSWORD`, а `ALLOW_DEFAULT_ADMIN` переводите в `false`.
 
 Минимальный сервер:
 
