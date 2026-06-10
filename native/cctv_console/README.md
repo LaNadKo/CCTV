@@ -8,7 +8,7 @@ Flutter client for the CCTV backend. The current target set is Windows desktop a
 - Secure token storage through platform storage.
 - Backend URL setting, persisted per device.
 - Theme mode, primary accent, secondary accent, and Live density settings.
-- Responsive shell close to the existing web console visual language.
+- Responsive shell for Windows desktop and Android layouts.
 - Live camera grid with authenticated stream URLs.
 - Basic ONVIF PTZ commands from Live cards.
 - First status cards for cameras, processors, and pending reviews.

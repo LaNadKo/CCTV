@@ -6,10 +6,12 @@ import 'package:provider/provider.dart';
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
 import '../../core/refresh/refresh_bus.dart';
+import '../../core/server/server_features_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/app_backdrop.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/motion.dart';
 import '../admin/admin_screens.dart';
 import '../auth/auth_controller.dart';
 import '../cameras/cameras_screen.dart';
@@ -26,7 +28,6 @@ const _changePollInterval = Duration(seconds: 5);
 const _changePollTimeout = Duration(seconds: 5);
 const _activeRefreshInterval = Duration(seconds: 15);
 const _activeAutoRefreshRoutes = <String>{
-  '/live',
   '/recordings',
   '/reviews',
   '/reports',
@@ -43,8 +44,8 @@ const _changeSectionRoutes = <String, List<String>>{
   'groups': ['/live', '/groups', '/cameras', '/reports'],
   'persons': ['/persons', '/reviews', '/reports'],
   'recordings': ['/recordings', '/reports'],
-  'events': ['/live', '/recordings', '/reviews', '/reports'],
-  'processors': ['/live', '/processors', '/reports'],
+  'events': ['/recordings', '/reviews', '/reports'],
+  'processors': ['/processors', '/reports'],
   'users': ['/users', '/profile', '/reports'],
   'api_keys': ['/api-keys', '/processors', '/reports'],
 };
@@ -64,7 +65,8 @@ class _AppShellState extends State<AppShell> {
   Timer? _changePollTimer;
   Timer? _activeRefreshTimer;
   Map<String, String> _sectionRevisions = const {};
-  final Set<String> _visitedRoutes = {'/live'};
+  String? _lastFeatureRefreshToken;
+  bool _featureRefreshQueued = false;
 
   @override
   void initState() {
@@ -100,19 +102,18 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthController>();
-    final tabs = _tabsFor(auth.user);
+    final features = context.watch<ServerFeaturesController>();
+    final token = auth.accessToken;
+    _scheduleFeaturesRefresh(token);
+    final tabs = _tabsFor(auth.user, features);
     if (!tabs.any((tab) => tab.route == _selectedRoute)) {
       _selectedRoute = tabs.first.route;
     }
-    final allowedRoutes = tabs.map((tab) => tab.route).toSet();
-    _visitedRoutes.removeWhere((route) => !allowedRoutes.contains(route));
-    _visitedRoutes.add(_selectedRoute);
     final selected = tabs.firstWhere((tab) => tab.route == _selectedRoute);
     final compact = MediaQuery.sizeOf(context).width < 820;
     final body = _ShellBody(
       tabs: tabs,
       selectedRoute: selected.route,
-      visitedRoutes: Set.unmodifiable(_visitedRoutes),
     );
 
     return AppBackdrop(
@@ -137,9 +138,25 @@ class _AppShellState extends State<AppShell> {
   void _selectRoute(String route) {
     setState(() {
       _selectedRoute = route;
-      _visitedRoutes.add(route);
     });
     context.read<ThemeController>().setLastRoute(route);
+  }
+
+  void _scheduleFeaturesRefresh(String? token) {
+    if (token == null || token.isEmpty) return;
+    if (_featureRefreshQueued || token == _lastFeatureRefreshToken) return;
+    _featureRefreshQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lastFeatureRefreshToken = token;
+      _featureRefreshQueued = false;
+      unawaited(
+        context.read<ServerFeaturesController>().refresh(
+          context.read<ApiClient>(),
+          token,
+        ),
+      );
+    });
   }
 
   Future<void> _pollChanges() async {
@@ -202,13 +219,16 @@ class _AppShellState extends State<AppShell> {
     context.read<RefreshBus>().markStale([_selectedRoute]);
   }
 
-  List<_ShellTab> _tabsFor(CurrentUser? user) {
+  List<_ShellTab> _tabsFor(
+    CurrentUser? user,
+    ServerFeaturesController features,
+  ) {
     final isAdmin = user?.isAdmin ?? false;
     final canReview = user?.canReview ?? false;
     return [
       _ShellTab(
         route: '/live',
-        label: 'Live',
+        label: 'Эфир',
         icon: Icons.grid_view_rounded,
         builder: (_) => const LiveScreen(),
       ),
@@ -255,7 +275,7 @@ class _AppShellState extends State<AppShell> {
       if (isAdmin)
         _ShellTab(
           route: '/processors',
-          label: 'Processor',
+          label: 'Процессор',
           icon: Icons.memory_rounded,
           builder: (_) => const ProcessorsManagementScreen(),
         ),
@@ -263,6 +283,7 @@ class _AppShellState extends State<AppShell> {
         _ShellTab(
           route: '/users',
           label: 'Пользователи',
+          mobileLabel: 'Аккаунты',
           icon: Icons.manage_accounts_rounded,
           builder: (_) => const UsersManagementScreen(),
         ),
@@ -272,6 +293,13 @@ class _AppShellState extends State<AppShell> {
           label: 'API ключи',
           icon: Icons.vpn_key_rounded,
           builder: (_) => const ApiKeysManagementScreen(),
+        ),
+      if (isAdmin && features.setupAvailable)
+        _ShellTab(
+          route: '/setup',
+          label: 'Настройка',
+          icon: Icons.settings_applications_rounded,
+          builder: (_) => const SetupScreen(),
         ),
       if (isAdmin)
         _ShellTab(
@@ -326,92 +354,150 @@ class _DesktopShell extends StatelessWidget {
         .toList();
     final menuActive = secondaryTabs.any((tab) => tab.route == selected.route);
 
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1480),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 18, 24, 32),
-          child: Column(
-            children: [
-              GlassPanel(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                child: SizedBox(
-                  height: 58,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final compact = constraints.maxWidth < 980;
-                      return Row(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 18, 24, 32),
+      child: Column(
+        children: [
+          GlassPanel(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 1180;
+                final nav = _PrimaryNavBar(
+                  tabs: primaryTabs,
+                  selected: selected,
+                  onSelect: onSelect,
+                );
+                final actions = _DesktopHeaderActions(
+                  secondaryTabs: secondaryTabs,
+                  menuActive: menuActive,
+                  user: user,
+                  onSelect: onSelect,
+                  onLogout: auth.logout,
+                );
+                if (compact) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
                         children: [
-                          ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxWidth: compact ? 180 : 340,
+                          const Expanded(child: _Brand(compact: true)),
+                          const SizedBox(width: 12),
+                          Flexible(
+                            flex: 2,
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: actions,
                             ),
-                            child: _Brand(compact: compact),
-                          ),
-                          SizedBox(width: compact ? 8 : 16),
-                          Expanded(
-                            child: ClipRect(
-                              child: SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    for (final tab in primaryTabs)
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          right: 9,
-                                        ),
-                                        child: _NavChip(
-                                          tab: tab,
-                                          active: tab.route == selected.route,
-                                          onTap: () => onSelect(tab.route),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          SizedBox(width: compact ? 8 : 16),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const _ThemeToggleButton(),
-                              const SizedBox(width: 8),
-                              if (secondaryTabs.isNotEmpty) ...[
-                                _DesktopMenu(
-                                  tabs: secondaryTabs,
-                                  active: menuActive,
-                                  onSelect: onSelect,
-                                ),
-                                const SizedBox(width: 12),
-                              ],
-                              if (user != null)
-                                ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    maxWidth: compact ? 270 : 390,
-                                  ),
-                                  child: _UserChip(
-                                    user: user,
-                                    onLogout: auth.logout,
-                                  ),
-                                ),
-                            ],
                           ),
                         ],
-                      );
-                    },
+                      ),
+                      const SizedBox(height: 10),
+                      Center(child: nav),
+                    ],
+                  );
+                }
+                return SizedBox(
+                  height: 58,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: SizedBox(width: 340, child: _Brand()),
+                      ),
+                      Align(alignment: Alignment.center, child: nav),
+                      Align(alignment: Alignment.centerRight, child: actions),
+                    ],
                   ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 20),
+          Expanded(child: child),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrimaryNavBar extends StatelessWidget {
+  const _PrimaryNavBar({
+    required this.tabs,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  final List<_ShellTab> tabs;
+  final _ShellTab selected;
+  final ValueChanged<String> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var index = 0; index < tabs.length; index++)
+              Padding(
+                padding: EdgeInsets.only(
+                  right: index == tabs.length - 1 ? 0 : 9,
+                ),
+                child: _NavChip(
+                  tab: tabs[index],
+                  active: tabs[index].route == selected.route,
+                  onTap: () => onSelect(tabs[index].route),
                 ),
               ),
-              const SizedBox(height: 20),
-              Expanded(child: child),
-            ],
-          ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+class _DesktopHeaderActions extends StatelessWidget {
+  const _DesktopHeaderActions({
+    required this.secondaryTabs,
+    required this.menuActive,
+    required this.user,
+    required this.onSelect,
+    required this.onLogout,
+  });
+
+  final List<_ShellTab> secondaryTabs;
+  final bool menuActive;
+  final CurrentUser? user;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      reverse: true,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const _ThemeToggleButton(),
+          const SizedBox(width: 8),
+          if (secondaryTabs.isNotEmpty) ...[
+            _DesktopMenu(
+              tabs: secondaryTabs,
+              active: menuActive,
+              onSelect: onSelect,
+            ),
+            const SizedBox(width: 12),
+          ],
+          if (user != null)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 390),
+              child: _UserChip(user: user!, onLogout: onLogout),
+            ),
+        ],
       ),
     );
   }
@@ -434,10 +520,19 @@ class _MobileShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final settings = context.watch<ThemeController>();
-    final visibleTabs = _resolvePrimaryTabs(
+    final primaryTabs = _resolvePrimaryTabs(
       tabs,
       settings.primaryNav,
     ).take(5).toList();
+    final menuActive = !primaryTabs.contains(selected);
+    final visibleTabs = [...primaryTabs];
+    if (menuActive) {
+      if (visibleTabs.length >= 5) {
+        visibleTabs[visibleTabs.length - 1] = selected;
+      } else {
+        visibleTabs.add(selected);
+      }
+    }
     final selectedIndex = visibleTabs.indexWhere(
       (tab) => tab.route == selected.route,
     );
@@ -467,7 +562,7 @@ class _MobileShell extends StatelessWidget {
                     ],
                     child: _MobileIconChip(
                       icon: Icons.menu_rounded,
-                      active: !visibleTabs.contains(selected),
+                      active: menuActive,
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -503,7 +598,10 @@ class _MobileShell extends StatelessWidget {
           onDestinationSelected: (index) => onSelect(visibleTabs[index].route),
           destinations: [
             for (final tab in visibleTabs)
-              NavigationDestination(icon: Icon(tab.icon), label: tab.label),
+              NavigationDestination(
+                icon: Icon(tab.icon),
+                label: tab.mobileLabel ?? tab.label,
+              ),
           ],
         ),
       ),
@@ -515,31 +613,18 @@ class _ShellBody extends StatelessWidget {
   const _ShellBody({
     required this.tabs,
     required this.selectedRoute,
-    required this.visitedRoutes,
   });
 
   final List<_ShellTab> tabs;
   final String selectedRoute;
-  final Set<String> visitedRoutes;
 
   @override
   Widget build(BuildContext context) {
     final selectedIndex = tabs.indexWhere((tab) => tab.route == selectedRoute);
-    return IndexedStack(
-      index: selectedIndex < 0 ? 0 : selectedIndex,
-      sizing: StackFit.expand,
-      children: [
-        for (final tab in tabs)
-          if (visitedRoutes.contains(tab.route))
-            KeyedSubtree(
-              key: PageStorageKey<String>('shell-page:${tab.route}'),
-              child: tab.builder(context),
-            )
-          else
-            SizedBox.shrink(
-              key: ValueKey<String>('shell-placeholder:${tab.route}'),
-            ),
-      ],
+    final selected = selectedIndex < 0 ? tabs.first : tabs[selectedIndex];
+    return KeyedSubtree(
+      key: PageStorageKey<String>('shell-page:${selected.route}'),
+      child: RepaintBoundary(child: selected.builder(context)),
     );
   }
 }
@@ -572,13 +657,13 @@ class _Brand extends StatelessWidget {
               ),
               border: Border.all(color: colors.borderStrong),
             ),
-            child: Text(
-              'CCTV',
-              style: TextStyle(
-                color: colors.textStrong,
-                fontWeight: FontWeight.w900,
-                fontSize: compact ? 10 : 11,
-                letterSpacing: 1.4,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(15),
+              child: Image.asset(
+                'assets/branding/app_icon.png',
+                width: size - 8,
+                height: size - 8,
+                fit: BoxFit.contain,
               ),
             ),
           ),
@@ -591,7 +676,7 @@ class _Brand extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Console',
+                    'Консоль',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
@@ -601,19 +686,6 @@ class _Brand extends StatelessWidget {
                       height: 1.08,
                     ),
                   ),
-                  if (!compact) ...[
-                    const SizedBox(height: 3),
-                    Text(
-                      'Единый клиент для backend и Processor',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.muted,
-                        fontSize: 12,
-                        height: 1.1,
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -689,31 +761,47 @@ class _NavChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        gradient: active
-            ? LinearGradient(
-                colors: [colors.primaryAccent, colors.secondaryAccent],
-              )
-            : null,
-        color: active ? null : colors.surfaceMuted,
-        border: Border.all(color: active ? Colors.transparent : colors.border),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
+    return PressScale(
+      child: AnimatedContainer(
+        duration: CctvMotion.fast,
+        curve: CctvMotion.curve,
+        decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(999),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Text(
-              tab.label,
-              style: TextStyle(
-                color: active ? const Color(0xFF07111F) : colors.muted,
-                fontWeight: FontWeight.w800,
-                fontSize: 13,
+          gradient: active
+              ? LinearGradient(
+                  colors: [colors.primaryAccent, colors.secondaryAccent],
+                )
+              : null,
+          color: active ? null : colors.surfaceMuted,
+          border: Border.all(
+            color: active ? Colors.transparent : colors.border,
+          ),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    tab.icon,
+                    size: 16,
+                    color: active ? const Color(0xFF07111F) : colors.muted,
+                  ),
+                  const SizedBox(width: 7),
+                  Text(
+                    tab.label,
+                    style: TextStyle(
+                      color: active ? const Color(0xFF07111F) : colors.muted,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -732,7 +820,8 @@ class _MenuChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
+      duration: CctvMotion.fast,
+      curve: CctvMotion.curve,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(999),
@@ -766,7 +855,8 @@ class _MobileIconChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
+      duration: CctvMotion.fast,
+      curve: CctvMotion.curve,
       width: 36,
       height: 36,
       decoration: BoxDecoration(
@@ -817,12 +907,12 @@ class _DesktopMenuState extends State<_DesktopMenu>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 170),
-      reverseDuration: const Duration(milliseconds: 120),
+      duration: CctvMotion.standard,
+      reverseDuration: CctvMotion.fast,
     );
     final curve = CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeOutCubic,
+      curve: CctvMotion.emphasized,
       reverseCurve: Curves.easeInCubic,
     );
     _opacity = Tween<double>(begin: 0, end: 1).animate(curve);
@@ -926,24 +1016,59 @@ class _ThemeToggleButton extends StatelessWidget {
     final settings = context.watch<ThemeController>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final nextMode = isDark ? CctvThemeMode.light : CctvThemeMode.dark;
+    const moonBackground = Color(0xFF102A4A);
+    const moonBorder = Color(0xFF28496D);
+    const moonColor = Color(0xFFD7E8FF);
     return Tooltip(
       message: isDark ? 'Включить светлую тему' : 'Включить тёмную тему',
-      child: InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: () => settings.setThemeMode(nextMode),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          width: compact ? 36 : 42,
-          height: compact ? 36 : 42,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.surfaceMuted,
-            border: Border.all(color: colors.border),
-          ),
-          child: Icon(
-            isDark ? Icons.dark_mode_rounded : Icons.wb_sunny_rounded,
-            color: isDark ? colors.secondaryAccent : colors.warning,
-            size: compact ? 18 : 20,
+      child: PressScale(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: () => settings.setThemeMode(nextMode),
+          child: AnimatedContainer(
+            duration: CctvMotion.resolved(context, CctvMotion.standard),
+            curve: CctvMotion.curve,
+            width: compact ? 36 : 42,
+            height: compact ? 36 : 42,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isDark ? moonBackground : colors.surfaceMuted,
+              border: Border.all(color: isDark ? moonBorder : colors.border),
+            ),
+            child: AnimatedSwitcher(
+              duration: CctvMotion.resolved(context, CctvMotion.standard),
+              switchInCurve: CctvMotion.emphasized,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                final curved = CurvedAnimation(
+                  parent: animation,
+                  curve: CctvMotion.emphasized,
+                  reverseCurve: Curves.easeInCubic,
+                );
+                return FadeTransition(
+                  opacity: curved,
+                  child: RotationTransition(
+                    turns: Tween<double>(
+                      begin: isDark ? -0.08 : 0.08,
+                      end: 0,
+                    ).animate(curved),
+                    child: ScaleTransition(
+                      scale: Tween<double>(
+                        begin: 0.84,
+                        end: 1,
+                      ).animate(curved),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+              child: Icon(
+                isDark ? Icons.dark_mode_rounded : Icons.wb_sunny_rounded,
+                key: ValueKey<bool>(isDark),
+                color: isDark ? moonColor : colors.warning,
+                size: compact ? 18 : 20,
+              ),
+            ),
           ),
         ),
       ),
@@ -976,16 +1101,19 @@ class _DesktopMenuPanel extends StatelessWidget {
           ),
         ],
       ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final tab in tabs)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: _DesktopMenuItem(tab: tab, onTap: onSelect),
-              ),
-          ],
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final tab in tabs)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: _DesktopMenuItem(tab: tab, onTap: onSelect),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1070,10 +1198,12 @@ class _ShellTab {
     required this.label,
     required this.icon,
     required this.builder,
+    this.mobileLabel,
   });
 
   final String route;
   final String label;
+  final String? mobileLabel;
   final IconData icon;
   final WidgetBuilder builder;
 }

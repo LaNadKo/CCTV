@@ -16,7 +16,11 @@ param(
     [int]$BackendPort = 8001,
     [string]$Domain = "",
     [string]$Email = "",
+    [string]$AdminLogin = "",
+    [string]$AdminPassword = "",
+    [string]$PostgresPassword = "",
 
+    [switch]$Interactive,
     [switch]$Production,
     [switch]$LocalOnly,
     [switch]$ExposeBackend,
@@ -28,6 +32,9 @@ param(
     [switch]$NoStart,
     [switch]$SkipHealth,
     [switch]$RotateWeakSecrets,
+    [switch]$AllowEnvRecreate,
+    [switch]$GenerateAdminPassword,
+    [switch]$GeneratePostgresPassword,
     [switch]$DryRun
 )
 
@@ -35,6 +42,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $EnvPath = Join-Path $Root ".env"
 $EnvExamplePath = Join-Path $Root ".env.example"
+$InteractiveMode = $Interactive -or $PSBoundParameters.Count -eq 0
 
 function Write-Step {
     param([string]$Message)
@@ -181,7 +189,12 @@ function Get-LanIp {
                 $_.IPAddress -notlike "169.254.*" -and
                 $_.IPAddress -ne "0.0.0.0"
             } |
-            Sort-Object InterfaceIndex |
+            Sort-Object `
+                @{ Expression = {
+                    $text = $_.IPAddress
+                    if ($text -like "192.168.*" -or $text -like "10.*" -or $text -match "^172\.(1[6-9]|2[0-9]|3[0-1])\.") { 0 } else { 1 }
+                } },
+                InterfaceIndex |
             Select-Object -First 1 -ExpandProperty IPAddress
         if ($ip) {
             return $ip
@@ -236,6 +249,202 @@ function Test-DockerReady {
 
 function Test-DockerCliAvailable {
     return [bool](Get-Command docker -ErrorAction SilentlyContinue)
+}
+
+function Test-DockerVolumeExists {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+    try {
+        & docker volume inspect $Name 2>$null | Out-Null
+        return $LASTEXITCODE -eq 0
+    }
+    catch {
+        return $false
+    }
+}
+
+function Read-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$Default = $false
+    )
+    $suffix = if ($Default) { "Y/n" } else { "y/N" }
+    while ($true) {
+        $value = (Read-Host "$Prompt [$suffix]").Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            return $Default
+        }
+        if ($value -in @("y", "yes", "д", "да")) {
+            return $true
+        }
+        if ($value -in @("n", "no", "н", "нет")) {
+            return $false
+        }
+        Write-Warn "Введите y/n или да/нет."
+    }
+}
+
+function Read-IntValue {
+    param(
+        [string]$Prompt,
+        [int]$Default
+    )
+    while ($true) {
+        $value = (Read-Host "$Prompt [$Default]").Trim()
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            return $Default
+        }
+        $parsed = 0
+        if ([int]::TryParse($value, [ref]$parsed) -and $parsed -gt 0 -and $parsed -le 65535) {
+            return $parsed
+        }
+        Write-Warn "Введите корректный TCP-порт от 1 до 65535."
+    }
+}
+
+function Read-SecretText {
+    param([string]$Prompt)
+    $secure = Read-Host $Prompt -AsSecureString
+    if ($secure.Length -eq 0) {
+        return ""
+    }
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    }
+}
+
+function Read-MenuChoice {
+    param(
+        [string]$Title,
+        [object[]]$Items,
+        [int]$DefaultIndex = 1
+    )
+    Write-Host ""
+    Write-Host $Title -ForegroundColor Cyan
+    for ($i = 0; $i -lt $Items.Count; $i++) {
+        $number = $i + 1
+        Write-Host ("  {0}. {1}" -f $number, $Items[$i].Label)
+        if (-not [string]::IsNullOrWhiteSpace($Items[$i].Description)) {
+            Write-Host ("     {0}" -f $Items[$i].Description) -ForegroundColor DarkGray
+        }
+    }
+    while ($true) {
+        $value = (Read-Host "Выбор [$DefaultIndex]").Trim()
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            return $Items[$DefaultIndex - 1]
+        }
+        $index = 0
+        if ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le $Items.Count) {
+            return $Items[$index - 1]
+        }
+        Write-Warn "Введите номер от 1 до $($Items.Count)."
+    }
+}
+
+function Invoke-InteractiveWizard {
+    $existing = Read-EnvValues -Lines (Read-EnvLines -Path $EnvPath)
+
+    Write-Host ""
+    Write-Host "CCTV Комплекс: мастер запуска" -ForegroundColor Cyan
+    Write-Host "Безопасный режим: существующие пароли и БД не меняются, пока вы явно не выберете замену." -ForegroundColor DarkGray
+
+    $profileChoice = Read-MenuChoice -Title "Профиль Docker" -DefaultIndex 1 -Items @(
+        [pscustomobject]@{ Key = "server"; Label = "Сервер без nginx"; Description = "PostgreSQL, backend, MediaMTX. Подходит для LAN и Native Console." },
+        [pscustomobject]@{ Key = "with-nginx"; Label = "Сервер с nginx"; Description = "Backend закрыт на localhost, вход через nginx HTTP/HTTPS." },
+        [pscustomobject]@{ Key = "public"; Label = "Публичный сервер"; Description = "nginx + certbot/Let's Encrypt, нужен домен и email." },
+        [pscustomobject]@{ Key = "core"; Label = "Core минимум"; Description = "Backend и MediaMTX с PostgreSQL, без дополнительных сервисов." },
+        [pscustomobject]@{ Key = "server-cpu"; Label = "Сервер + Processor CPU"; Description = "Backend, MediaMTX и Docker Processor CPU/auto." },
+        [pscustomobject]@{ Key = "server-gpu"; Label = "Сервер + Processor NVIDIA"; Description = "Backend, MediaMTX и Docker Processor с NVIDIA." }
+    )
+    Set-Variable -Name Profile -Scope Script -Value $profileChoice.Key
+
+    Set-Variable -Name BackendPort -Scope Script -Value (Read-IntValue -Prompt "Порт backend снаружи" -Default $BackendPort)
+
+    if ($Profile -in @("with-nginx", "public")) {
+        $domainDefault = if (-not [string]::IsNullOrWhiteSpace($existing["DOMAIN"])) { $existing["DOMAIN"] } else { $Domain }
+        $domainValue = (Read-Host "Домен nginx/публичного входа [$domainDefault]").Trim()
+        if ([string]::IsNullOrWhiteSpace($domainValue)) {
+            $domainValue = $domainDefault
+        }
+        Set-Variable -Name Domain -Scope Script -Value $domainValue
+
+        $expose = Read-YesNo -Prompt "Оставить прямой LAN-доступ к backend кроме nginx" -Default $false
+        Set-Variable -Name ExposeBackend -Scope Script -Value ([switch]$expose)
+    }
+    else {
+        $localOnlyValue = Read-YesNo -Prompt "Ограничить backend только 127.0.0.1" -Default $false
+        Set-Variable -Name LocalOnly -Scope Script -Value ([switch]$localOnlyValue)
+    }
+
+    if ($Profile -eq "public") {
+        $emailDefault = if (-not [string]::IsNullOrWhiteSpace($Email)) { $Email } else { "" }
+        $emailValue = (Read-Host "Email для Let's Encrypt [$emailDefault]").Trim()
+        if ([string]::IsNullOrWhiteSpace($emailValue)) {
+            $emailValue = $emailDefault
+        }
+        Set-Variable -Name Email -Scope Script -Value $emailValue
+        Set-Variable -Name IssueCertificate -Scope Script -Value ([switch](Read-YesNo -Prompt "Выпустить/обновить сертификат Let's Encrypt сейчас" -Default $false))
+        if ($IssueCertificate) {
+            Set-Variable -Name LetsEncryptStaging -Scope Script -Value ([switch](Read-YesNo -Prompt "Использовать staging Let's Encrypt" -Default $false))
+        }
+    }
+
+    $adminLoginDefault = if (-not [string]::IsNullOrWhiteSpace($existing["BOOTSTRAP_ADMIN_LOGIN"])) { $existing["BOOTSTRAP_ADMIN_LOGIN"] } else { "admin" }
+    $adminLoginValue = (Read-Host "Логин первичного администратора [$adminLoginDefault]").Trim()
+    if ([string]::IsNullOrWhiteSpace($adminLoginValue)) {
+        $adminLoginValue = $adminLoginDefault
+    }
+    Set-Variable -Name AdminLogin -Scope Script -Value $adminLoginValue
+
+    $adminOptions = @(
+        [pscustomobject]@{ Key = "keep"; Label = "Оставить пароль из .env"; Description = "Ничего не менять, если пароль уже задан." },
+        [pscustomobject]@{ Key = "manual"; Label = "Ввести пароль"; Description = "Записать указанный BOOTSTRAP_ADMIN_PASSWORD в .env." },
+        [pscustomobject]@{ Key = "generate"; Label = "Сгенерировать пароль"; Description = "Скрипт создаст сильный пароль и покажет его один раз." }
+    )
+    $adminDefault = if ([string]::IsNullOrWhiteSpace($existing["BOOTSTRAP_ADMIN_PASSWORD"])) { 2 } else { 1 }
+    $adminChoice = Read-MenuChoice -Title "Пароль первичного администратора" -Items $adminOptions -DefaultIndex $adminDefault
+    if ($adminChoice.Key -eq "manual") {
+        $value = Read-SecretText -Prompt "Введите BOOTSTRAP_ADMIN_PASSWORD"
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            throw "Пароль администратора не может быть пустым."
+        }
+        Set-Variable -Name AdminPassword -Scope Script -Value $value
+    }
+    elseif ($adminChoice.Key -eq "generate") {
+        Set-Variable -Name GenerateAdminPassword -Scope Script -Value ([switch]$true)
+    }
+
+    $pgOptions = @(
+        [pscustomobject]@{ Key = "keep"; Label = "Оставить пароль PostgreSQL из .env"; Description = "Безопасно для существующей БД." },
+        [pscustomobject]@{ Key = "manual"; Label = "Ввести пароль PostgreSQL"; Description = "Записать указанный POSTGRES_PASSWORD в .env." },
+        [pscustomobject]@{ Key = "generate"; Label = "Сгенерировать PostgreSQL пароль"; Description = "Для новой БД или пересозданных volumes." }
+    )
+    $pgDefault = if ([string]::IsNullOrWhiteSpace($existing["POSTGRES_PASSWORD"]) -or $existing["POSTGRES_PASSWORD"] -eq "cctv") { 3 } else { 1 }
+    $pgChoice = Read-MenuChoice -Title "Пароль PostgreSQL" -Items $pgOptions -DefaultIndex $pgDefault
+    if ($pgChoice.Key -eq "manual") {
+        $value = Read-SecretText -Prompt "Введите POSTGRES_PASSWORD"
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            throw "Пароль PostgreSQL не может быть пустым."
+        }
+        Set-Variable -Name PostgresPassword -Scope Script -Value $value
+    }
+    elseif ($pgChoice.Key -eq "generate") {
+        Set-Variable -Name GeneratePostgresPassword -Scope Script -Value ([switch]$true)
+    }
+
+    Set-Variable -Name Production -Scope Script -Value ([switch](Read-YesNo -Prompt "Production-режим" -Default ($Profile -in @("public", "with-nginx"))))
+    Set-Variable -Name Pull -Scope Script -Value ([switch](Read-YesNo -Prompt "Сначала выполнить docker compose pull" -Default $false))
+    Set-Variable -Name NoBuild -Scope Script -Value ([switch](-not (Read-YesNo -Prompt "Собирать Docker images перед запуском" -Default $true)))
+    Set-Variable -Name NoStart -Scope Script -Value ([switch](-not (Read-YesNo -Prompt "Запустить контейнеры сейчас" -Default $true)))
+    if (-not $NoStart) {
+        Set-Variable -Name SkipHealth -Scope Script -Value ([switch](-not (Read-YesNo -Prompt "Проверить backend /health после запуска" -Default $true)))
+    }
 }
 
 function Install-DockerDesktop {
@@ -360,6 +569,10 @@ function Wait-BackendHealth {
     return $false
 }
 
+if ($InteractiveMode) {
+    Invoke-InteractiveWizard
+}
+
 if ($LocalOnly -and $ExposeBackend) {
     throw "Нельзя одновременно указать -LocalOnly и -ExposeBackend."
 }
@@ -411,6 +624,17 @@ if (-not (Test-Path -LiteralPath $EnvPath)) {
     if (-not (Test-Path -LiteralPath $EnvExamplePath)) {
         throw ".env.example не найден."
     }
+    $pgDataVolumeName = "${projectName}_pgdata"
+    if ($dockerCliAvailable -and (Test-DockerVolumeExists -Name $pgDataVolumeName) -and -not $AllowEnvRecreate) {
+        $message = ".env отсутствует, но Docker volume $pgDataVolumeName уже существует. Автогенерация нового .env может сломать доступ к существующей БД. Восстановите .env из бэкапа/контейнера или повторите с -AllowEnvRecreate, если точно нужен новый .env."
+        if ($DryRun) {
+            Write-Warn $message
+        }
+        else {
+            Write-Fail $message
+            exit 3
+        }
+    }
     Write-Step "Создаю .env из .env.example"
     if (-not $DryRun) {
         Copy-Item -LiteralPath $EnvExamplePath -Destination $EnvPath
@@ -460,9 +684,7 @@ if ($selectedDomain -ne "localhost" -and $selectedDomain -ne "127.0.0.1") {
 
 $corsOrigins = @(
     "http://127.0.0.1:$BackendPort",
-    "http://localhost:$BackendPort",
-    "http://127.0.0.1:5173",
-    "http://localhost:5173"
+    "http://localhost:$BackendPort"
 )
 if (-not [string]::IsNullOrWhiteSpace($lanIp)) {
     $corsOrigins += "http://${lanIp}:$BackendPort"
@@ -490,8 +712,14 @@ if ($Profile -eq "public" -or $Profile -eq "with-nginx") {
     }
 }
 
-if ($envCreated -or [string]::IsNullOrWhiteSpace($current["POSTGRES_PASSWORD"]) -or ($RotateWeakSecrets -and (Test-WeakValue -Value $current["POSTGRES_PASSWORD"] -MinimumLength 16 -BlockedValues @("cctv", "postgres", "password", "changeme")))) {
+$postgresPasswordUpdated = $false
+if (-not [string]::IsNullOrWhiteSpace($PostgresPassword)) {
+    $updates["POSTGRES_PASSWORD"] = $PostgresPassword
+    $postgresPasswordUpdated = $true
+}
+elseif ($GeneratePostgresPassword -or $envCreated -or [string]::IsNullOrWhiteSpace($current["POSTGRES_PASSWORD"]) -or ($RotateWeakSecrets -and (Test-WeakValue -Value $current["POSTGRES_PASSWORD"] -MinimumLength 16 -BlockedValues @("cctv", "postgres", "password", "changeme")))) {
     $updates["POSTGRES_PASSWORD"] = New-UrlSafeSecret -Bytes 24
+    $postgresPasswordUpdated = $true
 }
 if ((Test-WeakValue -Value $current["JWT_SECRET"] -MinimumLength 32 -BlockedValues @("changeme", "change-me", "changeme-generate-with-openssl-rand-hex-32")) -and ($envCreated -or $RotateWeakSecrets -or [string]::IsNullOrWhiteSpace($current["JWT_SECRET"]) -or $current["JWT_SECRET"] -like "changeme*")) {
     $updates["JWT_SECRET"] = New-HexSecret -Bytes 32
@@ -505,14 +733,23 @@ if ([string]::IsNullOrWhiteSpace($current["TOTP_ENCRYPTION_KEY"]) -or ($RotateWe
 if ([string]::IsNullOrWhiteSpace($current["PROCESSOR_MEDIA_TOKEN"])) {
     $updates["PROCESSOR_MEDIA_TOKEN"] = New-UrlSafeSecret -Bytes 24
 }
-if ([string]::IsNullOrWhiteSpace($current["BOOTSTRAP_ADMIN_LOGIN"])) {
+$adminPasswordUpdated = $false
+if (-not [string]::IsNullOrWhiteSpace($AdminLogin)) {
+    $updates["BOOTSTRAP_ADMIN_LOGIN"] = $AdminLogin
+}
+elseif ([string]::IsNullOrWhiteSpace($current["BOOTSTRAP_ADMIN_LOGIN"])) {
     $updates["BOOTSTRAP_ADMIN_LOGIN"] = "admin"
 }
-if ([string]::IsNullOrWhiteSpace($current["BOOTSTRAP_ADMIN_PASSWORD"]) -or ($envCreated -and $current["BOOTSTRAP_ADMIN_PASSWORD"] -eq "")) {
+if (-not [string]::IsNullOrWhiteSpace($AdminPassword)) {
+    $updates["BOOTSTRAP_ADMIN_PASSWORD"] = $AdminPassword
+    $adminPasswordUpdated = $true
+}
+elseif ($GenerateAdminPassword -or [string]::IsNullOrWhiteSpace($current["BOOTSTRAP_ADMIN_PASSWORD"]) -or ($envCreated -and $current["BOOTSTRAP_ADMIN_PASSWORD"] -eq "")) {
     $generatedAdminPassword = New-UrlSafeSecret -Bytes 24
     $updates["BOOTSTRAP_ADMIN_PASSWORD"] = $generatedAdminPassword
+    $adminPasswordUpdated = $true
 }
-if ($envCreated -or $generatedAdminPassword -or $Production -or $Profile -eq "public" -or $Profile -eq "with-nginx") {
+if ($envCreated -or $generatedAdminPassword -or $adminPasswordUpdated -or $Production -or $Profile -eq "public" -or $Profile -eq "with-nginx") {
     $updates["ALLOW_DEFAULT_ADMIN"] = "false"
 }
 
@@ -593,8 +830,21 @@ Write-Host "Логин администратора для чистой БД: $a
 if ([string]::IsNullOrWhiteSpace($adminPassword)) {
     Write-Warn "Пароль администратора не задан в .env"
 }
+elseif (-not [string]::IsNullOrWhiteSpace($generatedAdminPassword)) {
+    Write-Host "Пароль администратора для чистой БД: $generatedAdminPassword"
+    Write-Warn "Сохраните этот пароль: он показан только при генерации."
+}
+elseif ($adminPasswordUpdated) {
+    Write-Host "Пароль администратора для чистой БД: записан в .env"
+}
 else {
-    Write-Host "Пароль администратора для чистой БД: $adminPassword"
+    Write-Host "Пароль администратора для чистой БД: задан в .env"
+}
+if ($postgresPasswordUpdated) {
+    Write-Host "Пароль PostgreSQL: обновлен в .env"
+}
+else {
+    Write-Host "Пароль PostgreSQL: взят из .env"
 }
 Write-Host "Health: $localBackend/health"
 Write-Warn "BOOTSTRAP_ADMIN_* применяется только при первой инициализации пустой БД. Если БД уже создана, пароль существующего admin не меняется."

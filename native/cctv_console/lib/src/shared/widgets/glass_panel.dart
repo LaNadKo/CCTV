@@ -30,6 +30,19 @@ class GlassPanel extends StatelessWidget {
         !mobileWidth &&
         platform != TargetPlatform.android &&
         platform != TargetPlatform.iOS;
+    final elevationShadows = <BoxShadow>[
+      BoxShadow(
+        color: Colors.black.withValues(alpha: dark ? 0.18 : 0.07),
+        blurRadius: mobileWidth ? 12 : 32,
+        offset: Offset(0, mobileWidth ? 6 : 18),
+      ),
+      if (!mobileWidth)
+        BoxShadow(
+          color: colors.primaryAccent.withValues(alpha: dark ? 0.05 : 0.08),
+          blurRadius: 40,
+          offset: const Offset(0, 0),
+        ),
+    ];
     final panel = Container(
       padding: padding,
       margin: margin,
@@ -44,18 +57,7 @@ class GlassPanel extends StatelessWidget {
           ],
         ),
         border: Border.all(color: colors.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? 0.2 : 0.08),
-            blurRadius: mobileWidth ? 16 : 32,
-            offset: Offset(0, mobileWidth ? 8 : 18),
-          ),
-          BoxShadow(
-            color: colors.primaryAccent.withValues(alpha: dark ? 0.05 : 0.08),
-            blurRadius: mobileWidth ? 18 : 40,
-            offset: const Offset(0, 0),
-          ),
-        ],
+        boxShadow: elevationShadows,
       ),
       foregroundDecoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),

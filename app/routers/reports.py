@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
@@ -67,6 +68,26 @@ def _format_ts(value: Optional[str]) -> str:
         return value
 
 
+def _format_report_datetime(value: str | datetime | None, *, include_seconds: bool = False) -> str:
+    if value is None:
+        parsed = datetime.now()
+        raw_value = ""
+    elif isinstance(value, datetime):
+        parsed = value
+        raw_value = ""
+    else:
+        raw_value = value
+        parsed = _parse_iso_datetime(value)
+        if parsed is None:
+            return value
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    if raw_value and "T" not in raw_value and len(raw_value.strip()) <= 10:
+        return parsed.strftime("%d.%m.%Y")
+    return parsed.strftime("%d.%m.%Y %H:%M:%S" if include_seconds else "%d.%m.%Y %H:%M")
+
+
 def _person_label(person: Optional[models.Person]) -> Optional[str]:
     if person is None:
         return None
@@ -83,11 +104,11 @@ def _user_label(user: Optional[models.User], user_id: Optional[int] = None) -> s
 
 def _format_period(date_from: Optional[str], date_to: Optional[str]) -> str:
     if date_from and date_to:
-        return f"{date_from} - {date_to}"
+        return f"с {_format_report_datetime(date_from)} по {_format_report_datetime(date_to)}"
     if date_from:
-        return f"с {date_from}"
+        return f"с {_format_report_datetime(date_from)}"
     if date_to:
-        return f"по {date_to}"
+        return f"по {_format_report_datetime(date_to)}"
     return "за весь период"
 
 
@@ -144,6 +165,13 @@ def _is_processor_online(processor: models.Processor) -> bool:
     return is_processor_effectively_online(processor)
 
 
+def _normalize_id_filter(single: Optional[int], multiple: Optional[list[int]]) -> Optional[set[int]]:
+    ids = {int(value) for value in (multiple or []) if value is not None}
+    if single is not None:
+        ids.add(int(single))
+    return ids or None
+
+
 def _load_metrics(processor: models.Processor) -> dict:
     if not processor.last_metrics:
         return {}
@@ -157,8 +185,13 @@ async def _load_appearance_items(
     date_from: Optional[str],
     date_to: Optional[str],
     person_id: Optional[int],
+    person_ids: Optional[list[int]],
+    query: Optional[str],
+    limit: Optional[int],
+    offset: int,
     session: AsyncSession,
-) -> Tuple[list[AppearanceItem], Optional[str], Optional[str], Optional[str]]:
+) -> Tuple[list[AppearanceItem], int, Optional[str], Optional[str], Optional[str]]:
+    person_filter_ids = _normalize_id_filter(person_id, person_ids)
     stmt = (
         select(models.Event, models.Person, models.Camera, models.Group)
         .join(models.EventType, models.Event.event_type_id == models.EventType.event_type_id)
@@ -166,11 +199,10 @@ async def _load_appearance_items(
         .outerjoin(models.Camera, models.Event.camera_id == models.Camera.camera_id)
         .outerjoin(models.Group, models.Camera.group_id == models.Group.group_id)
         .where(models.EventType.name == "face_recognized")
-        .order_by(models.Event.event_ts.asc())
     )
 
-    if person_id is not None:
-        stmt = stmt.where(models.Event.person_id == person_id)
+    if person_filter_ids is not None:
+        stmt = stmt.where(models.Event.person_id.in_(person_filter_ids))
 
     date_from_dt = _parse_iso_datetime(date_from)
     date_to_dt = _parse_iso_datetime(date_to)
@@ -178,6 +210,68 @@ async def _load_appearance_items(
         stmt = stmt.where(models.Event.event_ts >= date_from_dt)
     if date_to_dt:
         stmt = stmt.where(models.Event.event_ts <= date_to_dt)
+
+    normalized_query = (query or "").strip().lower()
+    if normalized_query:
+        person_search = func.lower(
+            cast(models.Person.person_id, String)
+            + " "
+            + func.coalesce(models.Person.last_name, "")
+            + " "
+            + func.coalesce(models.Person.first_name, "")
+            + " "
+            + func.coalesce(models.Person.middle_name, "")
+        )
+        camera_search = func.lower(
+            cast(models.Camera.camera_id, String)
+            + " "
+            + func.coalesce(models.Camera.name, "")
+            + " "
+            + func.coalesce(models.Camera.location, "")
+            + " "
+            + func.coalesce(models.Camera.ip_address, "")
+        )
+        group_search = func.lower(
+            cast(models.Group.group_id, String)
+            + " "
+            + func.coalesce(models.Group.name, "")
+            + " "
+            + func.coalesce(models.Group.description, "")
+        )
+        event_search = cast(models.Event.event_id, String)
+        similarity_score = func.greatest(
+            func.similarity(person_search, normalized_query),
+            func.similarity(camera_search, normalized_query),
+            func.similarity(group_search, normalized_query),
+        )
+        stmt = stmt.where(
+            or_(
+                person_search.contains(normalized_query),
+                person_search.op("%")(normalized_query),
+                camera_search.contains(normalized_query),
+                camera_search.op("%")(normalized_query),
+                group_search.contains(normalized_query),
+                group_search.op("%")(normalized_query),
+                event_search == normalized_query,
+                similarity_score >= 0.18,
+            )
+        )
+
+    total_stmt = select(func.count()).select_from(stmt.subquery())
+    total = int((await session.execute(total_stmt)).scalar_one())
+
+    if normalized_query:
+        stmt = stmt.order_by(
+            similarity_score.desc(),
+            models.Event.event_ts.desc(),
+            models.Event.event_id.desc(),
+        )
+    else:
+        stmt = stmt.order_by(models.Event.event_ts.desc(), models.Event.event_id.desc())
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
 
     rows = (await session.execute(stmt)).all()
     items: list[AppearanceItem] = []
@@ -197,11 +291,15 @@ async def _load_appearance_items(
         )
 
     person_label = None
-    if person_id is not None:
-        person = await session.get(models.Person, person_id)
-        person_label = _person_label(person) if person else f"ID {person_id}"
+    if person_filter_ids:
+        if len(person_filter_ids) == 1:
+            single_person_id = next(iter(person_filter_ids))
+            person = await session.get(models.Person, single_person_id)
+            person_label = _person_label(person) if person else f"ID {single_person_id}"
+        else:
+            person_label = f"Выбранные персоны: {len(person_filter_ids)}"
 
-    return items, person_label, date_from, date_to
+    return items, total, person_label, date_from, date_to
 
 
 def _appearance_row(index: int, item: AppearanceItem) -> list[str]:
@@ -233,6 +331,44 @@ def _fit_pdf_widths(headers: list[str], rows: list[list[str]], available_width: 
     return [available_width * (width / total) for width in raw]
 
 
+def _escape_pdf_text(value: object) -> str:
+    return escape(str(value)).replace("\n", "<br/>")
+
+
+def _official_summary_lines(
+    *,
+    title: str,
+    summary_lines: list[str],
+    rows_count: int,
+    generated_at: str | datetime | None,
+    period: str | None,
+) -> list[str]:
+    lines = [
+        "Система: CCTV Комплекс",
+        f"Документ: {title}",
+        f"Дата формирования: {_format_report_datetime(generated_at)}",
+        f"Период отчета: {period or 'за весь период'}",
+    ]
+    for line in summary_lines:
+        clean = line.strip()
+        if not clean:
+            continue
+        if clean.startswith(("Сформировано:", "Дата формирования:", "Период:", "Период отчета:")):
+            continue
+        lines.append(clean)
+    lines.append(f"Количество строк: {rows_count}")
+    lines.append("Основание: данные серверной части CCTV Комплекс.")
+    return lines
+
+
+def _signature_rows() -> list[tuple[str, str, str, str]]:
+    return [
+        ("Ответственный исполнитель", "____________________", "____________________", "«___» __________ 20___ г."),
+        ("Проверил", "____________________", "____________________", "«___» __________ 20___ г."),
+        ("Утвердил", "____________________", "____________________", "«___» __________ 20___ г."),
+    ]
+
+
 def _render_export_table(
     *,
     title: str,
@@ -241,46 +377,100 @@ def _render_export_table(
     rows: list[list[str]],
     fmt: str,
     filename_prefix: str,
+    generated_at: str | datetime | None = None,
+    period: str | None = None,
 ):
     filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     column_widths = _measure_columns(headers, rows)
+    official_lines = _official_summary_lines(
+        title=title,
+        summary_lines=summary_lines,
+        rows_count=len(rows),
+        generated_at=generated_at,
+        period=period,
+    )
+    max_columns = max(len(headers), 4)
 
     if fmt == "xlsx":
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, Side
         from openpyxl.utils import get_column_letter
-        from openpyxl.styles import Alignment, Font, PatternFill
 
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "Отчет"
+        sheet.page_setup.orientation = sheet.ORIENTATION_PORTRAIT
+        sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.page_margins.left = 0.79
+        sheet.page_margins.right = 0.39
+        sheet.page_margins.top = 0.59
+        sheet.page_margins.bottom = 0.59
+        sheet.oddHeader.center.text = "CCTV Комплекс"
+        sheet.oddFooter.center.text = "Страница &P из &N"
+
         sheet["A1"] = title
-        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-        sheet["A1"].font = Font(size=14, bold=True)
+        sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_columns)
+        sheet["A1"].font = Font(name="Times New Roman", size=14, bold=True)
         sheet["A1"].alignment = Alignment(horizontal="center")
 
         row_index = 2
-        for line in summary_lines:
-            sheet.cell(row=row_index, column=1, value=line)
-            sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=len(headers))
+        for line in official_lines:
+            cell = sheet.cell(row=row_index, column=1, value=line)
+            cell.font = Font(name="Times New Roman", size=10)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=max_columns)
             row_index += 1
 
+        row_index += 1
+        sheet.cell(row=row_index, column=1, value=f"Таблица 1 - {title}")
+        sheet.cell(row=row_index, column=1).font = Font(name="Times New Roman", size=10, bold=True)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=max_columns)
+        row_index += 1
+        table_header_row = row_index
+        thin = Side(style="thin", color="000000")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
         for index, header in enumerate(headers, start=1):
             cell = sheet.cell(row=row_index, column=index, value=header)
-            cell.fill = PatternFill("solid", fgColor="1E3A8A")
-            cell.font = Font(color="FFFFFF", bold=True)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.font = Font(name="Times New Roman", color="000000", size=9, bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
 
         for row in rows:
             row_index += 1
             for column, value in enumerate(row, start=1):
                 cell = sheet.cell(row=row_index, column=column, value=value)
+                cell.font = Font(name="Times New Roman", size=8)
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
+                cell.border = border
 
-        sheet.freeze_panes = sheet.cell(row=max(len(summary_lines) + 2, 2), column=1)
-        sheet.auto_filter.ref = f"A{len(summary_lines) + 1}:{get_column_letter(len(headers))}{max(row_index, len(summary_lines) + 1)}"
+        row_index += 2
+        sheet.cell(row=row_index, column=1, value="Заверяющая часть")
+        sheet.cell(row=row_index, column=1).font = Font(name="Times New Roman", size=10, bold=True)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=max_columns)
+        row_index += 1
+        for column, header in enumerate(("Должность", "Подпись", "Расшифровка подписи", "Дата"), start=1):
+            cell = sheet.cell(row=row_index, column=column, value=header)
+            cell.font = Font(name="Times New Roman", size=9, bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        for role, sign, name, date in _signature_rows():
+            row_index += 1
+            for column, value in enumerate((role, sign, name, date), start=1):
+                cell = sheet.cell(row=row_index, column=column, value=value)
+                cell.font = Font(name="Times New Roman", size=9)
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                cell.border = border
+
+        sheet.freeze_panes = sheet.cell(row=table_header_row + 1, column=1)
+        sheet.print_title_rows = f"{table_header_row}:{table_header_row}"
+        sheet.auto_filter.ref = f"A{table_header_row}:{get_column_letter(len(headers))}{max(table_header_row, table_header_row + len(rows))}"
 
         for index, width in enumerate(column_widths, start=1):
-            sheet.column_dimensions[get_column_letter(index)].width = width
+            sheet.column_dimensions[get_column_letter(index)].width = min(width, 32)
+        for index in range(len(column_widths) + 1, max_columns + 1):
+            sheet.column_dimensions[get_column_letter(index)].width = 24
 
         buffer = BytesIO()
         workbook.save(buffer)
@@ -294,41 +484,99 @@ def _render_export_table(
     if fmt == "docx":
         from docx import Document
         from docx.enum.section import WD_ORIENTATION
+        from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
         from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.shared import Mm
+        from docx.shared import Mm, Pt
 
         document = Document()
         section = document.sections[0]
-        section.orientation = WD_ORIENTATION.LANDSCAPE
-        section.page_width, section.page_height = section.page_height, section.page_width
-        section.top_margin = Mm(10)
-        section.bottom_margin = Mm(10)
-        section.left_margin = Mm(10)
+        section.orientation = WD_ORIENTATION.PORTRAIT
+        section.page_width = Mm(210)
+        section.page_height = Mm(297)
+        section.top_margin = Mm(15)
+        section.bottom_margin = Mm(15)
+        section.left_margin = Mm(20)
         section.right_margin = Mm(10)
-        heading = document.add_heading(title, level=1)
+        normal_style = document.styles["Normal"]
+        normal_style.font.name = "Times New Roman"
+        normal_style.font.size = Pt(10)
+        section.header.paragraphs[0].text = "CCTV Комплекс"
+        section.header.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        section.footer.paragraphs[0].text = "Отчет сформирован автоматически"
+        section.footer.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        heading = document.add_paragraph()
         heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for line in summary_lines:
-            document.add_paragraph(line)
+        heading_run = heading.add_run(title.upper())
+        heading_run.bold = True
+        heading_run.font.name = "Times New Roman"
+        heading_run.font.size = Pt(14)
+        for line in official_lines:
+            paragraph = document.add_paragraph(line)
+            paragraph.paragraph_format.space_after = Pt(0)
+            for run in paragraph.runs:
+                run.font.name = "Times New Roman"
+                run.font.size = Pt(10)
+
+        document.add_paragraph()
+        table_caption = document.add_paragraph(f"Таблица 1 - {title}")
+        table_caption.paragraph_format.space_after = Pt(3)
+        table_caption.runs[0].font.name = "Times New Roman"
+        table_caption.runs[0].font.size = Pt(10)
 
         table = document.add_table(rows=1, cols=len(headers))
         table.style = "Table Grid"
         table.autofit = False
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
         available = section.page_width - section.left_margin - section.right_margin
         total_width = max(sum(column_widths), 1)
         docx_widths = [int(available * (width / total_width)) for width in column_widths]
 
+        def _set_docx_cell(cell, value: str, *, bold: bool = False, align=WD_ALIGN_PARAGRAPH.LEFT, size: int = 8) -> None:
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            paragraph = cell.paragraphs[0]
+            paragraph.text = ""
+            paragraph.alignment = align
+            paragraph.paragraph_format.space_after = Pt(0)
+            run = paragraph.add_run(value)
+            run.bold = bold
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(size)
+
         for index, header in enumerate(headers):
-            run = table.rows[0].cells[index].paragraphs[0].add_run(header)
-            run.bold = True
             table.rows[0].cells[index].width = docx_widths[index]
-            table.rows[0].cells[index].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_docx_cell(table.rows[0].cells[index], header, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, size=8)
 
         for row in rows:
             cells = table.add_row().cells
             for index, value in enumerate(row):
-                cells[index].text = value
                 cells[index].width = docx_widths[index]
+                _set_docx_cell(cells[index], value, size=7 if len(headers) > 6 else 8)
+
+        document.add_paragraph()
+        sign_heading = document.add_paragraph("Заверяющая часть")
+        sign_heading.runs[0].bold = True
+        sign_heading.runs[0].font.name = "Times New Roman"
+        sign_heading.runs[0].font.size = Pt(10)
+        sign_table = document.add_table(rows=1, cols=4)
+        sign_table.style = "Table Grid"
+        sign_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for index, header in enumerate(("Должность", "Подпись", "Расшифровка подписи", "Дата")):
+            _set_docx_cell(sign_table.rows[0].cells[index], header, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER, size=8)
+        for role, sign, name, date in _signature_rows():
+            cells = sign_table.add_row().cells
+            for index, value in enumerate((role, sign, name, date)):
+                _set_docx_cell(cells[index], value, align=WD_ALIGN_PARAGRAPH.CENTER if index else WD_ALIGN_PARAGRAPH.LEFT, size=8)
+        for row in sign_table.rows:
+            for cell in row.cells:
+                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+        note = document.add_paragraph("Документ действителен после подписания ответственными лицами.")
+        note.paragraph_format.space_before = Pt(4)
+        for run in note.runs:
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(9)
 
         buffer = BytesIO()
         document.save(buffer)
@@ -340,7 +588,7 @@ def _render_export_table(
         )
 
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
@@ -357,44 +605,76 @@ def _render_export_table(
             pass
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["Heading1"], fontName=font_name, fontSize=16, alignment=1, spaceAfter=6)
-    text_style = ParagraphStyle("text", parent=styles["Normal"], fontName=font_name, fontSize=9, leading=11)
-    header_style = ParagraphStyle("header", parent=text_style, alignment=1, textColor=colors.white)
-    cell_style = ParagraphStyle("cell", parent=text_style, fontSize=8, leading=10)
-    table_data = [[Paragraph(header, header_style) for header in headers]]
+    title_style = ParagraphStyle("title", parent=styles["Heading1"], fontName=font_name, fontSize=14, alignment=1, spaceAfter=6, textColor=colors.black)
+    text_style = ParagraphStyle("text", parent=styles["Normal"], fontName=font_name, fontSize=9, leading=11, textColor=colors.black)
+    header_style = ParagraphStyle("header", parent=text_style, alignment=1, textColor=colors.black)
+    table_font_size = 6 if len(headers) > 7 else 7 if len(headers) > 5 else 8
+    cell_style = ParagraphStyle("cell", parent=text_style, fontSize=table_font_size, leading=table_font_size + 2)
+    table_data = [[Paragraph(_escape_pdf_text(header), header_style) for header in headers]]
     for row in rows:
-        table_data.append([Paragraph(value, cell_style) for value in row])
+        table_data.append([Paragraph(_escape_pdf_text(value), cell_style) for value in row])
 
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
-        pagesize=landscape(A4),
-        leftMargin=10 * mm,
+        pagesize=A4,
+        leftMargin=20 * mm,
         rightMargin=10 * mm,
-        topMargin=10 * mm,
-        bottomMargin=10 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
     )
-    elements = [Paragraph(title, title_style)]
-    elements.extend(Paragraph(line, text_style) for line in summary_lines)
+    elements = [Paragraph(_escape_pdf_text(title.upper()), title_style)]
+    elements.extend(Paragraph(_escape_pdf_text(line), text_style) for line in official_lines)
     elements.append(Spacer(1, 8))
-    available_width = landscape(A4)[0] - 20 * mm
+    elements.append(Paragraph(_escape_pdf_text(f"Таблица 1 - {title}"), text_style))
+    elements.append(Spacer(1, 3))
+    available_width = A4[0] - 30 * mm
     table = Table(table_data, colWidths=_fit_pdf_widths(headers, rows, available_width), repeatRows=1)
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                 ("FONTNAME", (0, 0), (-1, -1), font_name),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("FONTSIZE", (0, 0), (-1, -1), table_font_size),
                 ("ALIGN", (0, 0), (-1, 0), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D1D5DB")),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#F3F4F6")]),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.black),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.black),
             ]
         )
     )
     elements.append(table)
-    document.build(elements)
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("Заверяющая часть", text_style))
+    elements.append(Spacer(1, 3))
+    signature = Table(
+        [["Должность", "Подпись", "Расшифровка подписи", "Дата"], *[list(row) for row in _signature_rows()]],
+        colWidths=[50 * mm, 42 * mm, 48 * mm, 40 * mm],
+    )
+    signature.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), font_name),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.black),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("FONTNAME", (0, 0), (-1, 0), font_name),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.black),
+            ]
+        )
+    )
+    elements.append(signature)
+
+    def _footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont(font_name, 7)
+        canvas.drawString(doc.leftMargin, 7 * mm, "CCTV Комплекс")
+        canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 7 * mm, f"Страница {doc.page}")
+        canvas.restoreState()
+
+    document.build(elements, onFirstPage=_footer, onLaterPages=_footer)
     buffer.seek(0)
     return StreamingResponse(
         buffer,
@@ -417,7 +697,7 @@ def _dashboard_section_payload(section: str, dashboard: ReportsDashboard) -> tup
         return (
             "Отчет по группам камер",
             [f"Сформировано: {generated}", f"Групп в отчете: {len(dashboard.groups)}"],
-            ["Группа", "Камер", "Онлайн", "Оффлайн", "Событий", "Распознано", "Pending review", "Файлов", "Объем"],
+            ["Группа", "Камер", "Онлайн", "Оффлайн", "Событий", "Распознано", "Ожидают ревью", "Файлов", "Объем"],
             [[item.name, str(item.camera_count), str(item.online_cameras), str(item.offline_cameras), str(item.event_count), str(item.recognized_count), str(item.pending_reviews), str(item.recordings_count), _format_bytes(item.recordings_size_bytes)] for item in dashboard.groups],
             "group-report",
         )
@@ -425,7 +705,7 @@ def _dashboard_section_payload(section: str, dashboard: ReportsDashboard) -> tup
         return (
             "Отчет по камерам",
             [f"Сформировано: {generated}", f"Камер в отчете: {len(dashboard.cameras)}"],
-            ["Камера", "Группа", "Тип", "Процессор", "Онлайн", "PTZ", "Событий", "Motion", "Unknown", "Архив", "Последнее событие"],
+            ["Камера", "Группа", "Тип", "Процессор", "Онлайн", "PTZ", "Событий", "Движение", "Неизвестные", "Архив", "Последнее событие"],
             [[item.name, item.group_name or "-", item.connection_kind, item.assigned_processor or "-", "Да" if item.is_online else "Нет", "Да" if item.supports_ptz else "Нет", str(item.event_count), str(item.motion_count), str(item.unknown_count), _format_bytes(item.recordings_size_bytes), _format_ts(item.last_event_ts)] for item in dashboard.cameras],
             "camera-report",
         )
@@ -433,14 +713,14 @@ def _dashboard_section_payload(section: str, dashboard: ReportsDashboard) -> tup
         return (
             "Отчет по процессорам",
             [f"Сформировано: {generated}", f"Процессоров в отчете: {len(dashboard.processors)}"],
-            ["Процессор", "Статус", "IP", "Версия", "Камер", "Событий", "Файлов", "CPU", "RAM", "GPU", "Uptime"],
+            ["Процессор", "Статус", "IP", "Версия", "Камер", "Событий", "Файлов", "CPU", "RAM", "GPU", "Время работы"],
             [[item.name, "Онлайн" if item.is_online else item.status, item.ip_address or "-", item.version or "-", str(item.assigned_cameras), str(item.event_count), str(item.recordings_count), f"{item.cpu_percent}%" if item.cpu_percent is not None else "-", f"{item.ram_percent}%" if item.ram_percent is not None else "-", f"{item.gpu_util_percent}%" if item.gpu_util_percent is not None else "-", _format_duration(item.uptime_seconds)] for item in dashboard.processors],
             "processor-report",
         )
     if section == "events":
         return (
             "Отчет по событиям и ревью",
-            [f"Сформировано: {generated}", f"Всего событий: {dashboard.events.total_events}", f"Pending review: {dashboard.events.pending_reviews}", f"Среднее время ревью: {_format_duration(dashboard.events.average_review_seconds)}"],
+            [f"Сформировано: {generated}", f"Всего событий: {dashboard.events.total_events}", f"Ожидают ревью: {dashboard.events.pending_reviews}", f"Среднее время ревью: {_format_duration(dashboard.events.average_review_seconds)}"],
             ["Тип события", "Количество"],
             [[item.label, str(item.value)] for item in dashboard.events.events_by_type],
             "events-report",
@@ -469,9 +749,15 @@ async def reports_dashboard(
     date_from: Optional[str] = Query(default=None),
     date_to: Optional[str] = Query(default=None),
     group_id: Optional[int] = Query(default=None),
+    group_ids: Optional[list[int]] = Query(default=None),
     camera_id: Optional[int] = Query(default=None),
+    camera_ids: Optional[list[int]] = Query(default=None),
     processor_id: Optional[int] = Query(default=None),
+    processor_ids: Optional[list[int]] = Query(default=None),
     user_id: Optional[int] = Query(default=None),
+    user_ids: Optional[list[int]] = Query(default=None),
+    person_id: Optional[int] = Query(default=None),
+    person_ids: Optional[list[int]] = Query(default=None),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> ReportsDashboard:
@@ -480,10 +766,15 @@ async def reports_dashboard(
 
     date_from_dt = _parse_iso_datetime(date_from)
     date_to_dt = _parse_iso_datetime(date_to)
+    group_filter_ids = _normalize_id_filter(group_id, group_ids)
+    camera_filter_ids = _normalize_id_filter(camera_id, camera_ids)
+    processor_filter_ids = _normalize_id_filter(processor_id, processor_ids)
+    user_filter_ids = _normalize_id_filter(user_id, user_ids)
+    person_filter_ids = _normalize_id_filter(person_id, person_ids)
 
     users = (await session.execute(select(models.User).order_by(models.User.login.asc()))).scalars().all()
     users_by_id = {user.user_id: user for user in users}
-    filtered_users = [user for user in users if user_id is None or user.user_id == user_id]
+    filtered_users = [user for user in users if user_filter_ids is None or user.user_id in user_filter_ids]
 
     groups = (await session.execute(select(models.Group).order_by(models.Group.name.asc()))).scalars().all()
     groups_by_id = {group.group_id: group for group in groups}
@@ -508,11 +799,11 @@ async def reports_dashboard(
 
     visible_cameras: list[models.Camera] = []
     for camera in cameras:
-        if group_id is not None and camera.group_id != group_id:
+        if group_filter_ids is not None and camera.group_id not in group_filter_ids:
             continue
-        if camera_id is not None and camera.camera_id != camera_id:
+        if camera_filter_ids is not None and camera.camera_id not in camera_filter_ids:
             continue
-        if processor_id is not None and processor_id not in camera_to_processor_ids.get(camera.camera_id, []):
+        if processor_filter_ids is not None and not processor_filter_ids.intersection(camera_to_processor_ids.get(camera.camera_id, [])):
             continue
         visible_cameras.append(camera)
 
@@ -522,16 +813,19 @@ async def reports_dashboard(
     visible_groups = [
         group
         for group in groups
-        if ((group_id is None and any(camera.group_id == group.group_id for camera in visible_cameras)) or (group_id is not None and group.group_id == group_id))
+        if (
+            (group_filter_ids is None and any(camera.group_id == group.group_id for camera in visible_cameras))
+            or (group_filter_ids is not None and group.group_id in group_filter_ids)
+        )
     ]
 
     visible_processors: list[models.Processor] = []
     for processor in processors:
-        if processor_id is not None and processor.processor_id != processor_id:
+        if processor_filter_ids is not None and processor.processor_id not in processor_filter_ids:
             continue
-        if camera_id is not None and camera_id not in processor_to_camera_ids.get(processor.processor_id, []):
+        if camera_filter_ids is not None and not camera_filter_ids.intersection(processor_to_camera_ids.get(processor.processor_id, [])):
             continue
-        if group_id is not None:
+        if group_filter_ids is not None:
             assigned_camera_ids = processor_to_camera_ids.get(processor.processor_id, [])
             if not any(visible_camera_map.get(cid) for cid in assigned_camera_ids):
                 continue
@@ -549,8 +843,10 @@ async def reports_dashboard(
         event_stmt = event_stmt.where(models.Event.event_ts >= date_from_dt)
     if date_to_dt:
         event_stmt = event_stmt.where(models.Event.event_ts <= date_to_dt)
-    if processor_id is not None:
-        event_stmt = event_stmt.where(models.Event.processor_id == processor_id)
+    if processor_filter_ids is not None:
+        event_stmt = event_stmt.where(models.Event.processor_id.in_(processor_filter_ids))
+    if person_filter_ids is not None:
+        event_stmt = event_stmt.where(models.Event.person_id.in_(person_filter_ids))
     events = (await session.execute(event_stmt)).scalars().all()
     event_ids = [event.event_id for event in events]
 
@@ -570,8 +866,8 @@ async def reports_dashboard(
         auth_stmt = auth_stmt.where(models.AuthEvent.occurred_at >= date_from_dt)
     if date_to_dt:
         auth_stmt = auth_stmt.where(models.AuthEvent.occurred_at <= date_to_dt)
-    if user_id is not None:
-        auth_stmt = auth_stmt.where(models.AuthEvent.user_id == user_id)
+    if user_filter_ids is not None:
+        auth_stmt = auth_stmt.where(models.AuthEvent.user_id.in_(user_filter_ids))
     auth_events = (await session.execute(auth_stmt)).scalars().all()
 
     audit_stmt = select(models.AuditLog).order_by(models.AuditLog.changed_at.desc())
@@ -579,8 +875,8 @@ async def reports_dashboard(
         audit_stmt = audit_stmt.where(models.AuditLog.changed_at >= date_from_dt)
     if date_to_dt:
         audit_stmt = audit_stmt.where(models.AuditLog.changed_at <= date_to_dt)
-    if user_id is not None:
-        audit_stmt = audit_stmt.where(models.AuditLog.changed_by == user_id)
+    if user_filter_ids is not None:
+        audit_stmt = audit_stmt.where(models.AuditLog.changed_by.in_(user_filter_ids))
     audit_logs = (await session.execute(audit_stmt)).scalars().all()
 
     recording_rows = (
@@ -640,7 +936,7 @@ async def reports_dashboard(
                 total_actions=stats.get("total_actions", 0),
             )
             for user_key, stats in user_stat_map.items()
-            if user_id is None or user_key == user_id
+            if user_filter_ids is None or user_key in user_filter_ids
         ],
         key=lambda item: (-item.total_actions, item.user_label),
     )[:10]
@@ -860,7 +1156,7 @@ async def reports_dashboard(
                 total=sum(stats.values()),
             )
             for reviewer_id, stats in reviewer_counter.items()
-            if user_id is None or reviewer_id == user_id
+            if user_filter_ids is None or reviewer_id in user_filter_ids
         ],
         key=lambda item: (-item.total, item.user_label),
     )[:10]
@@ -915,9 +1211,15 @@ async def reports_dashboard(
         date_from=date_from,
         date_to=date_to,
         group_id=group_id,
+        group_ids=sorted(group_filter_ids) if group_filter_ids else [],
         camera_id=camera_id,
+        camera_ids=sorted(camera_filter_ids) if camera_filter_ids else [],
         processor_id=processor_id,
+        processor_ids=sorted(processor_filter_ids) if processor_filter_ids else [],
         user_id=user_id,
+        user_ids=sorted(user_filter_ids) if user_filter_ids else [],
+        person_id=person_id,
+        person_ids=sorted(person_filter_ids) if person_filter_ids else [],
         user_actions=user_actions_report,
         groups=sorted(group_items, key=lambda item: (-item.event_count, item.name)),
         cameras=sorted(camera_items, key=lambda item: (-item.event_count, item.name)),
@@ -963,9 +1265,15 @@ async def export_dashboard_section(
     date_from: Optional[str] = Query(default=None),
     date_to: Optional[str] = Query(default=None),
     group_id: Optional[int] = Query(default=None),
+    group_ids: Optional[list[int]] = Query(default=None),
     camera_id: Optional[int] = Query(default=None),
+    camera_ids: Optional[list[int]] = Query(default=None),
     processor_id: Optional[int] = Query(default=None),
+    processor_ids: Optional[list[int]] = Query(default=None),
     user_id: Optional[int] = Query(default=None),
+    user_ids: Optional[list[int]] = Query(default=None),
+    person_id: Optional[int] = Query(default=None),
+    person_ids: Optional[list[int]] = Query(default=None),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -977,9 +1285,15 @@ async def export_dashboard_section(
         date_from=date_from,
         date_to=date_to,
         group_id=group_id,
+        group_ids=group_ids,
         camera_id=camera_id,
+        camera_ids=camera_ids,
         processor_id=processor_id,
+        processor_ids=processor_ids,
         user_id=user_id,
+        user_ids=user_ids,
+        person_id=person_id,
+        person_ids=person_ids,
         session=session,
         current_user=current_user,
     )
@@ -991,6 +1305,8 @@ async def export_dashboard_section(
         rows=rows,
         fmt=fmt,
         filename_prefix=prefix,
+        generated_at=dashboard.generated_at,
+        period=_format_period(dashboard.date_from, dashboard.date_to),
     )
 
 
@@ -999,24 +1315,37 @@ async def appearances_report(
     date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
     date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
     person_id: Optional[int] = Query(default=None),
+    person_ids: Optional[list[int]] = Query(default=None),
+    q: Optional[str] = Query(default=None, max_length=160),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> AppearanceReport:
     if not is_at_least_user(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
-    items, _, _, _ = await _load_appearance_items(
+    items, total, _, _, _ = await _load_appearance_items(
         date_from=date_from,
         date_to=date_to,
         person_id=person_id,
+        person_ids=person_ids,
+        query=q,
+        limit=limit,
+        offset=offset,
         session=session,
     )
+    person_filter_ids = _normalize_id_filter(person_id, person_ids)
 
     return AppearanceReport(
         date_from=date_from,
         date_to=date_to,
         person_id=person_id,
-        total=len(items),
+        person_ids=sorted(person_filter_ids) if person_filter_ids else [],
+        total=total,
+        offset=offset,
+        limit=limit,
+        has_more=offset + len(items) < total,
         items=items,
     )
 
@@ -1027,6 +1356,7 @@ async def appearances_report_export(
     date_from: Optional[str] = Query(default=None, description="ISO datetime start"),
     date_to: Optional[str] = Query(default=None, description="ISO datetime end"),
     person_id: Optional[int] = Query(default=None),
+    person_ids: Optional[list[int]] = Query(default=None),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -1037,26 +1367,30 @@ async def appearances_report_export(
     if fmt not in {"pdf", "xlsx", "docx"}:
         raise HTTPException(status_code=400, detail="format must be pdf, xlsx or docx")
 
-    items, person_label, date_from_value, date_to_value = await _load_appearance_items(
+    items, _, person_label, date_from_value, date_to_value = await _load_appearance_items(
         date_from=date_from,
         date_to=date_to,
         person_id=person_id,
+        person_ids=person_ids,
+        query=None,
+        limit=None,
+        offset=0,
         session=session,
     )
 
     period = _format_period(date_from_value, date_to_value)
     subject = person_label or "Все персоны"
-    generated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    generated_at = datetime.now()
     headers = ["№", "Время", "Камера", "Локация", "Группа", "Персона", "Уверенность"]
     return _render_export_table(
         title="Отчет по появлениям",
         summary_lines=[
-            f"Период: {period}",
             f"Персона: {subject}",
-            f"Сформировано: {generated_at}",
         ],
         headers=headers,
         rows=[_appearance_row(index, item) for index, item in enumerate(items, start=1)],
         fmt=fmt,
         filename_prefix="appearance-report",
+        generated_at=generated_at,
+        period=period,
     )

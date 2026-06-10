@@ -12,6 +12,7 @@ alembic==1.14.0
 pyotp==2.9.0
 numpy>=1.24,<2
 opencv-python-headless>=4.8,<4.13
+imageio-ffmpeg>=0.6.0,<0.7
 onnxruntime>=1.15.1,<1.16
 pillow==12.2.0
 bcrypt==4.0.1

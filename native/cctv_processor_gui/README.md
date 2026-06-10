@@ -6,7 +6,7 @@ GUI не переписывает Python-детекцию. Он управляе
 
 - `processor_config.json`;
 - `CCTV-Processor-Runtime --headless`;
-- `CCTV-Processor-CLI ...`;
+- `CCTV-Processor-Runtime --cli ...`;
 - `processor.log`.
 
 ## Runtime Lookup

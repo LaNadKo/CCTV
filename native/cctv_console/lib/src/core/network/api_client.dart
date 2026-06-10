@@ -25,6 +25,20 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+class CameraStreamSource {
+  const CameraStreamSource({
+    required this.uri,
+    required this.headers,
+    required this.kind,
+  });
+
+  final Uri uri;
+  final Map<String, String> headers;
+  final String kind;
+
+  bool get isDirect => kind == 'processor_direct';
+}
+
 class ApiClient {
   ApiClient({required this.baseUrlProvider, http.Client? client})
     : _client = client ?? http.Client();
@@ -46,6 +60,21 @@ class ApiClient {
     return filteredQuery.isEmpty
         ? uri
         : uri.replace(queryParameters: filteredQuery);
+  }
+
+  Uri uriWithQuery(String path, Iterable<MapEntry<String, String?>> query) {
+    final cleanBase = baseUrlProvider().replaceAll(RegExp(r'/+$'), '');
+    final cleanPath = path.startsWith('/') ? path : '/$path';
+    final uri = Uri.parse('$cleanBase$cleanPath');
+    final parts = <String>[];
+    for (final entry in query) {
+      final value = entry.value;
+      if (value == null || value.isEmpty) continue;
+      parts.add(
+        '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(value)}',
+      );
+    }
+    return parts.isEmpty ? uri : uri.replace(query: parts.join('&'));
   }
 
   Future<T> get<T>(
@@ -166,6 +195,39 @@ class ApiClient {
     return file;
   }
 
+  Future<File> downloadFileWithQuery(
+    String path, {
+    required String token,
+    Iterable<MapEntry<String, String?>> query = const [],
+    required String filename,
+  }) async {
+    late http.Response response;
+    try {
+      response = await _client
+          .get(
+            uriWithQuery(path, query),
+            headers: {
+              'Accept': 'application/octet-stream',
+              'Authorization': 'Bearer $token',
+            },
+          )
+          .timeout(const Duration(seconds: 120));
+    } catch (_) {
+      throw ApiException(
+        'Не удалось скачать файл с backend (${baseUrlProvider()})',
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    final directory = await _downloadDirectory();
+    await directory.create(recursive: true);
+    final safeName = filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final file = File('${directory.path}${Platform.pathSeparator}$safeName');
+    await file.writeAsBytes(response.bodyBytes, flush: true);
+    return file;
+  }
+
   Future<Object?> getJson(
     String path, {
     String? token,
@@ -179,6 +241,33 @@ class ApiClient {
       timeout: timeout,
       decoder: (json) => json,
     );
+  }
+
+  Future<Object?> getJsonWithQuery(
+    String path, {
+    String? token,
+    Iterable<MapEntry<String, String?>> query = const [],
+    Duration? timeout,
+  }) async {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+    };
+    late http.Response response;
+    try {
+      response = await _client
+          .get(uriWithQuery(path, query), headers: headers)
+          .timeout(timeout ?? _requestTimeout);
+    } catch (_) {
+      throw ApiException(
+        'Не удалось подключиться к backend (${baseUrlProvider()})',
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(_readError(response), statusCode: response.statusCode);
+    }
+    if (response.bodyBytes.isEmpty) return null;
+    return jsonDecode(utf8.decode(response.bodyBytes));
   }
 
   Future<List<Map<String, dynamic>>> getJsonList(
@@ -393,8 +482,16 @@ class ApiClient {
     return status['enabled'] == true;
   }
 
-  Future<bool> disableTotp(String token) async {
-    final status = await postJson('/auth/totp/disable', token: token);
+  Future<bool> disableTotp(
+    String token, {
+    required String currentPassword,
+    required String code,
+  }) async {
+    final status = await postJson(
+      '/auth/totp/disable',
+      token: token,
+      body: {'current_password': currentPassword, 'code': code},
+    );
     return status['enabled'] == true;
   }
 
@@ -431,6 +528,19 @@ class ApiClient {
     );
   }
 
+  Future<List<Map<String, dynamic>>> listReviewCandidates(
+    String token,
+    int eventId, {
+    int limit = 3,
+  }) {
+    return getJsonList(
+      '/detections/events/$eventId/candidates',
+      token: token,
+      query: {'limit': '$limit'},
+      timeout: const Duration(seconds: 8),
+    );
+  }
+
   Future<void> ptzRelative(
     String token,
     int cameraId, {
@@ -451,17 +561,20 @@ class ApiClient {
     double pan = 0,
     double tilt = 0,
     double zoom = 0,
-    double? timeoutSeconds = 0.45,
+    double? timeoutSeconds = 0.25,
   }) {
+    final body = <String, dynamic>{
+      'pan': pan,
+      'tilt': tilt,
+      'zoom': zoom,
+    };
+    if (timeoutSeconds != null) {
+      body['timeout_seconds'] = timeoutSeconds;
+    }
     return postVoid(
       '/admin/cameras/$cameraId/onvif/ptz/continuous',
       token: token,
-      body: {
-        'pan': pan,
-        'tilt': tilt,
-        'zoom': zoom,
-        if (timeoutSeconds != null) 'timeout_seconds': timeoutSeconds,
-      },
+      body: body,
     );
   }
 
@@ -473,15 +586,15 @@ class ApiClient {
     double? zoom,
     double? speed,
   }) {
+    final body = <String, dynamic>{};
+    if (pan != null) body['pan'] = pan;
+    if (tilt != null) body['tilt'] = tilt;
+    if (zoom != null) body['zoom'] = zoom;
+    if (speed != null) body['speed'] = speed;
     return postVoid(
       '/admin/cameras/$cameraId/onvif/ptz/absolute',
       token: token,
-      body: {
-        if (pan != null) 'pan': pan,
-        if (tilt != null) 'tilt': tilt,
-        if (zoom != null) 'zoom': zoom,
-        if (speed != null) 'speed': speed,
-      },
+      body: body,
     );
   }
 
@@ -550,14 +663,16 @@ class ApiClient {
     int? personId,
     String? note,
   }) {
+    final body = <String, dynamic>{'status': status};
+    if (personId != null) body['person_id'] = personId;
+    final trimmedNote = note?.trim();
+    if (trimmedNote != null && trimmedNote.isNotEmpty) {
+      body['note'] = trimmedNote;
+    }
     return postVoid(
       '/detections/events/$eventId/review',
       token: token,
-      body: {
-        'status': status,
-        if (personId != null) 'person_id': personId,
-        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
-      },
+      body: body,
     );
   }
 
@@ -565,11 +680,63 @@ class ApiClient {
     return postVoid('/detections/review/reject-all', token: token);
   }
 
-  Uri cameraStreamUri(int cameraId, {bool annotate = true, int maxFps = 20}) {
+  Uri cameraStreamUri(int cameraId, {bool annotate = true, int maxFps = 60}) {
     return uri('/cameras/$cameraId/stream', {
       'annotate': annotate ? 'true' : 'false',
       'max_fps': '$maxFps',
     });
+  }
+
+  Future<List<CameraStreamSource>> cameraStreamSources(
+    String token,
+    int cameraId, {
+    bool annotate = true,
+    int maxFps = 60,
+  }) async {
+    final payload = await getJson(
+      '/cameras/$cameraId/stream-source',
+      token: token,
+      query: {
+        'annotate': annotate ? 'true' : 'false',
+        'max_fps': '$maxFps',
+      },
+      timeout: const Duration(seconds: 5),
+    );
+    final map = _asMap(payload);
+    final rawSources = map['sources'];
+    final sources = <CameraStreamSource>[];
+    if (rawSources is List) {
+      for (final item in rawSources) {
+        final source = _asMap(item);
+        final rawUrl = '${source['url'] ?? ''}'.trim();
+        if (rawUrl.isEmpty) continue;
+        final parsed = Uri.tryParse(rawUrl);
+        final sourceUri =
+            parsed != null && parsed.hasScheme ? parsed : uri(rawUrl);
+        final headers = <String, String>{};
+        final rawHeaders = source['headers'];
+        if (rawHeaders is Map) {
+          for (final entry in rawHeaders.entries) {
+            headers['${entry.key}'] = '${entry.value}';
+          }
+        }
+        sources.add(
+          CameraStreamSource(
+            uri: sourceUri,
+            headers: headers,
+            kind: '${source['kind'] ?? 'backend_proxy'}',
+          ),
+        );
+      }
+    }
+    if (sources.isNotEmpty) return sources;
+    return [
+      CameraStreamSource(
+        uri: cameraStreamUri(cameraId, annotate: annotate, maxFps: maxFps),
+        headers: const {},
+        kind: 'backend_proxy',
+      ),
+    ];
   }
 
   Uri cameraSnapshotUri(int cameraId, {bool annotate = false}) {
@@ -583,7 +750,12 @@ class ApiClient {
   }
 
   Uri recordingMjpegUri(int recordingId, String mediaToken) {
-    return uri('/recordings/file/$recordingId/mjpeg', {'token': mediaToken});
+    return uri('/recordings/file/$recordingId/mjpeg', {
+      'token': mediaToken,
+      'fps': '8',
+      'max_width': '960',
+      'quality': '72',
+    });
   }
 
   Uri eventSnapshotUri(int eventId, String mediaToken) {
@@ -613,7 +785,9 @@ class ApiClient {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final body = await response.stream.bytesToString();
       throw ApiException(
-        body.isEmpty ? 'Live-поток вернул HTTP ${response.statusCode}' : body,
+        body.isEmpty
+            ? 'Эфирный поток вернул HTTP ${response.statusCode}'
+            : body,
         statusCode: response.statusCode,
       );
     }
@@ -625,10 +799,10 @@ class ApiClient {
       final frame = _firstJpeg(bytes);
       if (frame != null) return frame;
       if (bytes.length > 8 * 1024 * 1024) {
-        throw ApiException('Live-поток не отдал JPEG-кадр');
+        throw ApiException('Эфирный поток не отдал JPEG-кадр');
       }
     }
-    throw ApiException('Live-поток завершился без JPEG-кадра');
+    throw ApiException('Эфирный поток завершился без JPEG-кадра');
   }
 
   Future<Map<String, dynamic>> uploadPersonPhoto(
@@ -768,23 +942,35 @@ class ApiClient {
     String? dateFrom,
     String? dateTo,
     int? groupId,
+    Iterable<int> groupIds = const [],
     int? cameraId,
+    Iterable<int> cameraIds = const [],
     int? processorId,
+    Iterable<int> processorIds = const [],
     int? userId,
+    Iterable<int> userIds = const [],
+    int? personId,
+    Iterable<int> personIds = const [],
   }) {
-    return downloadFile(
+    return downloadFileWithQuery(
       '/reports/export',
       token: token,
-      query: {
-        'section': section,
-        'format': format,
-        'date_from': dateFrom,
-        'date_to': dateTo,
-        if (groupId != null) 'group_id': '$groupId',
-        if (cameraId != null) 'camera_id': '$cameraId',
-        if (processorId != null) 'processor_id': '$processorId',
-        if (userId != null) 'user_id': '$userId',
-      },
+      query: [
+        MapEntry('section', section),
+        MapEntry('format', format),
+        MapEntry('date_from', dateFrom),
+        MapEntry('date_to', dateTo),
+        if (groupId != null) MapEntry('group_id', '$groupId'),
+        for (final id in groupIds) MapEntry('group_ids', '$id'),
+        if (cameraId != null) MapEntry('camera_id', '$cameraId'),
+        for (final id in cameraIds) MapEntry('camera_ids', '$id'),
+        if (processorId != null) MapEntry('processor_id', '$processorId'),
+        for (final id in processorIds) MapEntry('processor_ids', '$id'),
+        if (userId != null) MapEntry('user_id', '$userId'),
+        for (final id in userIds) MapEntry('user_ids', '$id'),
+        if (personId != null) MapEntry('person_id', '$personId'),
+        for (final id in personIds) MapEntry('person_ids', '$id'),
+      ],
       filename: 'cctv-$section.$format',
     );
   }
@@ -793,18 +979,20 @@ class ApiClient {
     String token, {
     required String format,
     int? personId,
+    Iterable<int> personIds = const [],
     String? dateFrom,
     String? dateTo,
   }) {
-    return downloadFile(
+    return downloadFileWithQuery(
       '/reports/appearances/export',
       token: token,
-      query: {
-        'format': format,
-        if (personId != null) 'person_id': '$personId',
-        'date_from': dateFrom,
-        'date_to': dateTo,
-      },
+      query: [
+        MapEntry('format', format),
+        if (personId != null) MapEntry('person_id', '$personId'),
+        for (final id in personIds) MapEntry('person_ids', '$id'),
+        MapEntry('date_from', dateFrom),
+        MapEntry('date_to', dateTo),
+      ],
       filename: 'cctv-appearances.$format',
     );
   }
@@ -903,10 +1091,67 @@ class ApiClient {
       if (detail is String && detail.trim().isNotEmpty) {
         return _safeErrorText(detail, response.statusCode);
       }
+      if (detail is List && detail.isNotEmpty) {
+        return _safeErrorText(
+          _validationErrorText(detail),
+          response.statusCode,
+        );
+      }
     } catch (_) {
       return _safeErrorText(text, response.statusCode);
     }
     return _safeErrorText(text, response.statusCode);
+  }
+
+  static String _validationErrorText(List<dynamic> errors) {
+    final messages = <String>[];
+    for (final item in errors) {
+      if (item is! Map) continue;
+      final loc = item['loc'];
+      final field = loc is List && loc.isNotEmpty ? '${loc.last}' : '';
+      final label = _fieldLabel(field);
+      final type = '${item['type'] ?? ''}'.toLowerCase();
+      final ctx = item['ctx'];
+      final maxLength = ctx is Map ? ctx['max_length'] : null;
+      final ge = ctx is Map ? ctx['ge'] : null;
+      final le = ctx is Map ? ctx['le'] : null;
+      String message;
+      if (type.contains('string_too_long')) {
+        message = '$label: не более ${maxLength ?? 'допустимого числа'} символов';
+      } else if (type.contains('string_too_short')) {
+        message = '$label: заполните поле';
+      } else if (type.contains('int_parsing')) {
+        message = '$label: введите число';
+      } else if (type.contains('greater_than_equal')) {
+        message = '$label: значение должно быть не меньше $ge';
+      } else if (type.contains('less_than_equal')) {
+        message = '$label: значение должно быть не больше $le';
+      } else {
+        message = '$label: проверьте значение';
+      }
+      messages.add(message);
+    }
+    if (messages.isEmpty) return 'Проверьте введённые данные';
+    return 'Проверьте поля. ${messages.join('; ')}';
+  }
+
+  static String _fieldLabel(String field) {
+    switch (field) {
+      case 'host':
+        return 'IP адрес камеры';
+      case 'port':
+        return 'Порт';
+      case 'name':
+        return 'Название';
+      case 'location':
+        return 'Локация';
+      case 'username':
+        return 'Логин';
+      case 'password':
+        return 'Пароль';
+      default:
+        return field.isEmpty ? 'Поле' : field;
+    }
   }
 
   static String _safeErrorText(String text, int statusCode) {

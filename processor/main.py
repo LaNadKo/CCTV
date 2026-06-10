@@ -3,18 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from typing import Any
 from processor.config import settings
 from processor.client import BackendClient
-from processor.camera_utils import resolve_source
+from processor.camera_utils import resolve_source, source_candidates
 from processor.detection import CameraWorker
 from processor.media_server import ProcessorMediaServer
 from processor.monitor import SystemMonitor, get_system_info
 from processor.networking import detect_advertised_ip
 from processor.paths import ensure_media_dirs
-from processor.runtime import RuntimeLock
+from processor.runtime import RuntimeLock, export_env, load_config, normalize_config, save_config
 from cctv_ai.runtime_env import log_acceleration_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -44,12 +46,13 @@ class ProcessorService:
         self._advertised_ip = detect_advertised_ip(settings.advertised_ip, backend_url=settings.backend_url)
         if self._advertised_ip:
             self._system_info["advertised_ip"] = self._advertised_ip
+        self._refresh_detection_capabilities()
         self._gallery: list[dict] = []
         self._gallery_loaded_at = 0.0
         self._gallery_refresh_seconds = 180.0
         self._media_server = ProcessorMediaServer(
             service=self,
-            host="0.0.0.0",
+            host="0.0.0.0",  # nosec B104
             port=settings.media_port,
             media_token=settings.media_token,
         )
@@ -67,7 +70,7 @@ class ProcessorService:
                 result = await self.client.register(
                     settings.processor_name,
                     {
-                        **self._system_info,
+                        **self._refresh_detection_capabilities(),
                         "max_workers": settings.max_workers,
                         "media_port": settings.media_port,
                         "media_token": settings.media_token,
@@ -107,7 +110,7 @@ class ProcessorService:
                     hostname=self._system_info.get("hostname"),
                     os_info=self._system_info.get("os"),
                     version="1.0.0",
-                    capabilities=self._system_info,
+                    capabilities=self._refresh_detection_capabilities(),
                     media_port=settings.media_port,
                     media_token=settings.media_token,
                 )
@@ -137,6 +140,16 @@ class ProcessorService:
         while self._running:
             try:
                 metrics = self._monitor.collect(len(self.workers))
+                camera_bottlenecks = {
+                    str(camera_id): worker.bottleneck_text()
+                    for camera_id, worker in self.workers.items()
+                }
+                if camera_bottlenecks:
+                    metrics.camera_bottlenecks = camera_bottlenecks
+                    metrics.bottleneck = max(
+                        camera_bottlenecks.items(),
+                        key=lambda item: item[1],
+                    )[1]
                 await self.client.heartbeat(
                     self.processor_id,
                     "online",
@@ -146,7 +159,7 @@ class ProcessorService:
                     hostname=self._system_info.get("hostname"),
                     os_info=self._system_info.get("os"),
                     version="1.0.0",
-                    capabilities=self._system_info,
+                    capabilities=self._refresh_detection_capabilities(),
                     media_port=settings.media_port,
                     media_token=settings.media_token,
                 )
@@ -172,7 +185,8 @@ class ProcessorService:
                 self._gallery_loaded_at = now
             for a in assignments:
                 cid = a["camera_id"]
-                source = resolve_source(a)
+                candidates = source_candidates(a)
+                source = candidates[0] if candidates else resolve_source(a)
                 if source is None:
                     logger.warning("No source for camera %d", cid)
                     continue
@@ -185,7 +199,7 @@ class ProcessorService:
                     logger.info("Started worker for camera %d", cid)
                     continue
 
-                if worker.source != source:
+                if worker.source not in candidates:
                     worker.stop()
                     replacement = CameraWorker(a, self.client, source)
                     await replacement.set_gallery(self._gallery)
@@ -244,7 +258,20 @@ class ProcessorService:
                 for worker in self.workers.values():
                     await worker.set_gallery(self._gallery)
                 result = {"message": "Gallery refreshed", "entries": len(self._gallery)}
-            elif command_type == "shutdown":
+            elif command_type == "apply_detection_settings":
+                applied = await self._apply_detection_settings(command.get("payload") or {})
+                await self._restart_workers()
+                await self._sync_assignments()
+                result = {
+                    "message": "Detection settings applied",
+                    "active_cameras": len(self.workers),
+                    "settings": applied,
+                }
+            elif command_type == "restart_runtime":
+                await self._restart_workers()
+                await self._sync_assignments()
+                result = {"message": "Runtime workers restarted", "active_cameras": len(self.workers)}
+            elif command_type in {"stop_runtime", "shutdown"}:
                 result = {"message": "Processor shutdown requested"}
                 await self.client.complete_command(self.processor_id, command_id, "succeeded", result=result)
                 await self.stop()
@@ -264,6 +291,54 @@ class ProcessorService:
     async def _restart_workers(self):
         await self._stop_all_workers()
         self._gallery_loaded_at = 0.0
+
+    def _refresh_detection_capabilities(self) -> dict:
+        self._system_info["detection_settings"] = {
+            "max_workers": int(settings.max_workers),
+            "motion_threshold": float(settings.motion_threshold),
+            "recording_segment_seconds": int(settings.recording_segment_seconds),
+            "processor_accel": settings.processor_accel,
+            "face_scan_divisor": int(settings.face_scan_divisor or 4),
+            "overlay_frame_divisor": int(settings.overlay_frame_divisor),
+            "antispoof_pending_timeout_seconds": float(settings.antispoof_pending_timeout_seconds),
+        }
+        return self._system_info
+
+    async def _apply_detection_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Detection settings payload must be an object")
+
+        allowed = {
+            "max_workers",
+            "motion_threshold",
+            "recording_segment_seconds",
+            "processor_accel",
+            "face_scan_divisor",
+            "overlay_frame_divisor",
+            "antispoof_pending_timeout_seconds",
+        }
+        config = load_config()
+        for key in allowed:
+            if key not in payload:
+                continue
+            value = payload[key]
+            if key in {"max_workers", "recording_segment_seconds", "face_scan_divisor", "overlay_frame_divisor"}:
+                config[key] = int(value)
+            elif key in {"motion_threshold", "antispoof_pending_timeout_seconds"}:
+                config[key] = float(value)
+            else:
+                accel = str(value or "auto").strip().lower()
+                if accel not in {"auto", "cuda", "cpu"}:
+                    raise ValueError("processor_accel must be auto, cuda or cpu")
+                config[key] = accel
+
+        normalized = normalize_config(config)
+        save_config(normalized)
+        export_env(normalized)
+        for key in allowed:
+            if hasattr(settings, key):
+                setattr(settings, key, normalized[key])
+        return dict(self._refresh_detection_capabilities()["detection_settings"])
 
 
 async def main():

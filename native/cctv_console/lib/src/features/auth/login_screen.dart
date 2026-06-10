@@ -316,6 +316,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                       ),
                                       const SizedBox(width: 10),
                                       IconButton.outlined(
+                                        tooltip: 'Новый профиль',
+                                        onPressed: _newProfile,
+                                        icon: const Icon(Icons.add_rounded),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      IconButton.outlined(
                                         tooltip: 'Удалить профиль',
                                         onPressed: profiles.profiles.length > 1
                                             ? _deleteProfile
@@ -561,7 +567,7 @@ class _LoginHeader extends StatelessWidget {
             border: Border.all(color: colors.border),
           ),
           child: Text(
-            'CCTV Console',
+            'CCTV Консоль',
             style: TextStyle(
               color: colors.text,
               fontWeight: FontWeight.w800,

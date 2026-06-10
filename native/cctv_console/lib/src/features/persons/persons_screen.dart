@@ -11,6 +11,7 @@ import '../../core/theme/app_theme.dart';
 import '../../shared/input/human_name.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../../shared/widgets/mjpeg_stream_view.dart';
+import '../../shared/widgets/page_header.dart';
 import '../auth/auth_controller.dart';
 
 const int _minLiveCaptureIntervalMs = 100;
@@ -42,6 +43,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
   final _editFirstName = TextEditingController();
   final _editLastName = TextEditingController();
   final _editMiddleName = TextEditingController();
+  Timer? _searchDebounce;
 
   bool _busy = false;
   String? _error;
@@ -62,7 +64,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
   @override
   void initState() {
     super.initState();
-    _searchController.addListener(() => setState(() {}));
+    _searchController.addListener(_scheduleSearch);
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
@@ -78,6 +80,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
   @override
   void dispose() {
     _liveCaptureRunning = false;
+    _searchDebounce?.cancel();
     _searchController.dispose();
     _createFirstName.dispose();
     _createLastName.dispose();
@@ -92,7 +95,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
     await _run(() async {
       final (api, token) = _deps();
       final result = await Future.wait([
-        api.getJsonList('/persons', token: token),
+        api.getJsonList(
+          '/persons',
+          token: token,
+          query: {
+            if (_searchController.text.trim().isNotEmpty)
+              'q': _searchController.text.trim(),
+            'limit': '300',
+          },
+        ),
         api.listCameras(token),
       ]);
       final persons = result[0] as List<Map<String, dynamic>>;
@@ -111,6 +122,15 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
         _liveCaptureIntervalMs = _normalizeLiveInterval(_liveCaptureIntervalMs);
       });
       _syncEditControllers();
+    });
+  }
+
+  void _scheduleSearch() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted && !_busy && !_liveCaptureRunning) {
+        unawaited(_load());
+      }
     });
   }
 
@@ -264,7 +284,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
           'Похожий ракурс уже есть${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
         'mismatch' =>
           'Лицо не похоже на выбранную персону${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
-        _ => 'Live-кадр отправлен: $status',
+        _ => 'Кадр из эфира отправлен: $status',
       };
       if (!mounted) return;
       setState(() => _liveCaptureStatus = message);
@@ -580,12 +600,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
   }
 
   List<Map<String, dynamic>> get _filteredPersons {
-    final query = _searchController.text.trim().toLowerCase();
-    if (query.isEmpty) return _persons;
-    return _persons.where((person) {
-      final label = _personLabel(person).toLowerCase();
-      return label.contains(query) || '${person['person_id']}'.contains(query);
-    }).toList();
+    return _persons;
   }
 
   int get _embeddingsCount => _persons.fold<int>(
@@ -668,7 +683,6 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
     final auth = context.watch<AuthController>();
     final token = auth.accessToken;
     final filtered = _filteredPersons;
@@ -689,39 +703,25 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Персоны',
-                            style: Theme.of(context).textTheme.headlineMedium
-                                ?.copyWith(
-                                  color: colors.textStrong,
-                                  fontWeight: FontWeight.w900,
+                PageHeader(
+                  title: 'Персоны',
+                  icon: Icons.badge_rounded,
+                  trailing: PageActions(
+                    children: [
+                      IconButton.filledTonal(
+                        onPressed: _busy ? null : _load,
+                        icon: _busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
                                 ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Карточки людей и эмбеддинги для распознавания по камерам.',
-                            style: TextStyle(color: colors.muted, fontSize: 13),
-                          ),
-                        ],
+                              )
+                            : const Icon(Icons.refresh_rounded),
                       ),
-                    ),
-                    IconButton.filledTonal(
-                      onPressed: _busy ? null : _load,
-                      icon: _busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.refresh_rounded),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 14),
                 if (_error != null) ...[
@@ -1334,7 +1334,7 @@ class _LiveCapturePanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Live-сбор эмбеддингов',
+                      'Сбор эмбеддингов из эфира',
                       style: TextStyle(
                         color: colors.textStrong,
                         fontSize: 15,
@@ -1459,7 +1459,7 @@ class _LiveCapturePanel extends StatelessWidget {
                     ? null
                     : onCaptureOnce,
                 icon: const Icon(Icons.camera_rounded, size: 18),
-                label: const Text('Снимок из Live'),
+                label: const Text('Снимок из эфира'),
               ),
               ElevatedButton.icon(
                 onPressed: busy || !cameraSelected
@@ -1474,11 +1474,6 @@ class _LiveCapturePanel extends StatelessWidget {
                 label: Text(running ? 'Остановить сбор' : 'Запустить сбор'),
               ),
             ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Для качественной базы держите лицо в кадре и плавно меняйте ракурс. Похожие кадры backend помечает как дубли и не добавляет повторно.',
-            style: TextStyle(color: colors.muted, fontSize: 12, height: 1.35),
           ),
         ],
       ),
@@ -1656,7 +1651,7 @@ class _CameraSelector extends StatelessWidget {
     return DropdownButtonFormField<int?>(
       initialValue: value,
       decoration: const InputDecoration(
-        labelText: 'Камера для Live-сбора и fallback через Processor',
+        labelText: 'Камера для сбора из эфира и резерва через Процессор',
       ),
       items: [
         const DropdownMenuItem<int?>(

@@ -24,6 +24,8 @@ class Metrics:
     disk_total_gb: float = 0.0
     active_cameras: int = 0
     uptime_seconds: float = 0.0
+    bottleneck: str | None = None
+    camera_bottlenecks: dict[str, str] | None = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}

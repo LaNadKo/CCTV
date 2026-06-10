@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -33,6 +35,8 @@ class ThemeController extends ChangeNotifier {
   List<int> _liveCameraOrder = const [];
   List<String> _primaryNav = List<String>.from(defaultPrimaryNav);
   String _lastRoute = '/live';
+  Timer? _primaryAccentPersistTimer;
+  Timer? _secondaryAccentPersistTimer;
 
   String get apiBaseUrl => _apiBaseUrl;
   CctvThemeMode get themeMode => _themeMode;
@@ -53,6 +57,13 @@ class ThemeController extends ChangeNotifier {
       case CctvThemeMode.system:
         return ThemeMode.system;
     }
+  }
+
+  @override
+  void dispose() {
+    _primaryAccentPersistTimer?.cancel();
+    _secondaryAccentPersistTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> load() async {
@@ -97,17 +108,17 @@ class ThemeController extends ChangeNotifier {
   }
 
   Future<void> setPrimaryAccent(Color value) async {
+    if (value == _primaryAccent) return;
     _primaryAccent = value;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_primaryAccentKey, colorToHex(value));
+    _schedulePrimaryAccentPersist(value);
   }
 
   Future<void> setSecondaryAccent(Color value) async {
+    if (value == _secondaryAccent) return;
     _secondaryAccent = value;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_secondaryAccentKey, colorToHex(value));
+    _scheduleSecondaryAccentPersist(value);
   }
 
   Future<void> setLiveDensity(LiveDensity value) async {
@@ -163,6 +174,8 @@ class ThemeController extends ChangeNotifier {
     _primaryAccent = primary;
     _secondaryAccent = secondary;
     notifyListeners();
+    _primaryAccentPersistTimer?.cancel();
+    _secondaryAccentPersistTimer?.cancel();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_primaryAccentKey, colorToHex(primary));
     await prefs.setString(_secondaryAccentKey, colorToHex(secondary));
@@ -183,6 +196,8 @@ class ThemeController extends ChangeNotifier {
     _liveCameraOrder = const [];
     _primaryNav = List<String>.from(defaultPrimaryNav);
     notifyListeners();
+    _primaryAccentPersistTimer?.cancel();
+    _secondaryAccentPersistTimer?.cancel();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_primaryAccentKey);
@@ -191,6 +206,24 @@ class ThemeController extends ChangeNotifier {
     await prefs.remove(_liveGridColumnsKey);
     await prefs.remove(_liveCameraOrderKey);
     await prefs.remove(_primaryNavKey);
+  }
+
+  void _schedulePrimaryAccentPersist(Color value) {
+    _primaryAccentPersistTimer?.cancel();
+    final hex = colorToHex(value);
+    _primaryAccentPersistTimer = Timer(const Duration(milliseconds: 300), () async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_primaryAccentKey, hex);
+    });
+  }
+
+  void _scheduleSecondaryAccentPersist(Color value) {
+    _secondaryAccentPersistTimer?.cancel();
+    final hex = colorToHex(value);
+    _secondaryAccentPersistTimer = Timer(const Duration(milliseconds: 300), () async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_secondaryAccentKey, hex);
+    });
   }
 
   static String colorToHex(Color color) {

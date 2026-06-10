@@ -142,20 +142,35 @@ def _prepare_onnxruntime(prefer_gpu: bool = True) -> None:
     _ort_env_ready = True
 
 
-def _session_options() -> ort.SessionOptions:
+def _session_options(
+    *,
+    intra_op_num_threads: int | None = None,
+    inter_op_num_threads: int | None = None,
+) -> ort.SessionOptions:
     options = ort.SessionOptions()
     options.log_severity_level = 3
     options.log_verbosity_level = 0
+    if intra_op_num_threads is not None:
+        options.intra_op_num_threads = max(1, int(intra_op_num_threads))
+    if inter_op_num_threads is not None:
+        options.inter_op_num_threads = max(1, int(inter_op_num_threads))
+    if intra_op_num_threads is not None or inter_op_num_threads is not None:
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     return options
 
 
-def _create_session(model_path: Path, prefer_gpu: bool = True) -> tuple[ort.InferenceSession, str]:
+def _create_session(
+    model_path: Path,
+    prefer_gpu: bool = True,
+    *,
+    session_options: ort.SessionOptions | None = None,
+) -> tuple[ort.InferenceSession, str]:
     _prepare_onnxruntime(prefer_gpu=prefer_gpu)
     providers, requested_device = _select_providers(prefer_gpu=prefer_gpu)
     try:
         session = ort.InferenceSession(
             str(model_path),
-            sess_options=_session_options(),
+            sess_options=session_options or _session_options(),
             providers=providers,
         )
         active = session.get_providers()
@@ -174,7 +189,7 @@ def _create_session(model_path: Path, prefer_gpu: bool = True) -> tuple[ort.Infe
             logger.warning("Failed to initialize accelerated face runtime for %s providers=%s", model_path.name, providers, exc_info=True)
         session = ort.InferenceSession(
             str(model_path),
-            sess_options=_session_options(),
+            sess_options=session_options or _session_options(),
             providers=["CPUExecutionProvider"],
         )
         return session, "cpu"
@@ -218,8 +233,18 @@ def distance2kps(points: np.ndarray, distance: np.ndarray) -> np.ndarray:
 
 
 class SCRFDDetector:
-    def __init__(self, model_file: Path, prefer_gpu: bool = True):
-        self.session, self.device_name = _create_session(model_file, prefer_gpu=prefer_gpu)
+    def __init__(
+        self,
+        model_file: Path,
+        prefer_gpu: bool = True,
+        *,
+        session_options: ort.SessionOptions | None = None,
+    ):
+        self.session, self.device_name = _create_session(
+            model_file,
+            prefer_gpu=prefer_gpu,
+            session_options=session_options,
+        )
         self.center_cache: dict[tuple[int, int, int], np.ndarray] = {}
         self.nms_thresh = 0.4
         self.det_thresh = 0.5
@@ -381,8 +406,18 @@ class SCRFDDetector:
 
 
 class ArcFaceRecognizer:
-    def __init__(self, model_file: Path, prefer_gpu: bool = True):
-        self.session, self.device_name = _create_session(model_file, prefer_gpu=prefer_gpu)
+    def __init__(
+        self,
+        model_file: Path,
+        prefer_gpu: bool = True,
+        *,
+        session_options: ort.SessionOptions | None = None,
+    ):
+        self.session, self.device_name = _create_session(
+            model_file,
+            prefer_gpu=prefer_gpu,
+            session_options=session_options,
+        )
         input_cfg = self.session.get_inputs()[0]
         input_shape = input_cfg.shape
         self.input_name = input_cfg.name
@@ -434,6 +469,114 @@ def get_inference_device() -> str:
     return device_name
 
 
+def _detect_faces_with_runtime(
+    detector: SCRFDDetector,
+    recognizer: ArcFaceRecognizer,
+    frame_rgb: np.ndarray,
+    *,
+    prob_min: float,
+    min_face_ratio: float,
+    det_size: tuple[int, int],
+    build_variants: bool,
+    max_num: int,
+) -> list[dict]:
+    detections = np.zeros((0, 5), dtype=np.float32)
+    landmarks = None
+    used_frame = frame_rgb
+
+    variants = build_detection_variants(frame_rgb) if build_variants else [frame_rgb]
+    height, width = frame_rgb.shape[:2]
+    min_face_side = max(height, width) * min_face_ratio
+
+    for variant in variants:
+        det, kpss = detector.detect(variant, input_size=det_size, max_num=max_num)
+        if det.size == 0:
+            continue
+        filtered_indices = []
+        for idx, item in enumerate(det):
+            score = float(item[4])
+            x1, y1, x2, y2 = [float(v) for v in item[:4]]
+            if score < prob_min:
+                continue
+            if (x2 - x1) < min_face_side or (y2 - y1) < min_face_side:
+                continue
+            filtered_indices.append(idx)
+        if not filtered_indices:
+            continue
+        detections = det[filtered_indices]
+        landmarks = kpss[filtered_indices] if kpss is not None else None
+        used_frame = variant
+        break
+
+    if detections.size == 0:
+        return []
+
+    results: list[dict] = []
+    for idx, det in enumerate(detections):
+        if landmarks is None or idx >= len(landmarks):
+            continue
+        box = det[:4].astype(np.float32)
+        score = float(det[4])
+        lmk = landmarks[idx].astype(np.float32)
+        embedding = recognizer.get(used_frame, lmk)
+        results.append(
+            {
+                "box": box.tolist(),
+                "confidence": score,
+                "embedding": embedding,
+                "landmarks": lmk.tolist(),
+            }
+        )
+    return results
+
+
+class BackgroundFaceExtractor:
+    """Independent CPU runtime for work that must not block live CUDA models."""
+
+    def __init__(self, *, cpu_threads: int = 1) -> None:
+        model_dir = _ensure_model_pack()
+        detector_options = _session_options(
+            intra_op_num_threads=cpu_threads,
+            inter_op_num_threads=1,
+        )
+        recognizer_options = _session_options(
+            intra_op_num_threads=cpu_threads,
+            inter_op_num_threads=1,
+        )
+        self.detector = SCRFDDetector(
+            model_dir / "det_10g.onnx",
+            prefer_gpu=False,
+            session_options=detector_options,
+        )
+        self.recognizer = ArcFaceRecognizer(
+            model_dir / "w600k_r50.onnx",
+            prefer_gpu=False,
+            session_options=recognizer_options,
+        )
+        self.device_name = "cpu"
+
+    def detect_faces(
+        self,
+        frame_rgb: np.ndarray,
+        *,
+        prob_min: float = 0.46,
+        min_face_ratio: float = 0.028,
+        det_size: tuple[int, int] = (1024, 1024),
+        build_variants: bool = True,
+        max_num: int = 0,
+    ) -> list[dict]:
+        return _detect_faces_with_runtime(
+            self.detector,
+            self.recognizer,
+            frame_rgb,
+            prob_min=prob_min,
+            min_face_ratio=min_face_ratio,
+            det_size=det_size,
+            build_variants=build_variants,
+            max_num=max_num,
+        )
+
+
 def detect_faces_rgb(
     frame_rgb: np.ndarray,
     *,
@@ -445,55 +588,16 @@ def detect_faces_rgb(
 ) -> list[dict]:
     with _model_lock:
         detector, recognizer, _ = _ensure_runtime(prefer_gpu=True)
-
-        detections = np.zeros((0, 5), dtype=np.float32)
-        landmarks = None
-        used_frame = frame_rgb
-
-        variants = build_detection_variants(frame_rgb) if build_variants else [frame_rgb]
-        height, width = frame_rgb.shape[:2]
-        min_face_side = max(height, width) * min_face_ratio
-
-        for variant in variants:
-            det, kpss = detector.detect(variant, input_size=det_size, max_num=max_num)
-            if det.size == 0:
-                continue
-            filtered_indices = []
-            for idx, item in enumerate(det):
-                score = float(item[4])
-                x1, y1, x2, y2 = [float(v) for v in item[:4]]
-                if score < prob_min:
-                    continue
-                if (x2 - x1) < min_face_side or (y2 - y1) < min_face_side:
-                    continue
-                filtered_indices.append(idx)
-            if not filtered_indices:
-                continue
-            detections = det[filtered_indices]
-            landmarks = kpss[filtered_indices] if kpss is not None else None
-            used_frame = variant
-            break
-
-        if detections.size == 0:
-            return []
-
-        results: list[dict] = []
-        for idx, det in enumerate(detections):
-            if landmarks is None or idx >= len(landmarks):
-                continue
-            box = det[:4].astype(np.float32)
-            score = float(det[4])
-            lmk = landmarks[idx].astype(np.float32)
-            embedding = recognizer.get(used_frame, lmk)
-            results.append(
-                {
-                    "box": box.tolist(),
-                    "confidence": score,
-                    "embedding": embedding,
-                    "landmarks": lmk.tolist(),
-                }
-            )
-        return results
+        return _detect_faces_with_runtime(
+            detector,
+            recognizer,
+            frame_rgb,
+            prob_min=prob_min,
+            min_face_ratio=min_face_ratio,
+            det_size=det_size,
+            build_variants=build_variants,
+            max_num=max_num,
+        )
 
 
 def extract_best_face_embedding_bgr(

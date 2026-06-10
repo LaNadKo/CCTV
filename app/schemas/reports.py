@@ -21,7 +21,11 @@ class AppearanceReport(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     person_id: Optional[int] = None
+    person_ids: List[int] = []
     total: int = 0
+    offset: int = 0
+    limit: int = 100
+    has_more: bool = False
     items: List[AppearanceItem] = []
 
 
@@ -184,9 +188,15 @@ class ReportsDashboard(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     group_id: Optional[int] = None
+    group_ids: List[int] = []
     camera_id: Optional[int] = None
+    camera_ids: List[int] = []
     processor_id: Optional[int] = None
+    processor_ids: List[int] = []
     user_id: Optional[int] = None
+    user_ids: List[int] = []
+    person_id: Optional[int] = None
+    person_ids: List[int] = []
     user_actions: UserActionsReport
     groups: List[GroupReportItem] = []
     cameras: List[CameraReportItem] = []

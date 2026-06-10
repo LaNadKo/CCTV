@@ -11,6 +11,7 @@ class AppBackdrop extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final mobile = MediaQuery.sizeOf(context).width < 700;
     final textStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
       decoration: TextDecoration.none,
       decorationColor: Colors.transparent,
@@ -41,16 +42,21 @@ class AppBackdrop extends StatelessWidget {
                       Color(0xFFEAF3FF),
                       Color(0xFFF2F6FC),
                     ],
-                  ),
+              ),
           ),
           child: Stack(
             children: [
               Positioned.fill(
-                child: CustomPaint(
-                  painter: _AuroraPainter(
-                    primary: colors.primaryAccent,
-                    secondary: colors.secondaryAccent,
-                    dark: isDark,
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    isComplex: true,
+                    willChange: false,
+                    painter: _AuroraPainter(
+                      primary: colors.primaryAccent,
+                      secondary: colors.secondaryAccent,
+                      dark: isDark,
+                      mobile: mobile,
+                    ),
                   ),
                 ),
               ),
@@ -71,9 +77,26 @@ class AppBackdrop extends StatelessWidget {
                 ),
               ),
               Positioned.fill(
-                child: CustomPaint(
-                  painter: _GridPainter(
-                    color: colors.textStrong.withValues(alpha: 0.025),
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    isComplex: true,
+                    willChange: false,
+                    painter: _GridPainter(
+                      color: colors.textStrong.withValues(alpha: 0.025),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    isComplex: false,
+                    willChange: false,
+                    painter: _SignalPainter(
+                      primary: colors.primaryAccent,
+                      border: colors.borderStrong,
+                      dark: isDark,
+                    ),
                   ),
                 ),
               ),
@@ -91,11 +114,13 @@ class _AuroraPainter extends CustomPainter {
     required this.primary,
     required this.secondary,
     required this.dark,
+    required this.mobile,
   });
 
   final Color primary;
   final Color secondary;
   final bool dark;
+  final bool mobile;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -108,7 +133,7 @@ class _AuroraPainter extends CustomPainter {
           Colors.transparent,
         ],
       ).createShader(Offset.zero & size)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 28);
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, mobile ? 16 : 28);
 
     final topPath = Path()
       ..moveTo(-size.width * 0.08, size.height * 0.18)
@@ -142,7 +167,7 @@ class _AuroraPainter extends CustomPainter {
           Colors.transparent,
         ],
       ).createShader(Offset.zero & size)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 34);
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, mobile ? 20 : 34);
 
     final bottomPath = Path()
       ..moveTo(-size.width * 0.12, size.height * 0.86)
@@ -164,6 +189,69 @@ class _AuroraPainter extends CustomPainter {
   bool shouldRepaint(covariant _AuroraPainter oldDelegate) {
     return oldDelegate.primary != primary ||
         oldDelegate.secondary != secondary ||
+        oldDelegate.dark != dark ||
+        oldDelegate.mobile != mobile;
+  }
+}
+
+class _SignalPainter extends CustomPainter {
+  const _SignalPainter({
+    required this.primary,
+    required this.border,
+    required this.dark,
+  });
+
+  final Color primary;
+  final Color border;
+  final bool dark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final line = Paint()
+      ..color = primary.withValues(alpha: dark ? 0.10 : 0.08)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    final soft = Paint()
+      ..color = border.withValues(alpha: dark ? 0.16 : 0.10)
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
+
+    const inset = 22.0;
+    const length = 54.0;
+    canvas.drawLine(
+      Offset(size.width - inset - length, inset),
+      Offset(size.width - inset, inset),
+      line,
+    );
+    canvas.drawLine(
+      Offset(size.width - inset, inset),
+      Offset(size.width - inset, inset + length),
+      line,
+    );
+    canvas.drawLine(
+      Offset(inset, size.height - inset - length),
+      Offset(inset, size.height - inset),
+      soft,
+    );
+    canvas.drawLine(
+      Offset(inset, size.height - inset),
+      Offset(inset + length, size.height - inset),
+      soft,
+    );
+
+    final center = Offset(size.width * 0.86, size.height * 0.18);
+    canvas.drawCircle(center, 32, soft);
+    canvas.drawCircle(center, 52, line);
+    canvas.drawLine(center.translate(-62, 0), center.translate(-38, 0), soft);
+    canvas.drawLine(center.translate(38, 0), center.translate(62, 0), soft);
+    canvas.drawLine(center.translate(0, -62), center.translate(0, -38), soft);
+    canvas.drawLine(center.translate(0, 38), center.translate(0, 62), soft);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SignalPainter oldDelegate) {
+    return oldDelegate.primary != primary ||
+        oldDelegate.border != border ||
         oldDelegate.dark != dark;
   }
 }

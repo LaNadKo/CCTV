@@ -154,7 +154,19 @@ def detect_bodies(frame_bgr: np.ndarray, conf: float = 0.5, camera_key: object |
         keypoint_xy = keypoints[:, :2]
         keypoint_conf = keypoints[:, 2]
         mean_conf = float(np.mean(keypoint_conf[:17])) if keypoint_conf.size else 0.0
-        if mean_conf < max(conf * 0.4, 0.08):
+        head_hits = sum(
+            1
+            for point_index in range(min(5, keypoint_conf.size))
+            if float(keypoint_conf[point_index]) >= 0.16
+        )
+        shoulder_hits = sum(
+            1
+            for point_index in (5, 6)
+            if point_index < keypoint_conf.size
+            and float(keypoint_conf[point_index]) >= 0.18
+        )
+        upper_body_supported = shoulder_hits >= 2 and head_hits >= 2
+        if mean_conf < max(conf * 0.4, 0.08) and not upper_body_supported:
             continue
         payload = {
             "box": [float(v) for v in box[:4]],

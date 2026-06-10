@@ -165,21 +165,6 @@ services:
       - server-gpu
       - gpu-nvidia
 
-  frontend:
-    build: ./frontend
-    expose:
-      - "80"
-    environment:
-      VITE_API_URL: "http://${DOMAIN:-localhost}:${BACKEND_PORT:-8000}"
-    depends_on:
-      - backend
-    profiles:
-      - with-frontend
-      - server
-      - server-cpu
-      - server-gpu
-      - gpu-nvidia
-
   nginx:
     build: ./nginx
     ports:
@@ -195,7 +180,6 @@ services:
       NGINX_RELOAD_INTERVAL_SECONDS: ${NGINX_RELOAD_INTERVAL_SECONDS:-21600}
     depends_on:
       - backend
-      - frontend
     restart: unless-stopped
     profiles:
       - with-nginx

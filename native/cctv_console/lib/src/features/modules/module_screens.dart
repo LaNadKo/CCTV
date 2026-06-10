@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/page_header.dart';
 import '../../shared/widgets/segmented_code_field.dart';
 import '../auth/auth_controller.dart';
 
@@ -18,7 +19,6 @@ class RecordingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'Записи',
-      subtitle: 'Архив видео и снимков, которые backend получил от Processor.',
       icon: Icons.video_library_rounded,
       loadItems: (api, token) =>
           api.getJsonList('/recordings', token: token, query: {'limit': '100'}),
@@ -135,8 +135,6 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
               children: [
                 ModuleHeader(
                   title: 'Ревью',
-                  subtitle:
-                      'Проверка неизвестных и спорных событий распознавания.',
                   icon: Icons.fact_check_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -431,7 +429,6 @@ class GroupsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'Группы',
-      subtitle: 'Логическое разделение камер по аудиториям, зонам и стендам.',
       icon: Icons.account_tree_rounded,
       loadItems: (api, token) => api.getJsonList('/groups', token: token),
       columns: const [
@@ -482,7 +479,6 @@ class PersonsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'Персоны',
-      subtitle: 'Карточки людей и количество обучающих эмбеддингов.',
       icon: Icons.badge_rounded,
       loadItems: (api, token) => api.getJsonList('/persons', token: token),
       columns: const [
@@ -535,7 +531,6 @@ class CamerasScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'Камеры',
-      subtitle: 'ONVIF/RTSP/HTTP подключения, детекция и режим записи.',
       icon: Icons.videocam_rounded,
       loadItems: (api, token) => api.getJsonList('/cameras', token: token),
       columns: const [
@@ -611,8 +606,7 @@ class ProcessorsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DataModuleScreen(
-      title: 'Processor',
-      subtitle: 'Узлы обработки видеопотоков, назначенные камеры и телеметрия.',
+      title: 'Процессор',
       icon: Icons.memory_rounded,
       loadItems: (api, token) => api.getJsonList('/processors', token: token),
       columns: const [
@@ -639,7 +633,7 @@ class ProcessorsScreen extends StatelessWidget {
             if (!context.mounted) return;
             await showResultDialog(
               context,
-              title: 'Код Processor',
+              title: 'Код Процессора',
               value: '${result['code'] ?? ''}',
               note: 'Действует до: ${formatCell(result['expires_at'])}',
               segmentedCode: true,
@@ -650,7 +644,7 @@ class ProcessorsScreen extends StatelessWidget {
       rowCommands: [
         RowCommand.delete(
           idKey: 'processor_id',
-          title: 'Удалить Processor?',
+          title: 'Удалить Процессор?',
           pathBuilder: (id) => '/processors/$id',
         ),
       ],
@@ -665,7 +659,6 @@ class UsersScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'Пользователи',
-      subtitle: 'Учётные записи, роли и состояние обязательной смены пароля.',
       icon: Icons.manage_accounts_rounded,
       loadItems: (api, token) => api.getJsonList('/admin/users', token: token),
       columns: const [
@@ -733,13 +726,12 @@ class ApiKeysScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return DataModuleScreen(
       title: 'API ключи',
-      subtitle: 'Токены интеграции Processor и внешних клиентов.',
       icon: Icons.vpn_key_rounded,
       loadItems: (api, token) => api.getJsonList('/api-keys', token: token),
       columns: const [
         ModuleColumn('ID', ['api_key_id'], width: 70),
         ModuleColumn('Описание', ['description'], width: 240),
-        ModuleColumn('Scopes', ['scopes'], width: 220),
+        ModuleColumn('Права', ['scopes'], width: 220),
         ModuleColumn('Активен', ['is_active'], width: 90),
         ModuleColumn('Создан', ['created_at'], width: 150),
         ModuleColumn('Истекает', ['expires_at'], width: 150),
@@ -756,7 +748,7 @@ class ApiKeysScreen extends StatelessWidget {
                 DialogField('description', 'Описание', isRequired: true),
                 DialogField(
                   'scopes',
-                  'Scopes через запятую',
+                  'Права через запятую',
                   initialValue: 'detections:create',
                 ),
               ],
@@ -849,9 +841,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
         children: [
           ModuleHeader(
             title: 'Отчёты',
-            subtitle: data == null
-                ? 'Сводка по системе видеонаблюдения.'
-                : 'Сформировано: ${formatCell(data['generated_at'])}',
             icon: Icons.analytics_rounded,
             trailing: RefreshButton(loading: _loading, onPressed: _load),
           ),
@@ -860,7 +849,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           if (data == null && _loading)
             const _LoadingReportPanel()
           else if (data == null && !_loading)
-            const EmptyPanel(message: 'Backend пока не вернул отчёт.')
+            const EmptyPanel(message: 'Сервер пока не вернул отчёт.')
           else if (data != null) ...[
             _MetricRail(
               items: [
@@ -875,7 +864,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                   formatCell(archive['total_bytes'], keyHint: 'bytes'),
                 ),
                 MetricItem(
-                  'Online камер',
+                  'Камер онлайн',
                   '${formatCell(_countOnline(listFrom(data['cameras'])))} / ${formatCell(listFrom(data['cameras']).length)}',
                 ),
                 MetricItem(
@@ -939,8 +928,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
               columns: const [
                 ModuleColumn('Группа', ['name'], width: 170),
                 ModuleColumn('Камер', ['camera_count'], width: 75),
-                ModuleColumn('Online', ['online_cameras'], width: 80),
-                ModuleColumn('Offline', ['offline_cameras'], width: 80),
+                ModuleColumn('Онлайн', ['online_cameras'], width: 80),
+                ModuleColumn('Офлайн', ['offline_cameras'], width: 80),
                 ModuleColumn('События', ['event_count'], width: 90),
                 ModuleColumn('Распознано', ['recognized_count'], width: 105),
                 ModuleColumn('Ревью', ['pending_reviews'], width: 80),
@@ -957,8 +946,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ModuleColumn('Группа', ['group_name'], width: 150),
                 ModuleColumn('Локация', ['location'], width: 150),
                 ModuleColumn('Тип', ['connection_kind'], width: 90),
-                ModuleColumn('Processor', ['assigned_processor'], width: 150),
-                ModuleColumn('Online', ['is_online'], width: 80),
+                ModuleColumn('Процессор', ['assigned_processor'], width: 150),
+                ModuleColumn('Онлайн', ['is_online'], width: 80),
                 ModuleColumn('PTZ', ['supports_ptz'], width: 70),
                 ModuleColumn('Детекция', ['detection_enabled'], width: 90),
                 ModuleColumn('События', ['event_count'], width: 95),
@@ -973,12 +962,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ),
             const SizedBox(height: 14),
             ReportTable(
-              title: 'Processor',
+              title: 'Процессор',
               rows: listFrom(data['processors']),
               columns: const [
                 ModuleColumn('Узел', ['name'], width: 180),
                 ModuleColumn('Статус', ['status'], width: 100),
-                ModuleColumn('Online', ['is_online'], width: 80),
+                ModuleColumn('Онлайн', ['is_online'], width: 80),
                 ModuleColumn('IP', ['ip_address'], width: 130),
                 ModuleColumn('Версия', ['version'], width: 120),
                 ModuleColumn('Heartbeat', ['last_heartbeat'], width: 145),
@@ -988,7 +977,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ModuleColumn('CPU', ['cpu_percent'], width: 80),
                 ModuleColumn('RAM', ['ram_percent'], width: 80),
                 ModuleColumn('GPU', ['gpu_util_percent'], width: 80),
-                ModuleColumn('Uptime', ['uptime_seconds'], width: 85),
+                ModuleColumn('Время', ['uptime_seconds'], width: 85),
               ],
             ),
             const SizedBox(height: 14),
@@ -1244,7 +1233,6 @@ class DataModuleScreen extends StatefulWidget {
   const DataModuleScreen({
     super.key,
     required this.title,
-    required this.subtitle,
     required this.icon,
     required this.loadItems,
     required this.columns,
@@ -1253,7 +1241,6 @@ class DataModuleScreen extends StatefulWidget {
   });
 
   final String title;
-  final String subtitle;
   final IconData icon;
   final Future<List<RowMap>> Function(ApiClient api, String token) loadItems;
   final List<ModuleColumn> columns;
@@ -1351,7 +1338,6 @@ class _DataModuleScreenState extends State<DataModuleScreen> {
               children: [
                 ModuleHeader(
                   title: widget.title,
-                  subtitle: widget.subtitle,
                   icon: widget.icon,
                   trailing: Wrap(
                     spacing: 10,
@@ -1668,102 +1654,21 @@ class ModuleHeader extends StatelessWidget {
   const ModuleHeader({
     super.key,
     required this.title,
-    required this.subtitle,
     required this.icon,
     this.trailing,
   });
 
   final String title;
-  final String subtitle;
   final IconData icon;
   final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 600;
-        final titleBlock = Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: compact ? 40 : 46,
-              height: compact ? 40 : 46,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(compact ? 14 : 16),
-                color: colors.surfaceMuted,
-                border: Border.all(color: colors.border),
-              ),
-              child: Icon(
-                icon,
-                color: colors.primaryAccent,
-                size: compact ? 20 : 22,
-              ),
-            ),
-            SizedBox(width: compact ? 10 : 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: colors.textStrong,
-                      fontWeight: FontWeight.w900,
-                      fontSize: compact ? 24 : null,
-                      height: 1.05,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle,
-                    maxLines: compact ? 3 : 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: colors.muted,
-                      fontSize: compact ? 13 : 14,
-                      height: 1.25,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        );
-
-        if (compact) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              titleBlock,
-              if (trailing != null) ...[
-                const SizedBox(height: 12),
-                SizedBox(width: double.infinity, child: trailing!),
-              ],
-            ],
-          );
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: titleBlock),
-            if (trailing != null) ...[
-              const SizedBox(width: 12),
-              Flexible(
-                flex: 0,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 520),
-                  child: trailing!,
-                ),
-              ),
-            ],
-          ],
-        );
-      },
+    return PageHeader(
+      title: title,
+      icon: icon,
+      trailing: trailing,
+      maxTrailingWidth: 560,
     );
   }
 }
@@ -1884,8 +1789,9 @@ class RefreshButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return OutlinedButton.icon(
+    return IconButton.filledTonal(
       onPressed: loading ? null : onPressed,
+      tooltip: 'Обновить',
       icon: loading
           ? const SizedBox(
               width: 16,
@@ -1893,7 +1799,6 @@ class RefreshButton extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             )
           : const Icon(Icons.refresh_rounded, size: 18),
-      label: const Text('Обновить'),
     );
   }
 }
@@ -2000,46 +1905,274 @@ class ReportTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final query = ReportSearchScope.maybeOf(context)?.query ?? '';
+    final visibleRows = query.isEmpty
+        ? rows
+        : rows.where((row) => _matchesReportQuery(row, query)).toList();
     return GlassPanel(
       padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: TextStyle(
-              color: colors.textStrong,
-              fontWeight: FontWeight.w900,
-              fontSize: 16,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.textStrong,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '${visibleRows.length}',
+                style: TextStyle(
+                  color: colors.muted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Открыть таблицу',
+                onPressed: visibleRows.isEmpty
+                    ? null
+                    : () => showDialog<void>(
+                          context: context,
+                          builder: (_) => _ReportTableDialog(
+                            title: title,
+                            rows: visibleRows,
+                            columns: columns,
+                          ),
+                        ),
+                icon: const Icon(Icons.open_in_full_rounded, size: 18),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
-          if (rows.isEmpty)
-            Text('Нет данных.', style: TextStyle(color: colors.muted))
-          else
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _ReportRow(columns: columns, row: const {}, isHeader: true),
-                  for (final row in rows.take(24))
-                    _ReportRow(columns: columns, row: row),
-                  if (rows.length > 24)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8, left: 8),
-                      child: Text(
-                        'Показано 24 из ${rows.length}. Используйте профильные разделы для полного списка.',
-                        style: TextStyle(color: colors.muted, fontSize: 12),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+          _ReportTableBody(rows: visibleRows, columns: columns),
         ],
       ),
     );
   }
+}
+
+class _ReportTableDialog extends StatelessWidget {
+  const _ReportTableDialog({
+    required this.title,
+    required this.rows,
+    required this.columns,
+  });
+
+  final String title;
+  final List<RowMap> rows;
+  final List<ModuleColumn> columns;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Dialog.fullscreen(
+      child: Container(
+        color: colors.bg,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.textStrong,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      '${rows.length}',
+                      style: TextStyle(
+                        color: colors.muted,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: 'Закрыть',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: _ReportTableBody(
+                    rows: rows,
+                    columns: columns,
+                    expanded: true,
+                    cellMaxLines: 4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReportTableBody extends StatefulWidget {
+  const _ReportTableBody({
+    required this.rows,
+    required this.columns,
+    this.expanded = false,
+    this.cellMaxLines = 3,
+  });
+
+  final List<RowMap> rows;
+  final List<ModuleColumn> columns;
+  final bool expanded;
+  final int cellMaxLines;
+
+  @override
+  State<_ReportTableBody> createState() => _ReportTableBodyState();
+}
+
+class _ReportTableBodyState extends State<_ReportTableBody> {
+  final _horizontalController = ScrollController();
+  final _verticalController = ScrollController();
+
+  @override
+  void dispose() {
+    _horizontalController.dispose();
+    _verticalController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    if (widget.rows.isEmpty) {
+      return Text('Нет данных.', style: TextStyle(color: colors.muted));
+    }
+    final naturalWidth = widget.columns.fold<double>(
+      8,
+      (total, column) => total + column.width + 12,
+    );
+    final rowExtent = widget.expanded ? 72.0 : 62.0;
+    final maxListHeight = widget.expanded ? 900.0 : 460.0;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tableWidth =
+            constraints.hasBoundedWidth && constraints.maxWidth > naturalWidth
+            ? constraints.maxWidth
+            : naturalWidth;
+        final listHeight = widget.expanded && constraints.hasBoundedHeight
+            ? (constraints.maxHeight - 52).clamp(rowExtent, maxListHeight)
+            : (widget.rows.length * rowExtent).clamp(rowExtent, maxListHeight);
+        return Scrollbar(
+          controller: _horizontalController,
+          thumbVisibility: true,
+          trackVisibility: true,
+          interactive: true,
+          notificationPredicate: (notification) =>
+              notification.metrics.axis == Axis.horizontal,
+          child: SingleChildScrollView(
+            controller: _horizontalController,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: tableWidth.toDouble(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ReportRow(
+                    columns: widget.columns,
+                    row: const {},
+                    isHeader: true,
+                    cellMaxLines: widget.cellMaxLines,
+                  ),
+                  SizedBox(
+                    height: listHeight.toDouble(),
+                    child: Scrollbar(
+                      controller: _verticalController,
+                      thumbVisibility: true,
+                      trackVisibility: widget.rows.length > 3,
+                      interactive: true,
+                      child: ListView.builder(
+                        controller: _verticalController,
+                        primary: false,
+                        itemExtent: rowExtent,
+                        itemCount: widget.rows.length,
+                        itemBuilder: (context, index) => _ReportRow(
+                          columns: widget.columns,
+                          row: widget.rows[index],
+                          cellMaxLines: widget.cellMaxLines,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class ReportSearchScope extends InheritedWidget {
+  const ReportSearchScope({
+    super.key,
+    required this.query,
+    required super.child,
+  });
+
+  final String query;
+
+  static ReportSearchScope? maybeOf(BuildContext context) {
+    return context.dependOnInheritedWidgetOfExactType<ReportSearchScope>();
+  }
+
+  @override
+  bool updateShouldNotify(ReportSearchScope oldWidget) {
+    return query != oldWidget.query;
+  }
+}
+
+bool _matchesReportQuery(RowMap row, String rawQuery) {
+  final query = rawQuery.trim().toLowerCase();
+  if (query.isEmpty) return true;
+  final haystack = row.values
+      .where((value) => value != null)
+      .map((value) => '$value'.toLowerCase())
+      .join(' ');
+  if (haystack.contains(query)) return true;
+  if (query.length < 3) return false;
+  final queryGrams = _trigrams(query);
+  final valueGrams = _trigrams(haystack);
+  if (queryGrams.isEmpty || valueGrams.isEmpty) return false;
+  final overlap = queryGrams.intersection(valueGrams).length;
+  return overlap / queryGrams.length >= 0.58;
+}
+
+Set<String> _trigrams(String value) {
+  final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.length < 3) return {normalized};
+  return {
+    for (var index = 0; index <= normalized.length - 3; index++)
+      normalized.substring(index, index + 3),
+  };
 }
 
 class _ReportRow extends StatelessWidget {
@@ -2047,11 +2180,13 @@ class _ReportRow extends StatelessWidget {
     required this.columns,
     required this.row,
     this.isHeader = false,
+    this.cellMaxLines = 3,
   });
 
   final List<ModuleColumn> columns;
   final RowMap row;
   final bool isHeader;
+  final int cellMaxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -2071,15 +2206,19 @@ class _ReportRow extends StatelessWidget {
               padding: const EdgeInsets.only(right: 12),
               child: SizedBox(
                 width: column.width,
-                child: Text(
-                  isHeader ? column.label : column.read(row),
-                  maxLines: isHeader ? 1 : 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: isHeader ? colors.muted : colors.text,
-                    fontSize: isHeader ? 12 : 13,
-                    fontWeight: isHeader ? FontWeight.w900 : FontWeight.w600,
-                    height: 1.25,
+                child: Tooltip(
+                  message: isHeader ? column.label : column.read(row),
+                  waitDuration: const Duration(milliseconds: 350),
+                  child: Text(
+                    isHeader ? column.label : column.read(row),
+                    maxLines: isHeader ? 1 : cellMaxLines,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isHeader ? colors.muted : colors.text,
+                      fontSize: isHeader ? 12 : 13,
+                      fontWeight: isHeader ? FontWeight.w900 : FontWeight.w600,
+                      height: 1.25,
+                    ),
                   ),
                 ),
               ),

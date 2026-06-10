@@ -2,14 +2,16 @@
 
 import json
 import logging
+import hashlib
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
-import httpx
 from onvif import ONVIFClient, ONVIFDiscovery
+from onvif.operator import CacheMode
 
 from app.security import decrypt_secret
 
@@ -25,12 +27,66 @@ ONVIF_PORT_CANDIDATES: tuple[tuple[int, bool], ...] = (
 )
 RTSP_PORT_CANDIDATES = (554, 8554)
 HTTP_PORT_CANDIDATES: tuple[tuple[int, bool], ...] = ((80, False), (8080, False), (443, True), (8443, True))
-PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS = 0.45
-PTZ_CONTINUOUS_MAX_TIMEOUT_SECONDS = 1.5
+PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS = 0.25
+PTZ_CONTINUOUS_MAX_TIMEOUT_SECONDS = 0.8
+PTZ_CONTINUOUS_DEADZONE = 0.04
+PTZ_CONTINUOUS_MAX_SPEED = 0.28
+PTZ_CONTINUOUS_MIN_INTERVAL_SECONDS = 0.16
+PTZ_CLIENT_CACHE_TTL_SECONDS = 300.0
+ONVIF_CACHE_MODE = CacheMode.MEM
+_PTZ_COMMAND_LOCK = threading.Lock()
+_PTZ_LAST_COMMANDS: dict[str, tuple[float, tuple[float, float, float]]] = {}
+_PTZ_CLIENT_CACHE: dict[str, tuple[float, ONVIFClient]] = {}
 
 
 class ONVIFServiceError(RuntimeError):
     pass
+
+
+def _new_onvif_client(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    *,
+    timeout: int = 10,
+    use_https: bool = False,
+    verify_ssl: bool = False,
+) -> ONVIFClient:
+    return ONVIFClient(
+        host,
+        port,
+        username,
+        password,
+        timeout=timeout,
+        use_https=use_https,
+        verify_ssl=verify_ssl,
+        cache=ONVIF_CACHE_MODE,
+    )
+
+
+def _friendly_onvif_error(exc: Exception | None) -> str:
+    if exc is None:
+        return "устройство не отвечает"
+    message = str(exc).strip()
+    lower = message.lower()
+    if "read-only file system" in lower and ".onvif-python" in lower:
+        return "backend не смог подготовить ONVIF-кэш. Пересоберите backend с новой версией."
+    if "401" in lower or "unauthorized" in lower or "not authorized" in lower or "forbidden" in lower:
+        return "камера отклонила логин или пароль ONVIF"
+    if "timed out" in lower or "timeout" in lower or "read timed out" in lower:
+        return "камера не ответила за отведённое время"
+    if "connection refused" in lower:
+        return "порт открыт некорректно или камера отклонила подключение"
+    if "no route to host" in lower or "network is unreachable" in lower:
+        return "камера недоступна из сети backend"
+    if "name or service not known" in lower or "temporary failure in name resolution" in lower:
+        return "адрес камеры не найден"
+    if "ssl" in lower or "certificate" in lower:
+        return "камера не приняла HTTPS/SSL. Попробуйте HTTP или другой порт"
+    if len(message) > 220:
+        return "ONVIF вернул внутреннюю ошибку. Проверьте IP, порт, HTTP/HTTPS и учётные данные камеры"
+    return message or "устройство не отвечает"
 
 
 @dataclass(slots=True)
@@ -206,15 +262,10 @@ def detect_plain_protocols(host: str, timeout: float = 1.5) -> tuple[list[str], 
     if any(probe_port(host, port, timeout=timeout) for port in RTSP_PORT_CANDIDATES):
         protocols.append("rtsp")
     http_found = False
-    for port, use_https in HTTP_PORT_CANDIDATES:
+    for port, _use_https in HTTP_PORT_CANDIDATES:
         if not probe_port(host, port, timeout=timeout):
             continue
         http_found = True
-        try:
-            scheme = "https" if use_https else "http"
-            httpx.get(f"{scheme}://{host}:{port}", timeout=2.0, verify=False)
-        except Exception:
-            pass
     if http_found:
         protocols.append("http")
     if "rtsp" in protocols and "http" not in protocols:
@@ -428,9 +479,10 @@ def probe_camera(host: str, username: str | None = None, password: str | None = 
     warnings.extend(plain_warnings)
 
     last_error: Exception | None = None
+    requested_error: Exception | None = None
     for candidate_port, candidate_https in _candidate_targets(host, port, use_https, discovered):
         try:
-            client = ONVIFClient(
+            client = _new_onvif_client(
                 host,
                 candidate_port,
                 username or "",
@@ -521,8 +573,11 @@ def probe_camera(host: str, username: str | None = None, password: str | None = 
             )
         except Exception as exc:
             last_error = exc
+            if port is not None and candidate_port == port and candidate_https == bool(use_https):
+                requested_error = exc
             log.debug("ONVIF probe failed for %s:%s https=%s: %s", host, candidate_port, candidate_https, exc)
 
+    user_error = requested_error or last_error
     if protocols:
         return ProbeResult(
             name=host,
@@ -535,10 +590,10 @@ def probe_camera(host: str, username: str | None = None, password: str | None = 
             endpoints=[],
             device_metadata={"host": host, "note": "ONVIF probe failed; protocols inferred from open ports."},
             presets=[],
-            warnings=warnings + ([f"ONVIF недоступен: {last_error}"] if last_error else []),
+            warnings=warnings + ([f"ONVIF недоступен: {_friendly_onvif_error(user_error)}"] if user_error else []),
         )
 
-    raise ONVIFServiceError(f"Не удалось определить камеру {host}: {last_error or 'устройство не отвечает'}")
+    raise ONVIFServiceError(f"Не удалось определить камеру {host}: {_friendly_onvif_error(user_error)}")
 
 
 def _camera_onvif_credentials(camera: Any) -> tuple[str, str, str, str, int, bool]:
@@ -566,10 +621,79 @@ def _clamp_unit(value: float | None) -> float:
     return max(-1.0, min(1.0, float(value or 0.0)))
 
 
+def _clamp_ptz_axis(value: float | None) -> float:
+    value = _clamp_unit(value)
+    if abs(value) < PTZ_CONTINUOUS_DEADZONE:
+        return 0.0
+    return max(-PTZ_CONTINUOUS_MAX_SPEED, min(PTZ_CONTINUOUS_MAX_SPEED, value))
+
+
 def _clamp_speed(value: float | None) -> float | None:
     if value is None:
         return None
     return max(0.0, min(1.0, float(value)))
+
+
+def _ptz_command_key(camera: Any) -> str:
+    camera_id = getattr(camera, "camera_id", None)
+    if camera_id is not None:
+        return f"camera:{camera_id}"
+    return str(getattr(camera, "ip_address", None) or id(camera))
+
+
+def _ptz_client_key(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    use_https: bool,
+) -> str:
+    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()[:16]
+    return f"{host}:{port}:{int(use_https)}:{username}:{password_hash}"
+
+
+def _get_cached_ptz_client(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    *,
+    use_https: bool,
+) -> tuple[str, ONVIFClient]:
+    key = _ptz_client_key(host, port, username, password, use_https)
+    now = time.monotonic()
+    with _PTZ_COMMAND_LOCK:
+        cached = _PTZ_CLIENT_CACHE.get(key)
+        if cached is not None:
+            created_at, client = cached
+            if now - created_at <= PTZ_CLIENT_CACHE_TTL_SECONDS:
+                return key, client
+            _PTZ_CLIENT_CACHE.pop(key, None)
+    client = _new_onvif_client(host, port, username, password, timeout=3, use_https=use_https)
+    with _PTZ_COMMAND_LOCK:
+        _PTZ_CLIENT_CACHE[key] = (now, client)
+    return key, client
+
+
+def _drop_cached_ptz_client(key: str) -> None:
+    with _PTZ_COMMAND_LOCK:
+        _PTZ_CLIENT_CACHE.pop(key, None)
+
+
+def _should_skip_repeated_ptz(camera: Any, velocity: tuple[float, float, float]) -> bool:
+    key = _ptz_command_key(camera)
+    now = time.monotonic()
+    rounded_velocity = tuple(round(value, 3) for value in velocity)
+    with _PTZ_COMMAND_LOCK:
+        previous = _PTZ_LAST_COMMANDS.get(key)
+        _PTZ_LAST_COMMANDS[key] = (now, rounded_velocity)
+    if previous is None:
+        return False
+    previous_ts, previous_velocity = previous
+    return (
+        previous_velocity == rounded_velocity
+        and now - previous_ts < PTZ_CONTINUOUS_MIN_INTERVAL_SECONDS
+    )
 
 
 def camera_to_detail_payload(camera: Any) -> dict[str, Any]:
@@ -618,7 +742,7 @@ def ptz_relative_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: fl
     tilt = _clamp_unit(tilt)
     zoom = _clamp_unit(zoom)
     speed = _clamp_speed(speed)
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     translation: dict[str, Any] = {}
     if pan or tilt:
         translation["PanTilt"] = {"x": float(pan), "y": float(tilt)}
@@ -640,13 +764,19 @@ def ptz_relative_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: fl
     return {"ok": True}
 
 
-def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0, timeout_seconds: float | None = 0.4) -> dict[str, Any]:
+def ptz_continuous_move(
+    camera: Any,
+    pan: float = 0.0,
+    tilt: float = 0.0,
+    zoom: float = 0.0,
+    timeout_seconds: float | None = PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    pan = _clamp_unit(pan)
-    tilt = _clamp_unit(tilt)
-    zoom = _clamp_unit(zoom)
+    pan = _clamp_ptz_axis(pan)
+    tilt = _clamp_ptz_axis(tilt)
+    zoom = _clamp_ptz_axis(zoom)
     velocity: dict[str, Any] = {}
     if pan or tilt:
         velocity["PanTilt"] = {"x": float(pan), "y": float(tilt)}
@@ -654,7 +784,9 @@ def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: 
         velocity["Zoom"] = {"x": float(zoom)}
     if not velocity:
         return ptz_stop(camera)
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    if _should_skip_repeated_ptz(camera, (pan, tilt, zoom)):
+        return {"ok": True, "skipped": True}
+    cache_key, client = _get_cached_ptz_client(host, port, username, password, use_https=use_https)
     duration = max(
         min(float(timeout_seconds or PTZ_CONTINUOUS_DEFAULT_TIMEOUT_SECONDS), PTZ_CONTINUOUS_MAX_TIMEOUT_SECONDS),
         0.1,
@@ -663,12 +795,13 @@ def ptz_continuous_move(camera: Any, pan: float = 0.0, tilt: float = 0.0, zoom: 
         client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
         return {"ok": True}
     except Exception as exc:
+        _drop_cached_ptz_client(cache_key)
         log.debug(
             "PTZ ContinuousMove with Timeout failed for camera %s, retrying with explicit Stop: %s",
             getattr(camera, "camera_id", "?"),
             exc,
         )
-        client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+        client = _new_onvif_client(host, port, username, password, timeout=3, use_https=use_https)
         try:
             client.ptz().ContinuousMove(ProfileToken=camera.onvif_profile_token, Velocity=velocity)
             time.sleep(duration)
@@ -686,7 +819,7 @@ def ptz_absolute_move(camera: Any, pan: float | None = None, tilt: float | None 
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
     speed = _clamp_speed(speed)
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     position: dict[str, Any] = {}
     if pan is not None or tilt is not None:
         position["PanTilt"] = {"x": _clamp_unit(pan), "y": _clamp_unit(tilt)}
@@ -712,11 +845,14 @@ def ptz_stop(camera: Any) -> dict[str, Any]:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    with _PTZ_COMMAND_LOCK:
+        _PTZ_LAST_COMMANDS.pop(_ptz_command_key(camera), None)
+    cache_key, client = _get_cached_ptz_client(host, port, username, password, use_https=use_https)
     ptz = client.ptz()
     try:
         ptz.Stop(ProfileToken=camera.onvif_profile_token, PanTilt=True, Zoom=True)
     except Exception as exc:
+        _drop_cached_ptz_client(cache_key)
         try:
             ptz.Stop(ProfileToken=camera.onvif_profile_token)
         except Exception as fallback_exc:
@@ -728,7 +864,7 @@ def goto_home(camera: Any) -> dict[str, Any]:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     try:
         client.ptz().GotoHomePosition(ProfileToken=camera.onvif_profile_token)
     except Exception as exc:
@@ -744,7 +880,7 @@ def goto_preset(camera: Any, preset_token: str) -> dict[str, Any]:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     try:
         client.ptz().GotoPreset(ProfileToken=camera.onvif_profile_token, PresetToken=preset_token)
     except Exception as exc:
@@ -756,7 +892,7 @@ def set_preset(camera: Any, name: str, preset_token: str | None = None) -> str:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     try:
         result = client.ptz().SetPreset(ProfileToken=camera.onvif_profile_token, PresetName=name, PresetToken=preset_token)
     except Exception as exc:
@@ -771,7 +907,7 @@ def remove_preset(camera: Any, preset_token: str) -> dict[str, Any]:
     _endpoint_url, username, password, host, port, use_https = _camera_onvif_credentials(camera)
     if not host or not camera.onvif_profile_token:
         raise ONVIFServiceError("Для PTZ не настроен profile token или host")
-    client = ONVIFClient(host, port, username, password, timeout=8, use_https=use_https, verify_ssl=False)
+    client = _new_onvif_client(host, port, username, password, timeout=8, use_https=use_https)
     try:
         client.ptz().RemovePreset(ProfileToken=camera.onvif_profile_token, PresetToken=preset_token)
     except Exception as exc:

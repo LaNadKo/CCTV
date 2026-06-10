@@ -55,7 +55,7 @@ echo ""
 # Останавливаем старые контейнеры если есть
 compose_cmd down 2>/dev/null || true
 
-# Запускаем только нужные сервисы (без processor и frontend)
+# Запускаем только нужные сервисы (без processor)
 compose_cmd up -d --build db backend mediamtx
 
 echo ""

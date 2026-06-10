@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "ru.cctv" "\0"
-            VALUE "FileDescription", "cctv_console" "\0"
+            VALUE "FileDescription", "CCTV Консоль" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "cctv_console" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 ru.cctv. All rights reserved." "\0"
             VALUE "OriginalFilename", "cctv_console.exe" "\0"
-            VALUE "ProductName", "cctv_console" "\0"
+            VALUE "ProductName", "CCTV Консоль" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

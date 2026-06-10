@@ -18,6 +18,7 @@ from app.schemas.auth import (
     ProfileUpdateRequest,
     TokenResponse,
     TotpCodeRequest,
+    TotpDisableRequest,
     TotpSetupResponse,
     TotpStatusResponse,
     UserOut,
@@ -257,9 +258,18 @@ async def totp_activate(
 
 @router.post("/totp/disable", response_model=TotpStatusResponse)
 async def totp_disable(
+    payload: TotpDisableRequest,
+    request: Request,
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> TotpStatusResponse:
+    check_rate_limit(
+        request,
+        f"totp-disable:{current_user.user_id}",
+        attempts=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+        detail="Too many TOTP attempts",
+    )
     result = await session.execute(
         select(models.UserMfaMethod).where(
             models.UserMfaMethod.user_id == current_user.user_id,
@@ -267,9 +277,41 @@ async def totp_disable(
         )
     )
     method = result.scalar_one_or_none()
-    if method is None:
+    if method is None or not method.is_enabled:
         return TotpStatusResponse(enabled=False)
+
+    if not verify_password(payload.current_password, current_user.password_hash):
+        await _log_auth_event(
+            session,
+            current_user.user_id,
+            method="password+totp",
+            success=False,
+            reason="totp_disable_invalid_password",
+            request=request,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid current password")
+
+    if method.secret is None or not verify_totp(payload.code, decrypt_secret(method.secret)):
+        await _log_auth_event(
+            session,
+            current_user.user_id,
+            method="password+totp",
+            success=False,
+            reason="totp_disable_invalid_totp",
+            request=request,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid TOTP code")
+
     method.is_enabled = False
     method.secret = None
+    method.last_used_at = datetime.utcnow()
+    await _log_auth_event(
+        session,
+        current_user.user_id,
+        method="password+totp",
+        success=True,
+        reason="totp_disabled",
+        request=request,
+    )
     await session.commit()
     return TotpStatusResponse(enabled=False)

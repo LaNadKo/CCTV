@@ -9,12 +9,11 @@ venv/
 .venv-processor311/
 .tmp-ort115/
 tmp/
+Диплом/
+Дизайн/
 
 # Node
 node_modules/
-frontend/dist/
-frontend/android/
-frontend/ios/
 
 # IDE
 .vscode/
@@ -70,7 +69,6 @@ mobile/react-capacitor/android/app/build/
 desktop/node_modules/
 desktop/release/
 desktop/installer_output/
-desktop/frontend/
 
 # Processor build artifacts
 processor/dist/
@@ -89,6 +87,7 @@ dist/
 firmware/**/.pio/
 external/
 output/
+outputs/
 
 # Required desktop build resources
 !desktop/build/

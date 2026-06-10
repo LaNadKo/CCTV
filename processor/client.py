@@ -1,5 +1,6 @@
 """HTTP client for backend API."""
 from __future__ import annotations
+import asyncio
 import logging
 from pathlib import Path
 import httpx
@@ -100,25 +101,47 @@ class BackendClient:
             for key, value in recording.items()
             if value is not None
         }
-        with path.open("rb") as handle:
+        return await asyncio.to_thread(
+            self._upload_recording_sync,
+            processor_id,
+            data,
+            path,
+        )
+
+    def _upload_recording_sync(
+        self,
+        processor_id: int,
+        data: dict[str, str],
+        path: Path,
+    ) -> dict:
+        with path.open("rb") as handle, httpx.Client(
+            timeout=None,
+            headers={"X-Api-Key": self.api_key},
+        ) as client:
             files = {"file": (path.name, handle, "video/mp4")}
-            r = await self._http.post(
+            response = client.post(
                 f"{self.base}/processors/{processor_id}/recordings/upload",
                 data=data,
                 files=files,
-                headers={"X-Api-Key": self.api_key},
-                timeout=None,
             )
-        r.raise_for_status()
-        return r.json()
+        response.raise_for_status()
+        return response.json()
 
     async def get_storage_config(self, processor_id: int) -> dict:
         r = await self._http.get(f"{self.base}/processors/{processor_id}/storage-config")
         r.raise_for_status()
         return r.json()
 
-    async def get_pending_commands(self, processor_id: int, limit: int = 10) -> list[dict]:
-        r = await self._http.get(f"{self.base}/processors/{processor_id}/commands/pending", params={"limit": limit})
+    async def get_pending_commands(
+        self,
+        processor_id: int,
+        limit: int = 10,
+        runner: str = "runtime",
+    ) -> list[dict]:
+        r = await self._http.get(
+            f"{self.base}/processors/{processor_id}/commands/pending",
+            params={"limit": limit, "runner": runner},
+        )
         r.raise_for_status()
         return r.json()
 

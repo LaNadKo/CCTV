@@ -122,31 +122,21 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
   }
 
   Future<void> _disableTotp() async {
-    final confirmed = await showDialog<bool>(
+    final payload = await showDialog<_TotpDisablePayload>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Отключить 2FA?'),
-        content: const Text(
-          'После отключения вход будет выполняться только по логину и паролю.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Отключить'),
-          ),
-        ],
-      ),
+      barrierDismissible: false,
+      builder: (_) => const _TotpDisableDialog(),
     );
-    if (confirmed != true) return;
+    if (payload == null) return;
     await _run(() async {
       final auth = context.read<AuthController>();
       final token = auth.accessToken;
       if (token == null) return;
-      await auth.apiClient.disableTotp(token);
+      await auth.apiClient.disableTotp(
+        token,
+        currentPassword: payload.currentPassword,
+        code: payload.code,
+      );
       await auth.reloadUser();
       _toast('Двухфакторная аутентификация отключена');
     });
@@ -184,8 +174,7 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
         children: [
           const _SectionTitle(
             title: 'Профиль и безопасность',
-            subtitle:
-                'Личные данные, пароль и двухфакторная аутентификация пользователя.',
+            subtitle: '',
           ),
           const SizedBox(height: 16),
           Wrap(
@@ -396,6 +385,102 @@ class _PasswordAndTotpForm extends StatelessWidget {
   }
 }
 
+class _TotpDisablePayload {
+  const _TotpDisablePayload({
+    required this.currentPassword,
+    required this.code,
+  });
+
+  final String currentPassword;
+  final String code;
+}
+
+class _TotpDisableDialog extends StatefulWidget {
+  const _TotpDisableDialog();
+
+  @override
+  State<_TotpDisableDialog> createState() => _TotpDisableDialogState();
+}
+
+class _TotpDisableDialogState extends State<_TotpDisableDialog> {
+  final _password = TextEditingController();
+  final _code = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _password.addListener(_refresh);
+    _code.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    _password.removeListener(_refresh);
+    _code.removeListener(_refresh);
+    _password.dispose();
+    _code.dispose();
+    super.dispose();
+  }
+
+  bool get _canSubmit =>
+      _password.text.trim().isNotEmpty && _code.text.trim().length == 6;
+
+  void _refresh() => setState(() {});
+
+  void _submit() {
+    if (!_canSubmit) return;
+    Navigator.of(context).pop(
+      _TotpDisablePayload(
+        currentPassword: _password.text,
+        code: _code.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      title: const Text('Отключение 2FA'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _password,
+              obscureText: true,
+              autofocus: true,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(labelText: 'Текущий пароль'),
+            ),
+            const SizedBox(height: 12),
+            SegmentedCodeField(
+              controller: _code,
+              length: 6,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              onCompleted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        ElevatedButton(
+          onPressed: _canSubmit ? _submit : null,
+          child: const Text('Отключить'),
+        ),
+      ],
+    );
+  }
+}
+
 class _TotpSetupDialog extends StatefulWidget {
   const _TotpSetupDialog({
     required this.secret,
@@ -484,20 +569,19 @@ class _TotpSetupDialogState extends State<_TotpSetupDialog> {
                 style: TextStyle(color: colors.muted, fontSize: 13),
               ),
               const SizedBox(height: 8),
-              SelectableText(
-                widget.secret,
-                style: TextStyle(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w800,
+              TextFormField(
+                initialValue: widget.secret,
+                readOnly: true,
+                decoration: InputDecoration(
+                  labelText: 'Секретный ключ',
+                  suffixIcon: IconButton(
+                    tooltip: 'Скопировать ключ',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: widget.secret));
+                    },
+                    icon: const Icon(Icons.copy_rounded),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: widget.secret));
-                },
-                icon: const Icon(Icons.copy_rounded, size: 18),
-                label: const Text('Скопировать ключ'),
               ),
               const SizedBox(height: 14),
               SegmentedCodeField(
@@ -561,8 +645,6 @@ class _SectionTitle extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        const SizedBox(height: 3),
-        Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
       ],
     );
   }

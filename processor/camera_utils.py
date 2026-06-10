@@ -20,9 +20,24 @@ def _inject_credentials(url: str, username: str | None, password: str | None) ->
     return f"{scheme}://{auth_host}{sep}{path_part}"
 
 
-def resolve_source(assignment: dict) -> str | int | None:
+def _append_unique(items: list[str | int], value: str | int) -> None:
+    if value not in items:
+        items.append(value)
+
+
+def _with_rtsp_fallbacks(url: str) -> list[str]:
+    values = [url]
+    lowered = url.lower()
+    if lowered.endswith("/stream1"):
+        values.append(url[:-1] + "2")
+    elif lowered.endswith("/stream2"):
+        values.append(url[:-1] + "1")
+    return values
+
+
+def source_candidates(assignment: dict) -> list[str | int]:
     endpoints = assignment.get("endpoints", [])
-    rtsp_candidates: list[tuple[int, str]] = []
+    rtsp_candidates: list[tuple[int, list[str]]] = []
     http_candidates: list[tuple[int, str]] = []
     for endpoint in endpoints:
         kind = endpoint.get("endpoint_kind")
@@ -32,23 +47,42 @@ def resolve_source(assignment: dict) -> str | int | None:
         weight = 100 if endpoint.get("is_primary") else 0
         auth_url = _inject_credentials(url, endpoint.get("username"), endpoint.get("password_secret"))
         if kind == "rtsp":
-            rtsp_candidates.append((weight, auth_url))
+            rtsp_candidates.append((weight, _with_rtsp_fallbacks(auth_url)))
         elif kind == "http":
             http_candidates.append((weight, auth_url))
+
+    candidates: list[str | int] = []
     if rtsp_candidates:
         rtsp_candidates.sort(reverse=True)
-        return rtsp_candidates[0][1]
+        for _weight, urls in rtsp_candidates:
+            for url in urls:
+                _append_unique(candidates, url)
     if http_candidates:
         http_candidates.sort(reverse=True)
-        return http_candidates[0][1]
+        for _weight, url in http_candidates:
+            _append_unique(candidates, url)
 
     if assignment.get("stream_url"):
         src = assignment["stream_url"]
         if isinstance(src, str) and src.isdigit():
-            return int(src)
-        return src
+            _append_unique(candidates, int(src))
+        elif isinstance(src, str) and src.lower().startswith("rtsp://"):
+            for url in _with_rtsp_fallbacks(src):
+                _append_unique(candidates, url)
+        else:
+            _append_unique(candidates, src)
 
     ip = assignment.get("ip_address")
     if ip:
-        return f"rtsp://{ip}:554/stream"
-    return None
+        for url in (
+            f"rtsp://{ip}:554/stream",
+            f"rtsp://{ip}:554/stream1",
+            f"rtsp://{ip}:554/stream2",
+        ):
+            _append_unique(candidates, url)
+    return candidates
+
+
+def resolve_source(assignment: dict) -> str | int | None:
+    candidates = source_candidates(assignment)
+    return candidates[0] if candidates else None

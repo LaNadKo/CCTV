@@ -8,6 +8,7 @@ void main() {
       'recording_segment_seconds': 300,
       'max_workers': 0,
       'processor_accel': 'bad',
+      'theme_mode': 'bad',
       'theme_primary_color': '49c8e8',
     }, r'C:\runtime');
 
@@ -16,6 +17,7 @@ void main() {
     expect(config['poll_interval'], 1);
     expect(config['heartbeat_interval'], 10);
     expect(config['processor_accel'], 'auto');
+    expect(config['theme_mode'], 'dark');
     expect(config['theme_primary_color'], '#49C8E8');
   });
 

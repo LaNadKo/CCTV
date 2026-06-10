@@ -206,7 +206,6 @@ def collect_program_files() -> list[Path]:
         "start-all.bat",
         "start-backend.bat",
         "start-db.bat",
-        "start-frontend.bat",
         "start-local.bat",
         "stop-all.bat",
         "stop-local.bat",
@@ -217,21 +216,6 @@ def collect_program_files() -> list[Path]:
     files += collect_by_suffix(PROJECT_ROOT / "cctv_ai", {".py"})
     files += collect_by_suffix(PROJECT_ROOT / "migrations", {".py"})
     files += collect_by_suffix(PROJECT_ROOT / "processor", {".py", ".txt", ".yml", ".yaml", ".sh", ".bat", ".iss", ".service", ".example", ".spec"})
-
-    frontend_root_files = [
-        "Dockerfile",
-        "capacitor.config.ts",
-        "eslint.config.js",
-        "index.html",
-        "package.json",
-        "tsconfig.app.json",
-        "tsconfig.json",
-        "tsconfig.node.json",
-        "vite.config.ts",
-        "public/sw.js",
-    ]
-    files += [PROJECT_ROOT / "frontend" / item for item in frontend_root_files]
-    files += collect_by_suffix(PROJECT_ROOT / "frontend" / "src", {".ts", ".tsx", ".css"})
 
     for app_dir in ("native/cctv_console", "native/cctv_processor_gui"):
         base = PROJECT_ROOT / app_dir

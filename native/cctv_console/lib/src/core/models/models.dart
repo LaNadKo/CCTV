@@ -242,7 +242,7 @@ class ProcessorOut {
   factory ProcessorOut.fromJson(Map<String, dynamic> json) {
     return ProcessorOut(
       processorId: json['processor_id'] as int,
-      name: json['name'] as String? ?? 'Processor',
+      name: json['name'] as String? ?? 'Процессор',
       status: json['status'] as String? ?? 'offline',
       nodeUid: json['node_uid'] as String?,
       host: json['host'] as String? ?? json['ip_address'] as String?,

@@ -25,3 +25,36 @@ class LocalRecordingOut(BaseModel):
     size_bytes: int
     modified_at: str
     camera_id: Optional[int] = None
+
+
+class RecordingPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[RecordingOut]
+
+
+class RecordingTimelineHour(BaseModel):
+    hour: int
+    clip_count: int
+    duration_seconds: float
+    size_bytes: int
+    first_at: str
+    last_at: str
+    preview_recording_id: int
+
+
+class RecordingTimelineDay(BaseModel):
+    date: str
+    clip_count: int
+    duration_seconds: float
+    size_bytes: int
+    hours: list[RecordingTimelineHour]
+
+
+class RecordingTimeline(BaseModel):
+    total_days: int
+    total_clips: int
+    day_limit: int
+    day_offset: int
+    days: list[RecordingTimelineDay]

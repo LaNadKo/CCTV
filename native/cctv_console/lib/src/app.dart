@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'core/theme/app_theme.dart';
@@ -6,6 +7,7 @@ import 'core/theme/theme_controller.dart';
 import 'features/auth/auth_controller.dart';
 import 'features/auth/login_screen.dart';
 import 'features/shell/app_shell.dart';
+import 'shared/widgets/motion.dart';
 
 class CctvConsoleApp extends StatelessWidget {
   const CctvConsoleApp({super.key});
@@ -16,8 +18,17 @@ class CctvConsoleApp extends StatelessWidget {
     final auth = context.watch<AuthController>();
 
     return MaterialApp(
-      title: 'CCTV Console',
+      title: 'CCTV Консоль',
       debugShowCheckedModeBanner: false,
+      locale: const Locale('ru', 'RU'),
+      supportedLocales: const [Locale('ru', 'RU'), Locale('en', 'US')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+      ],
+      themeAnimationDuration: Duration.zero,
+      themeAnimationCurve: CctvMotion.emphasized,
       themeMode: settings.materialThemeMode,
       theme: AppTheme.build(settings: settings, brightness: Brightness.light),
       darkTheme: AppTheme.build(
@@ -41,7 +52,19 @@ class CctvConsoleApp extends StatelessWidget {
         );
       },
       home: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 220),
+        duration: CctvMotion.resolved(context, CctvMotion.calm),
+        switchInCurve: CctvMotion.emphasized,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) {
+          final offset = Tween<Offset>(
+            begin: const Offset(0, 0.018),
+            end: Offset.zero,
+          ).animate(animation);
+          return FadeTransition(
+            opacity: animation,
+            child: SlideTransition(position: offset, child: child),
+          );
+        },
         child: auth.isAuthenticated ? const AppShell() : const LoginScreen(),
       ),
     );

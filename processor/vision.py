@@ -21,13 +21,18 @@ def get_inference_device() -> str:
     return _get_face_device()
 
 
-def detect_faces(frame_rgb: np.ndarray) -> list[dict]:
+def detect_faces(
+    frame_rgb: np.ndarray,
+    *,
+    build_variants: bool = True,
+    det_size: tuple[int, int] = (1024, 1024),
+) -> list[dict]:
     return detect_faces_rgb(
         frame_rgb,
         prob_min=0.46,
         min_face_ratio=0.028,
-        det_size=(1024, 1024),
-        build_variants=True,
+        det_size=det_size,
+        build_variants=build_variants,
         max_num=0,
     )
 

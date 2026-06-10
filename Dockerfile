@@ -1,13 +1,3 @@
-FROM node:22-alpine AS frontend-build
-
-WORKDIR /frontend
-
-COPY frontend/package*.json ./
-RUN npm ci
-
-COPY frontend/ ./
-RUN npm run build
-
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -29,7 +19,6 @@ COPY --chown=cctv:cctv alembic.ini .
 COPY --chown=cctv:cctv migrations/ migrations/
 COPY --chown=cctv:cctv app/ app/
 COPY --chown=cctv:cctv cctv_ai/ cctv_ai/
-COPY --chown=cctv:cctv --from=frontend-build /frontend/dist frontend_dist/
 COPY --chown=cctv:cctv docker-entrypoint.sh .
 RUN sed -i 's/\r$//' docker-entrypoint.sh && \
     chmod +x docker-entrypoint.sh && \

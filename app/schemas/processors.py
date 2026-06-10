@@ -88,6 +88,8 @@ class SystemMetrics(BaseModel):
     disk_total_gb: float | None = None
     active_cameras: int | None = None
     uptime_seconds: float | None = None
+    bottleneck: str | None = None
+    camera_bottlenecks: dict[str, str] | None = None
 
 
 class ProcessorHeartbeat(BaseModel):

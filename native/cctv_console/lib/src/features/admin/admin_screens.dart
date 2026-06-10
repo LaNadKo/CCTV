@@ -1,3 +1,5 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -28,6 +30,10 @@ import '../modules/module_screens.dart'
         DialogField;
 
 typedef RowMap = Map<String, dynamic>;
+typedef ProcessorCommandSender = Future<void> Function(
+  String commandType, {
+  Map<String, dynamic>? payload,
+});
 
 class ReviewsManagementScreen extends StatefulWidget {
   const ReviewsManagementScreen({super.key});
@@ -45,6 +51,9 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
   List<RowMap> _events = const [];
   List<RowMap> _persons = const [];
   final Map<int, int?> _personByEvent = {};
+  final Map<int, List<RowMap>> _candidatesByEvent = {};
+  final Map<int, String> _candidateNotesByEvent = {};
+  final Set<int> _loadingCandidates = {};
 
   @override
   void initState() {
@@ -91,6 +100,15 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
       _personByEvent.removeWhere(
         (eventId, _) => !events.any((event) => event['event_id'] == eventId),
       );
+      _candidatesByEvent.removeWhere(
+        (eventId, _) => !events.any((event) => event['event_id'] == eventId),
+      );
+      _candidateNotesByEvent.removeWhere(
+        (eventId, _) => !events.any((event) => event['event_id'] == eventId),
+      );
+      _loadingCandidates.removeWhere(
+        (eventId) => !events.any((event) => event['event_id'] == eventId),
+      );
       for (final event in events) {
         final eventId = _asInt(event['event_id']);
         if (eventId != null && !_personByEvent.containsKey(eventId)) {
@@ -105,6 +123,50 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadCandidates(RowMap event) async {
+    final token = context.read<AuthController>().accessToken;
+    final eventId = _asInt(event['event_id']);
+    if (token == null || eventId == null) return;
+    if (_candidatesByEvent.containsKey(eventId) ||
+        _loadingCandidates.contains(eventId)) {
+      return;
+    }
+    final snapshotUrl = '${event['snapshot_url'] ?? ''}'.trim();
+    if (snapshotUrl.isEmpty) {
+      setState(() {
+        _candidatesByEvent[eventId] = const [];
+        _candidateNotesByEvent[eventId] =
+            'У события нет снимка для сравнения.';
+      });
+      return;
+    }
+    setState(() => _loadingCandidates.add(eventId));
+    try {
+      final candidates = await context
+          .read<ApiClient>()
+          .listReviewCandidates(token, eventId, limit: 3);
+      if (!mounted) return;
+      setState(() {
+        _candidatesByEvent[eventId] = candidates;
+        if (candidates.isEmpty) {
+          _candidateNotesByEvent[eventId] =
+              'Совпадений не найдено: нет лица на снимке или нет обученных embeddings.';
+        } else {
+          _candidateNotesByEvent.remove(eventId);
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _candidatesByEvent[eventId] = const [];
+        _candidateNotesByEvent[eventId] =
+            'Не удалось загрузить предположения: $error';
+      });
+    } finally {
+      if (mounted) setState(() => _loadingCandidates.remove(eventId));
     }
   }
 
@@ -166,7 +228,7 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
     if (token == null || eventId == null) return;
     final name = await _personNameDialog(
       context,
-      title: 'Создать персону из snapshot',
+      title: 'Создать персону из снимка',
     );
     if (name == null) return;
     try {
@@ -249,8 +311,6 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
               children: [
                 ModuleHeader(
                   title: 'Ревью',
-                  subtitle:
-                      'Подтверждение неизвестных событий, привязка к персоне и обучение из snapshot/recording.',
                   icon: Icons.fact_check_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -308,8 +368,21 @@ class _ReviewsManagementScreenState extends State<ReviewsManagementScreen>
                   child: _ReviewCard(
                     event: event,
                     selectedPerson: person,
+                    candidatePersons: eventId == null
+                        ? const []
+                        : _candidatesByEvent[eventId] ?? const [],
+                    candidateNote: eventId == null
+                        ? null
+                        : _candidateNotesByEvent[eventId],
+                    loadingCandidates:
+                        eventId != null && _loadingCandidates.contains(eventId),
                     mediaToken: context.watch<AuthController>().mediaToken,
                     onPickPerson: () => _pickPerson(event),
+                    onLoadCandidates: () => _loadCandidates(event),
+                    onSelectCandidate: (personId) {
+                      if (eventId == null) return;
+                      setState(() => _personByEvent[eventId] = personId);
+                    },
                     onApprove: () => _review(event, 'approved'),
                     onReject: () => _review(event, 'rejected'),
                     onEnrollSnapshot: () => _enrollFromSnapshot(event),
@@ -340,11 +413,19 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen>
   List<CameraSummary> _cameras = const [];
   RowMap? _detail;
   int? _selectedId;
+  final _groupSearchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _groupSearchController.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _groupSearchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -510,6 +591,7 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen>
   Widget build(BuildContext context) {
     final isAdmin = context.watch<AuthController>().user?.isAdmin ?? false;
     final detail = _detail;
+    final visibleGroups = _filterGroups(_groups, _groupSearchController.text);
     final assignedIds = _asList(
       detail?['cameras'],
     ).map((item) => _asInt(item['camera_id'])).whereType<int>().toSet();
@@ -530,9 +612,6 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen>
               children: [
                 ModuleHeader(
                   title: 'Группы',
-                  subtitle: isAdmin
-                      ? 'Группы видны всем пользователям, редактирование доступно администратору.'
-                      : 'Просмотр групп и состава камер.',
                   icon: Icons.account_tree_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -555,7 +634,9 @@ class _GroupsManagementScreenState extends State<GroupsManagementScreen>
                   builder: (context, constraints) {
                     final narrow = constraints.maxWidth < 920;
                     final left = _GroupList(
-                      groups: _groups,
+                      groups: visibleGroups,
+                      totalCount: _groups.length,
+                      searchController: _groupSearchController,
                       selectedId: _selectedId,
                       onSelect: _select,
                     );
@@ -609,6 +690,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
   List<ProcessorOut> _processors = const [];
   List<CameraSummary> _cameras = const [];
   List<RowMap> _commands = const [];
+  final _processorSearchController = TextEditingController();
   int? _selectedId;
 
   static const _commandTypes = [
@@ -617,13 +699,23 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
     'stop_all_cameras',
     'resume_cameras',
     'refresh_gallery',
-    'shutdown',
+    'start_runtime',
+    'stop_runtime',
+    'restart_runtime',
+    'apply_detection_settings',
   ];
 
   @override
   void initState() {
     super.initState();
+    _processorSearchController.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _processorSearchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -683,7 +775,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
       if (!mounted) return;
       await showResultDialog(
         context,
-        title: 'Код подключения Processor',
+        title: 'Код подключения Процессора',
         value: '${result['code'] ?? ''}',
         note: 'Действует до: ${formatCell(result['expires_at'])}',
         segmentedCode: true,
@@ -728,23 +820,28 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
     }
   }
 
-  Future<void> _sendCommand(String commandType) async {
+  Future<void> _sendCommand(
+    String commandType, {
+    Map<String, dynamic>? payload,
+  }) async {
     final token = context.read<AuthController>().accessToken;
+    final api = context.read<ApiClient>();
     final processorId = _selectedId;
     if (token == null || processorId == null) return;
-    final ok = commandType == 'shutdown'
+    final ok = commandType == 'stop_runtime'
         ? await confirmAction(
             context,
-            title: 'Отправить shutdown?',
-            message: 'Processor может остановиться до ручного запуска.',
+            title: 'Остановить Runtime?',
+            message: 'Runtime остановит обработку камер до повторного запуска.',
           )
         : true;
+    if (!mounted) return;
     if (!ok) return;
     try {
-      await context.read<ApiClient>().postJson(
+      await api.postJson(
         '/processors/$processorId/commands',
         token: token,
-        body: {'command_type': commandType, 'payload': <String, dynamic>{}},
+        body: {'command_type': commandType, 'payload': payload ?? <String, dynamic>{}},
       );
       await _load();
       _markProcessorsChanged();
@@ -775,7 +872,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
     if (token == null) return;
     final ok = await confirmAction(
       context,
-      title: 'Удалить Processor?',
+      title: 'Удалить Процессор?',
       message: 'Назначения камер для этого узла будут потеряны.',
     );
     if (!ok) return;
@@ -797,8 +894,29 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
     context.read<RefreshBus>().markStale(const ['/live', '/reports']);
   }
 
+  List<ProcessorOut> get _filteredProcessors {
+    final query = _processorSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return _processors;
+    return _processors.where((processor) {
+      final haystack = [
+        processor.name,
+        processor.status,
+        processor.host,
+        processor.nodeUid,
+        processor.osInfo,
+        processor.version,
+        'id ${processor.processorId}',
+        ...processor.assignedCameras.map(
+          (camera) => '${camera.name} ${camera.location ?? ''}',
+        ),
+      ].whereType<String>().join(' ').toLowerCase();
+      return haystack.contains(query);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final visibleProcessors = _filteredProcessors;
     final selected = _processors
         .where((processor) => processor.processorId == _selectedId)
         .firstOrNull;
@@ -822,9 +940,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
             child: Column(
               children: [
                 ModuleHeader(
-                  title: 'Processor',
-                  subtitle:
-                      'Централизованное управление узлами обработки, назначениями камер и командами.',
+                  title: 'Процессор',
                   icon: Icons.memory_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -847,7 +963,7 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
                   runSpacing: 10,
                   children: [
                     _StatTile(label: 'Узлов', value: '${_processors.length}'),
-                    _StatTile(label: 'Online', value: '$online'),
+                    _StatTile(label: 'Онлайн', value: '$online'),
                     _StatTile(label: 'Камер', value: '${_cameras.length}'),
                   ],
                 ),
@@ -856,7 +972,9 @@ class _ProcessorsManagementScreenState extends State<ProcessorsManagementScreen>
                   builder: (context, constraints) {
                     final narrow = constraints.maxWidth < 980;
                     final left = _ProcessorList(
-                      processors: _processors,
+                      processors: visibleProcessors,
+                      totalCount: _processors.length,
+                      searchController: _processorSearchController,
                       selectedId: _selectedId,
                       onSelect: (id) {
                         setState(() => _selectedId = id);
@@ -911,6 +1029,8 @@ class UsersManagementScreen extends StatefulWidget {
 
 class _UsersManagementScreenState extends State<UsersManagementScreen>
     with RouteRefreshState<UsersManagementScreen> {
+  final _searchController = TextEditingController();
+  Timer? _searchDebounce;
   bool _loading = false;
   String? _error;
   List<RowMap> _users = const [];
@@ -918,7 +1038,17 @@ class _UsersManagementScreenState extends State<UsersManagementScreen>
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(_scheduleSearch);
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController
+      ..removeListener(_scheduleSearch)
+      ..dispose();
+    super.dispose();
   }
 
   @override
@@ -941,6 +1071,11 @@ class _UsersManagementScreenState extends State<UsersManagementScreen>
       final users = await context.read<ApiClient>().getJsonList(
         '/admin/users',
         token: token,
+        query: {
+          if (_searchController.text.trim().isNotEmpty)
+            'q': _searchController.text.trim(),
+          'limit': '300',
+        },
       );
       if (mounted) setState(() => _users = users);
     } catch (error) {
@@ -948,6 +1083,13 @@ class _UsersManagementScreenState extends State<UsersManagementScreen>
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _scheduleSearch() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) unawaited(_load());
+    });
   }
 
   Future<void> _createUser() async {
@@ -1018,8 +1160,6 @@ class _UsersManagementScreenState extends State<UsersManagementScreen>
               children: [
                 ModuleHeader(
                   title: 'Пользователи',
-                  subtitle:
-                      'Учётные записи, роли и защита от удаления текущего пользователя.',
                   icon: Icons.manage_accounts_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -1034,6 +1174,22 @@ class _UsersManagementScreenState extends State<UsersManagementScreen>
                       ),
                       RefreshButton(loading: _loading, onPressed: _load),
                     ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    labelText: 'Поиск пользователей',
+                    hintText: 'Логин, ФИО, роль, статус или ID',
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Очистить',
+                            onPressed: _searchController.clear,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1173,7 +1329,7 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen>
     final ok = await confirmAction(
       context,
       title: 'Удалить API ключ?',
-      message: 'Ключ перестанет работать для Processor и интеграций.',
+      message: 'Ключ перестанет работать для Процессора и интеграций.',
     );
     if (!ok) return;
     try {
@@ -1205,8 +1361,6 @@ class _ApiKeysManagementScreenState extends State<ApiKeysManagementScreen>
               children: [
                 ModuleHeader(
                   title: 'API ключи',
-                  subtitle:
-                      'Создание, отключение, срок действия и scopes сервисных ключей.',
                   icon: Icons.vpn_key_rounded,
                   trailing: Wrap(
                     spacing: 10,
@@ -1257,8 +1411,13 @@ class _ReviewCard extends StatelessWidget {
   const _ReviewCard({
     required this.event,
     required this.selectedPerson,
+    required this.candidatePersons,
+    required this.candidateNote,
+    required this.loadingCandidates,
     required this.mediaToken,
     required this.onPickPerson,
+    required this.onLoadCandidates,
+    required this.onSelectCandidate,
     required this.onApprove,
     required this.onReject,
     required this.onEnrollSnapshot,
@@ -1267,8 +1426,13 @@ class _ReviewCard extends StatelessWidget {
 
   final RowMap event;
   final RowMap? selectedPerson;
+  final List<RowMap> candidatePersons;
+  final String? candidateNote;
+  final bool loadingCandidates;
   final String? mediaToken;
   final VoidCallback onPickPerson;
+  final VoidCallback onLoadCandidates;
+  final ValueChanged<int> onSelectCandidate;
   final VoidCallback onApprove;
   final VoidCallback onReject;
   final VoidCallback onEnrollSnapshot;
@@ -1313,7 +1477,7 @@ class _ReviewCard extends StatelessWidget {
                     'Время',
                     formatCell(event['event_ts'], keyHint: 'event_ts'),
                   ),
-                  _InfoPill('Confidence', formatCell(event['confidence'])),
+                  _InfoPill('Уверенность', formatCell(event['confidence'])),
                   _InfoPill(
                     'Персона',
                     selectedPerson == null
@@ -1321,6 +1485,38 @@ class _ReviewCard extends StatelessWidget {
                         : _personLabel(selectedPerson!),
                   ),
                   if (recordingId != null) _InfoPill('Запись', '#$recordingId'),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: loadingCandidates ? null : onLoadCandidates,
+                    icon: loadingCandidates
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.person_pin_rounded, size: 18),
+                    label: const Text('Показать предположения'),
+                  ),
+                  if (candidatePersons.isNotEmpty)
+                    _InfoPill('Предположения', '${candidatePersons.length}'),
+                  for (final candidate in candidatePersons)
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        final personId = _asInt(candidate['person_id']);
+                        if (personId != null) onSelectCandidate(personId);
+                      },
+                      icon: const Icon(Icons.person_pin_rounded, size: 18),
+                      label: Text(_candidateLabel(candidate)),
+                    ),
+                  if ((candidateNote ?? '').isNotEmpty)
+                    _InfoPill('Предположения', candidateNote!),
                 ],
               ),
               const SizedBox(height: 12),
@@ -1341,7 +1537,7 @@ class _ReviewCard extends StatelessWidget {
                   OutlinedButton.icon(
                     onPressed: snapshotUrl == null ? null : onEnrollSnapshot,
                     icon: const Icon(Icons.add_a_photo_rounded, size: 18),
-                    label: const Text('Создать из snapshot'),
+                    label: const Text('Создать из снимка'),
                   ),
                   OutlinedButton.icon(
                     onPressed: recordingId == null ? null : onEnrollRecording,
@@ -1438,14 +1634,70 @@ class _ReviewVideoDialogState extends State<_ReviewVideoDialog> {
   }
 }
 
+List<RowMap> _filterGroups(List<RowMap> groups, String rawQuery) {
+  final query = rawQuery.trim().toLowerCase();
+  if (query.isEmpty) return groups;
+  return groups.where((group) {
+    final text =
+        '${group['name'] ?? ''} ${group['description'] ?? ''} ${group['camera_count'] ?? ''}'
+            .toLowerCase();
+    return _looseAdminContains(text, query);
+  }).toList(growable: false);
+}
+
+bool _looseAdminContains(String text, String query) {
+  if (text.contains(query)) return true;
+  final parts = query
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  if (parts.isEmpty) return true;
+  final words = text.split(RegExp(r'\s+')).where((word) => word.isNotEmpty);
+  return parts.every((part) {
+    if (text.contains(part)) return true;
+    return words.any((word) => _adminEditDistance(word, part) <= 1);
+  });
+}
+
+int _adminEditDistance(String a, String b) {
+  if ((a.length - b.length).abs() > 1) return 2;
+  if (a == b) return 0;
+  var i = 0;
+  var j = 0;
+  var edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a.codeUnitAt(i) == b.codeUnitAt(j)) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return edits;
+    if (a.length > b.length) {
+      i++;
+    } else if (b.length > a.length) {
+      j++;
+    } else {
+      i++;
+      j++;
+    }
+  }
+  if (i < a.length || j < b.length) edits++;
+  return edits;
+}
+
 class _GroupList extends StatelessWidget {
   const _GroupList({
     required this.groups,
+    required this.totalCount,
+    required this.searchController,
     required this.selectedId,
     required this.onSelect,
   });
 
   final List<RowMap> groups;
+  final int totalCount;
+  final TextEditingController searchController;
   final int? selectedId;
   final ValueChanged<int> onSelect;
 
@@ -1458,8 +1710,26 @@ class _GroupList extends StatelessWidget {
         children: [
           Text('Список групп', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 10),
+          TextField(
+            controller: searchController,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search_rounded),
+              labelText: 'Поиск групп',
+              suffixIcon: searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: searchController.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 10),
           if (groups.isEmpty)
-            const EmptyPanel(message: 'Групп пока нет.')
+            EmptyPanel(
+              message: totalCount == 0
+                  ? 'Групп пока нет.'
+                  : 'Под фильтр групп нет.',
+            )
           else
             SizedBox(
               height: 520,
@@ -1579,11 +1849,15 @@ class _GroupDetail extends StatelessWidget {
 class _ProcessorList extends StatelessWidget {
   const _ProcessorList({
     required this.processors,
+    required this.totalCount,
+    required this.searchController,
     required this.selectedId,
     required this.onSelect,
   });
 
   final List<ProcessorOut> processors;
+  final int totalCount;
+  final TextEditingController searchController;
   final int? selectedId;
   final ValueChanged<int> onSelect;
 
@@ -1596,11 +1870,30 @@ class _ProcessorList extends StatelessWidget {
         children: [
           Text('Узлы обработки', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 10),
+          TextField(
+            controller: searchController,
+            decoration: InputDecoration(
+              hintText: 'Имя, IP, статус, UID или камера',
+              prefixIcon: const Icon(Icons.search_rounded),
+              suffixIcon: searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Очистить',
+                      onPressed: searchController.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 10),
           if (processors.isEmpty)
-            const EmptyPanel(message: 'Processor пока не зарегистрированы.')
+            EmptyPanel(
+              message: totalCount == 0
+                  ? 'Процессоры пока не зарегистрированы.'
+                  : 'По запросу ничего не найдено.',
+            )
           else
             SizedBox(
-              height: 560,
+              height: 500,
               child: ListView.builder(
                 itemExtent: 86,
                 itemCount: processors.length,
@@ -1643,7 +1936,7 @@ class _ProcessorDetail extends StatelessWidget {
   final List<String> commandTypes;
   final ValueChanged<CameraSummary> onAssign;
   final ValueChanged<CameraSummary> onUnassign;
-  final ValueChanged<String> onCommand;
+  final ProcessorCommandSender onCommand;
   final ValueChanged<RowMap> onCancelCommand;
   final VoidCallback? onDelete;
 
@@ -1652,7 +1945,7 @@ class _ProcessorDetail extends StatelessWidget {
     final processor = this.processor;
     final colors = context.colors;
     if (processor == null) {
-      return const EmptyPanel(message: 'Выберите Processor.');
+      return const EmptyPanel(message: 'Выберите Процессор.');
     }
     final metrics = processor.metrics ?? const <String, dynamic>{};
     final capabilities = processor.capabilities ?? const <String, dynamic>{};
@@ -1661,6 +1954,7 @@ class _ProcessorDetail extends StatelessWidget {
             (key, value) => MapEntry('$key', value),
           )
         : const <String, dynamic>{};
+    final detectionSettings = _asMap(capabilities['detection_settings']);
     return GlassPanel(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1746,11 +2040,20 @@ class _ProcessorDetail extends StatelessWidget {
             runSpacing: 8,
             children: [
               for (final type in commandTypes)
+                if (type != 'apply_detection_settings')
                 OutlinedButton(
                   onPressed: () => onCommand(type),
                   child: Text(_commandLabel(type)),
                 ),
             ],
+          ),
+          const SizedBox(height: 16),
+          _DetectionSettingsPanel(
+            settings: detectionSettings,
+            onApply: (payload) => onCommand(
+              'apply_detection_settings',
+              payload: payload,
+            ),
           ),
           const SizedBox(height: 16),
           _CameraAssignmentList(
@@ -1780,6 +2083,258 @@ class _ProcessorDetail extends StatelessWidget {
                 onCancel: () => onCancelCommand(command),
               ),
         ],
+      ),
+    );
+  }
+}
+
+class _DetectionSettingsPanel extends StatefulWidget {
+  const _DetectionSettingsPanel({
+    required this.settings,
+    required this.onApply,
+  });
+
+  final RowMap settings;
+  final ValueChanged<Map<String, dynamic>> onApply;
+
+  @override
+  State<_DetectionSettingsPanel> createState() =>
+      _DetectionSettingsPanelState();
+}
+
+class _DetectionSettingsPanelState extends State<_DetectionSettingsPanel> {
+  final _maxWorkers = TextEditingController();
+  final _motionThreshold = TextEditingController();
+  final _recordingSegment = TextEditingController();
+  final _pendingTimeout = TextEditingController();
+  String _accel = 'auto';
+  int _faceScanDivisor = 4;
+  int _overlayFrameDivisor = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    _load(widget.settings);
+  }
+
+  @override
+  void didUpdateWidget(covariant _DetectionSettingsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.settings != widget.settings) {
+      _load(widget.settings);
+    }
+  }
+
+  @override
+  void dispose() {
+    _maxWorkers.dispose();
+    _motionThreshold.dispose();
+    _recordingSegment.dispose();
+    _pendingTimeout.dispose();
+    super.dispose();
+  }
+
+  void _load(RowMap settings) {
+    _maxWorkers.text = '${_settingInt(settings['max_workers'], 4)}';
+    _motionThreshold.text = _settingDouble(
+      settings['motion_threshold'],
+      25,
+    ).toStringAsFixed(1);
+    _recordingSegment.text =
+        '${_settingInt(settings['recording_segment_seconds'], 60)}';
+    _pendingTimeout.text = _settingDouble(
+      settings['antispoof_pending_timeout_seconds'],
+      2.8,
+    ).toStringAsFixed(1);
+    _accel = _settingString(settings['processor_accel'], 'auto', {
+      'auto',
+      'cuda',
+      'cpu',
+    });
+    _faceScanDivisor = _settingChoice(settings['face_scan_divisor'], 4);
+    _overlayFrameDivisor = _settingChoice(settings['overlay_frame_divisor'], 1);
+  }
+
+  void _applyPreset(
+    int maxWorkers,
+    double motionThreshold,
+    int faceScanDivisor,
+    int overlayFrameDivisor,
+  ) {
+    setState(() {
+      _maxWorkers.text = '$maxWorkers';
+      _motionThreshold.text = motionThreshold.toStringAsFixed(1);
+      _faceScanDivisor = faceScanDivisor;
+      _overlayFrameDivisor = overlayFrameDivisor;
+    });
+  }
+
+  Map<String, dynamic> _payload() {
+    return {
+      'max_workers': _readInt(_maxWorkers, 4).clamp(1, 16),
+      'motion_threshold': _readDouble(_motionThreshold, 25).clamp(1, 120),
+      'recording_segment_seconds': _readInt(_recordingSegment, 60).clamp(
+        10,
+        60,
+      ),
+      'processor_accel': _accel,
+      'face_scan_divisor': _faceScanDivisor,
+      'overlay_frame_divisor': _overlayFrameDivisor,
+      'antispoof_pending_timeout_seconds': _readDouble(
+        _pendingTimeout,
+        2.8,
+      ).clamp(0.8, 8.0),
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Производительность',
+            style: TextStyle(
+              color: colors.textStrong,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _SettingsTextField(
+                controller: _maxWorkers,
+                label: 'Макс. камер',
+              ),
+              _SettingsTextField(
+                controller: _motionThreshold,
+                label: 'Порог движения',
+              ),
+              _SettingsTextField(
+                controller: _recordingSegment,
+                label: 'Сегмент записи, сек',
+              ),
+              _SettingsTextField(
+                controller: _pendingTimeout,
+                label: 'Таймаут антиспуфа, сек',
+              ),
+              _SettingsSelect<String>(
+                label: 'Ускорение',
+                value: _accel,
+                values: const ['auto', 'cuda', 'cpu'],
+                display: (value) => value,
+                onChanged: (value) => setState(() => _accel = value),
+              ),
+              _SettingsSelect<int>(
+                label: 'Сканирование лиц',
+                value: _faceScanDivisor,
+                values: const [2, 4, 8, 16],
+                display: (value) => '/$value',
+                onChanged: (value) =>
+                    setState(() => _faceScanDivisor = value),
+              ),
+              _SettingsSelect<int>(
+                label: 'Оверлей эфира',
+                value: _overlayFrameDivisor,
+                values: const [1, 2, 4, 8],
+                display: (value) => '/$value',
+                onChanged: (value) =>
+                    setState(() => _overlayFrameDivisor = value),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton(
+                onPressed: () => _applyPreset(2, 32, 8, 2),
+                child: const Text('Экономия'),
+              ),
+              OutlinedButton(
+                onPressed: () => _applyPreset(4, 25, 4, 1),
+                child: const Text('Баланс'),
+              ),
+              OutlinedButton(
+                onPressed: () => _applyPreset(6, 18, 2, 1),
+                child: const Text('Максимум'),
+              ),
+              ElevatedButton.icon(
+                onPressed: () => widget.onApply(_payload()),
+                icon: const Icon(Icons.tune_rounded, size: 18),
+                label: const Text('Применить настройки детекции'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTextField extends StatelessWidget {
+  const _SettingsTextField({
+    required this.controller,
+    required this.label,
+  });
+
+  final TextEditingController controller;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 220,
+      child: TextField(
+        controller: controller,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(labelText: label),
+      ),
+    );
+  }
+}
+
+class _SettingsSelect<T> extends StatelessWidget {
+  const _SettingsSelect({
+    required this.label,
+    required this.value,
+    required this.values,
+    required this.display,
+    required this.onChanged,
+  });
+
+  final String label;
+  final T value;
+  final List<T> values;
+  final String Function(T value) display;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 220,
+      child: DropdownButtonFormField<T>(
+        initialValue: values.contains(value) ? value : values.first,
+        decoration: InputDecoration(labelText: label),
+        items: [
+          for (final item in values)
+            DropdownMenuItem<T>(value: item, child: Text(display(item))),
+        ],
+        onChanged: (value) {
+          if (value != null) onChanged(value);
+        },
       ),
     );
   }
@@ -1937,7 +2492,7 @@ class _ApiKeyCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${apiKey['description'] ?? 'API key #${apiKey['api_key_id']}'}',
+                  '${apiKey['description'] ?? 'API-ключ #${apiKey['api_key_id']}'}',
                   style: TextStyle(
                     color: colors.textStrong,
                     fontWeight: FontWeight.w900,
@@ -1945,7 +2500,7 @@ class _ApiKeyCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Scopes: ${formatCell(apiKey['scopes'])} · активен: ${formatCell(apiKey['is_active'])} · истекает: ${formatCell(apiKey['expires_at'])}',
+                  'Права: ${formatCell(apiKey['scopes'])} · активен: ${formatCell(apiKey['is_active'])} · истекает: ${formatCell(apiKey['expires_at'])}',
                   style: TextStyle(color: colors.muted, fontSize: 12),
                 ),
               ],
@@ -1962,7 +2517,7 @@ class _ApiKeyCard extends StatelessWidget {
   }
 }
 
-class _CameraAssignmentList extends StatelessWidget {
+class _CameraAssignmentList extends StatefulWidget {
   const _CameraAssignmentList({
     required this.title,
     required this.cameras,
@@ -1978,8 +2533,28 @@ class _CameraAssignmentList extends StatelessWidget {
   final ValueChanged<CameraSummary>? onAction;
 
   @override
+  State<_CameraAssignmentList> createState() => _CameraAssignmentListState();
+}
+
+class _CameraAssignmentListState extends State<_CameraAssignmentList> {
+  final _search = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final cameras = _filterAssignmentCameras(widget.cameras, _search.text);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
@@ -1992,15 +2567,31 @@ class _CameraAssignmentList extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            title,
+            widget.title,
             style: TextStyle(
               color: colors.textStrong,
               fontWeight: FontWeight.w900,
             ),
           ),
           const SizedBox(height: 10),
-          if (cameras.isEmpty)
+          TextField(
+            controller: _search,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search_rounded),
+              labelText: 'Поиск камер',
+              suffixIcon: _search.text.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: _search.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (widget.cameras.isEmpty)
             Text('Нет камер.', style: TextStyle(color: colors.muted))
+          else if (cameras.isEmpty)
+            Text('Под фильтр камер нет.', style: TextStyle(color: colors.muted))
           else
             Wrap(
               spacing: 8,
@@ -2008,12 +2599,20 @@ class _CameraAssignmentList extends StatelessWidget {
               children: [
                 for (final camera in cameras)
                   ActionChip(
-                    avatar: Icon(actionIcon, size: 18),
-                    label: Text(camera.name),
-                    onPressed: onAction == null
+                    avatar: Icon(widget.actionIcon, size: 18),
+                    label: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: Text(
+                        _assignmentCameraLabel(camera),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    onPressed: widget.onAction == null
                         ? null
-                        : () => onAction!(camera),
-                    tooltip: actionLabel,
+                        : () => widget.onAction!(camera),
+                    tooltip:
+                        '${widget.actionLabel}: ${camera.name} · ${camera.ipAddress ?? 'IP не указан'} · ${camera.location ?? 'Локация не указана'}',
                   ),
               ],
             ),
@@ -2021,6 +2620,29 @@ class _CameraAssignmentList extends StatelessWidget {
       ),
     );
   }
+}
+
+List<CameraSummary> _filterAssignmentCameras(
+  List<CameraSummary> cameras,
+  String rawQuery,
+) {
+  final query = rawQuery.trim().toLowerCase();
+  if (query.isEmpty) return cameras;
+  final ipLike = RegExp(r'^[0-9.]+$').hasMatch(query);
+  return cameras.where((camera) {
+    final ip = (camera.ipAddress ?? '').toLowerCase();
+    final stream = (camera.streamUrl ?? '').toLowerCase();
+    if (ipLike) return ip.contains(query) || stream.contains(query);
+    final text =
+        '${camera.name} ${camera.location ?? ''} ${camera.connectionKind}'
+            .toLowerCase();
+    return _looseAdminContains(text, query);
+  }).toList(growable: false);
+}
+
+String _assignmentCameraLabel(CameraSummary camera) {
+  final detail = (camera.ipAddress ?? camera.location ?? '').trim();
+  return detail.isEmpty ? camera.name : '${camera.name} · $detail';
 }
 
 class _CommandRow extends StatelessWidget {
@@ -2152,7 +2774,7 @@ class _SnapshotBox extends StatelessWidget {
                   fit: BoxFit.cover,
                   errorBuilder: (_, _, _) => Center(
                     child: Text(
-                      'Не удалось открыть snapshot',
+                      'Не удалось открыть снимок',
                       style: TextStyle(color: colors.muted),
                     ),
                   ),
@@ -2421,7 +3043,7 @@ Future<Map<String, dynamic>?> _apiKeyDialog(
                   TextField(
                     controller: scopes,
                     decoration: const InputDecoration(
-                      labelText: 'Scopes через запятую',
+                      labelText: 'Права через запятую',
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -2648,6 +3270,17 @@ String _personLabel(RowMap person) {
   return label.isEmpty ? 'Персона #${person['person_id']}' : label;
 }
 
+String _candidateLabel(RowMap candidate) {
+  final rawLabel = '${candidate['person_label'] ?? ''}'.trim();
+  final label = rawLabel.isEmpty
+      ? 'ID ${candidate['person_id'] ?? '-'}'
+      : rawLabel;
+  final value = candidate['probability'];
+  final number = value is num ? value : num.tryParse('$value');
+  if (number == null) return label;
+  return '$label - ${number.toStringAsFixed(number >= 10 ? 0 : 1)}%';
+}
+
 String _userName(RowMap user) {
   final parts = [user['last_name'], user['first_name'], user['middle_name']]
       .where((value) => value != null && '$value'.trim().isNotEmpty)
@@ -2662,14 +3295,50 @@ String _percent(Object? value) {
   return '${number.toStringAsFixed(0)}%';
 }
 
+int _settingInt(Object? value, int fallback) {
+  final number = value is num ? value : num.tryParse('$value');
+  return number?.toInt() ?? fallback;
+}
+
+double _settingDouble(Object? value, double fallback) {
+  final number = value is num ? value : num.tryParse('$value');
+  return number?.toDouble() ?? fallback;
+}
+
+int _settingChoice(Object? value, int fallback) {
+  final number = _settingInt(value, fallback);
+  return {1, 2, 4, 8, 16}.contains(number) ? number : fallback;
+}
+
+String _settingString(
+  Object? value,
+  String fallback,
+  Set<String> allowed,
+) {
+  final raw = '$value'.trim().toLowerCase();
+  return allowed.contains(raw) ? raw : fallback;
+}
+
+int _readInt(TextEditingController controller, int fallback) {
+  return int.tryParse(controller.text.trim()) ?? fallback;
+}
+
+double _readDouble(TextEditingController controller, double fallback) {
+  return double.tryParse(controller.text.trim().replaceAll(',', '.')) ??
+      fallback;
+}
+
 String _commandLabel(String type) {
   return switch (type) {
     'reload_assignments' => 'Перезагрузить назначения',
     'restart_workers' => 'Перезапустить воркеры',
     'stop_all_cameras' => 'Остановить камеры',
-    'resume_cameras' => 'Возобновить камеры',
+    'resume_cameras' => 'Включить камеры',
     'refresh_gallery' => 'Обновить галерею',
-    'shutdown' => 'Выключить',
+    'start_runtime' => 'Запустить Runtime',
+    'stop_runtime' => 'Остановить Runtime',
+    'restart_runtime' => 'Перезапустить Runtime',
+    'apply_detection_settings' => 'Применить настройки детекции',
     _ => type,
   };
 }

@@ -142,11 +142,20 @@ class SetupFrame(ttk.Frame):
         self.status_label.config(text="Проверка...", foreground="gray")
         self.update()
         vals = self.get_values()
-        url = vals["backend_url"].rstrip("/") + "/health"
+        backend_url = vals["backend_url"].strip().rstrip("/")
+        try:
+            import urllib.parse
+            parsed = urllib.parse.urlsplit(backend_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("backend URL must use http:// or https://")
+        except Exception as e:
+            self.status_label.config(text=f"РћС€РёР±РєР°: {e}", foreground="red")
+            return
+        url = backend_url + "/health"
         try:
             import urllib.request
             req = urllib.request.Request(url, method="GET")
-            resp = urllib.request.urlopen(req, timeout=5)
+            resp = urllib.request.urlopen(req, timeout=5)  # nosec B310
             if resp.status == 200:
                 self.status_label.config(text="OK — сервер доступен", foreground="green")
             else:

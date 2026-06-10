@@ -6,6 +6,9 @@ import asyncio
 import json
 import logging
 import secrets
+import os
+import shutil
+import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,8 +21,9 @@ from sqlalchemy.orm import selectinload
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_service_identity, get_service_scopes
+from app.ffmpeg_tools import ffmpeg_bin, ffprobe_bin
 from app.permissions import is_admin
-from app.processor_media import effective_processor_status
+from app.processor_media import effective_processor_status, is_processor_effectively_online
 from app.recording_storage import (
     backend_recording_path,
     ensure_backend_storage_target,
@@ -58,6 +62,131 @@ log = logging.getLogger("app.processors")
 _gallery_cache: list[GalleryEntry] | None = None
 _gallery_cache_ts = 0.0
 _GALLERY_CACHE_TTL = 30.0
+
+
+def _copy_upload_to_path(source, destination: Path) -> int:
+    source.seek(0)
+    with destination.open("wb") as target:
+        shutil.copyfileobj(source, target, length=1024 * 1024)
+    return destination.stat().st_size
+
+
+def _ffmpeg_bin() -> str | None:
+    return ffmpeg_bin()
+
+
+def _ffprobe_bin() -> str | None:
+    return ffprobe_bin(_ffmpeg_bin())
+
+
+def _video_codec(path: Path) -> str | None:
+    ffprobe_bin = _ffprobe_bin()
+    if not ffprobe_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=nokey=1:noprint_wrappers=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip().lower() or None
+
+
+def _normalize_video_upload(path: Path) -> bool:
+    ffmpeg_bin = _ffmpeg_bin()
+    if not ffmpeg_bin or not path.is_file() or path.stat().st_size <= 0:
+        return False
+
+    codec = _video_codec(path)
+
+    temp = path.with_name(f"{path.name}.{os.getpid()}.h264.tmp.mp4")
+    if codec == "h264":
+        cmd = [
+            ffmpeg_bin,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-an",
+            "-movflags",
+            "+faststart",
+            str(temp),
+        ]
+    else:
+        cmd = [
+            ffmpeg_bin,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(path),
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            "-movflags",
+            "+faststart",
+            str(temp),
+        ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0 or not temp.is_file() or temp.stat().st_size <= 0:
+            log.warning("Failed to normalize uploaded recording %s: %s", path, (proc.stderr or "")[-500:])
+            return False
+        converted_codec = _video_codec(temp)
+        if converted_codec is not None and converted_codec != "h264":
+            log.warning("Normalized recording %s is not H264", temp)
+            return False
+        temp.replace(path)
+        return True
+    except Exception:
+        log.exception("Failed to normalize uploaded recording %s", path)
+        return False
+    finally:
+        if temp.exists():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+
+
+def _normalize_uploads_enabled() -> bool:
+    return os.getenv("CCTV_NORMALIZE_UPLOADED_RECORDINGS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 _PROCESSOR_STORAGE_NAME = "Processor Media"
 SUPPORTED_COMMANDS = {
     "reload_assignments",
@@ -65,8 +194,12 @@ SUPPORTED_COMMANDS = {
     "stop_all_cameras",
     "resume_cameras",
     "refresh_gallery",
-    "shutdown",
+    "start_runtime",
+    "stop_runtime",
+    "restart_runtime",
+    "apply_detection_settings",
 }
+SUPERVISOR_COMMANDS = {"start_runtime", "stop_runtime", "restart_runtime"}
 
 
 # ── Helper: resolve API key scopes ──
@@ -405,13 +538,16 @@ async def processor_heartbeat(
     x_api_key: str = Header(...),
 ):
     proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:heartbeat")
-    proc.status = payload.status
-    proc.last_heartbeat = datetime.utcnow()
-    # Store metrics
-    if payload.metrics:
-        proc.last_metrics = payload.metrics.model_dump_json()
-    elif payload.stats:
-        proc.last_metrics = json.dumps(payload.stats)
+    heartbeat_at = datetime.utcnow()
+    is_supervisor_heartbeat = payload.status == "supervisor_online"
+    if not is_supervisor_heartbeat:
+        proc.status = payload.status
+        proc.last_heartbeat = heartbeat_at
+        # Store metrics
+        if payload.metrics:
+            proc.last_metrics = payload.metrics.model_dump_json()
+        elif payload.stats:
+            proc.last_metrics = json.dumps(payload.stats)
     # Update IP if changed
     if payload.ip_address:
         proc.ip_address = payload.ip_address
@@ -423,7 +559,7 @@ async def processor_heartbeat(
         proc.os_info = payload.os_info
     if payload.version:
         proc.version = payload.version
-    if payload.media_port is not None or payload.media_token:
+    if payload.media_port is not None or payload.media_token or is_supervisor_heartbeat:
         capabilities = {}
         if proc.capabilities:
             try:
@@ -432,6 +568,12 @@ async def processor_heartbeat(
                 capabilities = {}
         if payload.capabilities:
             capabilities.update(payload.capabilities)
+        if is_supervisor_heartbeat:
+            capabilities["supervisor"] = {
+                "online": True,
+                "runtime_running": (payload.stats or {}).get("runtime_running"),
+                "heartbeat_at": heartbeat_at.isoformat(),
+            }
         if payload.media_port is not None:
             capabilities["media_port"] = payload.media_port
         if payload.media_token:
@@ -666,15 +808,17 @@ async def upload_recording(
 
     actual_size = 0
     try:
-        with temp_path.open("wb") as handle:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                actual_size += len(chunk)
-                handle.write(chunk)
+        actual_size = await asyncio.to_thread(
+            _copy_upload_to_path,
+            file.file,
+            temp_path,
+        )
         if actual_size <= 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty recording upload")
+
+        if file_kind == "video" and _normalize_uploads_enabled():
+            await asyncio.to_thread(_normalize_video_upload, temp_path)
+            actual_size = temp_path.stat().st_size
 
         checksum = await asyncio.to_thread(sha256_file, temp_path)
         final_path = destination
@@ -787,16 +931,21 @@ async def get_storage_config(
 async def claim_pending_commands(
     processor_id: int,
     limit: int = 10,
+    runner: str = "runtime",
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
     _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
     safe_limit = max(1, min(limit, 25))
+    command_filter = models.ProcessorCommand.command_type.notin_(SUPERVISOR_COMMANDS)
+    if runner.strip().lower() == "supervisor":
+        command_filter = models.ProcessorCommand.command_type.in_(SUPERVISOR_COMMANDS)
     result = await session.execute(
         select(models.ProcessorCommand)
         .where(
             models.ProcessorCommand.processor_id == processor_id,
             models.ProcessorCommand.status == "pending",
+            command_filter,
         )
         .order_by(models.ProcessorCommand.created_at.asc(), models.ProcessorCommand.command_id.asc())
         .limit(safe_limit)
@@ -959,6 +1108,20 @@ async def create_processor_command(
     command_type = payload.command_type.strip()
     if command_type not in SUPPORTED_COMMANDS:
         raise HTTPException(status_code=400, detail=f"Unsupported command: {command_type}")
+    if command_type == "start_runtime" and is_processor_effectively_online(proc):
+        command = models.ProcessorCommand(
+            processor_id=processor_id,
+            command_type=command_type,
+            payload=json.dumps(payload.payload or {}),
+            status="succeeded",
+            requested_by_user_id=current_user.user_id,
+            completed_at=datetime.utcnow(),
+            result=json.dumps({"message": "Runtime is already running"}),
+        )
+        session.add(command)
+        await session.commit()
+        await session.refresh(command)
+        return _command_to_out(command)
     command = models.ProcessorCommand(
         processor_id=processor_id,
         command_type=command_type,

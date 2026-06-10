@@ -52,5 +52,10 @@ class TotpCodeRequest(BaseModel):
     code: str
 
 
+class TotpDisableRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=6, max_length=12)
+
+
 class TotpStatusResponse(BaseModel):
     enabled: bool

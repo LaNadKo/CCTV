@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import cv2
 import numpy as np
 
+from processor.embedding_service import EmbeddingService
 from processor.paths import RECORDINGS_DIR, SNAPSHOTS_DIR, ensure_media_dirs
 
 if TYPE_CHECKING:
@@ -54,6 +55,10 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
 
             if not self._authorized():
                 self._send_json(403, {"detail": "Forbidden"})
+                return
+
+            if path == "/metrics":
+                self._serve_metrics()
                 return
 
             if path.startswith("/cameras/") and path.endswith("/snapshot.jpg"):
@@ -137,9 +142,17 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _extract_embedding(self) -> None:
-        from processor.vision import detect_faces
+    def _serve_metrics(self) -> None:
+        cameras: dict[str, dict[str, str]] = {}
+        bottleneck = "нет данных"
+        for camera_id, worker in self.media_server.service.workers.items():
+            value = worker.bottleneck_text()
+            cameras[str(camera_id)] = {"bottleneck": value}
+            if bottleneck == "нет данных" and value != "нет данных":
+                bottleneck = value
+        self._send_json(200, {"bottleneck": bottleneck, "cameras": cameras})
 
+    def _extract_embedding(self) -> None:
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
             self._send_json(400, {"detail": "Empty request body"})
@@ -152,7 +165,7 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"detail": "Invalid image"})
             return
 
-        faces = detect_faces(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        faces = self.media_server.embedding_service.extract(image)
         if not faces:
             self._send_json(400, {"detail": "No face found"})
             return
@@ -186,7 +199,7 @@ class _MediaRequestHandler(BaseHTTPRequestHandler):
         qs = parse_qs(query or "")
         overlay = qs.get("overlay", ["1"])[0].lower() not in {"0", "false", "no"}
         max_fps = _parse_float(qs.get("max_fps", ["20"])[0], default=20.0)
-        frame_interval = 1.0 / min(max(max_fps, 1.0), 30.0)
+        frame_interval = 1.0 / min(max(max_fps, 1.0), 60.0)
 
         self.send_response(200)
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -377,6 +390,7 @@ class ProcessorMediaServer:
         self.port = port
         self.media_token = media_token
         self.stop_event = threading.Event()
+        self.embedding_service = EmbeddingService()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -385,6 +399,7 @@ class ProcessorMediaServer:
             return
         ensure_media_dirs()
         self.stop_event.clear()
+        self.embedding_service.start()
         self._server = ThreadingHTTPServer((self.host, self.port), _MediaRequestHandler)
         self._server.media_server = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -400,6 +415,7 @@ class ProcessorMediaServer:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
         self._thread = None
+        self.embedding_service.stop()
 
 
 def _parse_float(value: str | None, default: float) -> float:

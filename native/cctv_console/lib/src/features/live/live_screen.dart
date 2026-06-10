@@ -1,9 +1,15 @@
-import 'dart:async';
+// ignore_for_file: use_build_context_synchronously
 
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../core/models/models.dart';
 import '../../core/network/api_client.dart';
@@ -12,7 +18,62 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
 import '../../shared/widgets/mjpeg_stream_view.dart';
+import '../../shared/widgets/page_header.dart';
 import '../auth/auth_controller.dart';
+
+enum _LiveMode { standard, grid }
+
+enum _LiveSort { priority, location, name }
+
+enum _GridPreset { twoByTwo, threeByThree, fourByFour, custom }
+
+class _GridShape {
+  const _GridShape(this.rows, this.columns);
+
+  final int rows;
+  final int columns;
+
+  int get slotCount => rows * columns;
+}
+
+class _GridDragPayload {
+  const _GridDragPayload({required this.cameraId, this.sourceSlot});
+
+  final int cameraId;
+  final int? sourceSlot;
+}
+
+class _FullscreenRestore {
+  const _FullscreenRestore({required this.wasDesktopFullscreen});
+
+  final bool? wasDesktopFullscreen;
+}
+
+Future<_FullscreenRestore> _enterPlatformFullscreen() async {
+  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    final wasFullscreen = await windowManager.isFullScreen();
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    if (!wasFullscreen) {
+      await windowManager.setFullScreen(true);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    return _FullscreenRestore(wasDesktopFullscreen: wasFullscreen);
+  }
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  return const _FullscreenRestore(wasDesktopFullscreen: null);
+}
+
+Future<void> _exitPlatformFullscreen(_FullscreenRestore restore) async {
+  final wasDesktopFullscreen = restore.wasDesktopFullscreen;
+  if (!kIsWeb &&
+      wasDesktopFullscreen != null &&
+      (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    await windowManager.setFullScreen(wasDesktopFullscreen);
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    return;
+  }
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+}
 
 class LiveScreen extends StatefulWidget {
   const LiveScreen({super.key});
@@ -23,12 +84,24 @@ class LiveScreen extends StatefulWidget {
 
 class _LiveScreenState extends State<LiveScreen>
     with RouteRefreshState<LiveScreen> {
+  static const _standardActiveLimit = 3;
+
   bool _loading = false;
   String? _error;
   List<CameraSummary> _cameras = const [];
   List<ProcessorOut> _processors = const [];
   List<PendingEvent> _pending = const [];
-  bool _annotate = true;
+  _LiveMode _mode = _LiveMode.standard;
+  _LiveSort _sort = _LiveSort.priority;
+  String? _locationFilter;
+  _GridPreset _gridPreset = _GridPreset.twoByTwo;
+  int _customRows = 2;
+  int _customColumns = 2;
+  final Set<int> _standardActive = <int>{};
+  final Set<int> _standardAnnotateDisabled = <int>{};
+  List<int?> _gridSlots = List<int?>.filled(4, null);
+  final Set<int> _activeGridSlots = <int>{};
+  final Set<int> _gridAnnotateDisabledSlots = <int>{};
 
   @override
   void initState() {
@@ -74,6 +147,7 @@ class _LiveScreenState extends State<LiveScreen>
         _cameras = result[0] as List<CameraSummary>;
         _processors = result[1] as List<ProcessorOut>;
         _pending = result[2] as List<PendingEvent>;
+        _pruneLiveState();
       });
     } catch (error) {
       if (!mounted) return;
@@ -89,12 +163,23 @@ class _LiveScreenState extends State<LiveScreen>
     final onlineProcessors = _processors.where((item) => item.online).length;
     final settings = context.watch<ThemeController>();
     final density = settings.liveDensity;
-    final cameras = _orderedCameras(_cameras, settings.liveCameraOrder);
-    final crossAxisCount = _gridColumns(
-      MediaQuery.sizeOf(context).width,
+    final width = MediaQuery.sizeOf(context).width;
+    final ordered = _orderedCameras(_cameras, settings.liveCameraOrder);
+    final cameras = _filterAndSortCameras(ordered);
+    final locations = _locations(_cameras);
+    final gridShape = _gridShape();
+    _ensureGridSlotCount(gridShape.slotCount);
+    final cameraById = {for (final camera in _cameras) camera.cameraId: camera};
+    final assignedGridIds = _assignedGridIds();
+    final gridSourceCameras = cameras
+        .where((camera) => !assignedGridIds.contains(camera.cameraId))
+        .toList();
+    final standardCrossAxisCount = _gridColumns(
+      width,
       density,
       settings.liveGridColumns,
     );
+    final gridCrossAxisCount = _gridCrossAxisCount(width, gridShape);
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -123,7 +208,7 @@ class _LiveScreenState extends State<LiveScreen>
                         compact: compact,
                       ),
                       StatCard(
-                        label: 'Processor online',
+                        label: 'Процессор онлайн',
                         value: '$onlineProcessors / ${_processors.length}',
                         icon: Icons.memory_rounded,
                         accent: onlineProcessors > 0
@@ -169,15 +254,34 @@ class _LiveScreenState extends State<LiveScreen>
                   },
                 ),
                 const SizedBox(height: 18),
-                _GridControls(
-                  columns: settings.liveGridColumns,
-                  annotate: _annotate,
-                  onColumnsChanged: settings.setLiveGridColumns,
-                  onAnnotateChanged: (value) =>
-                      setState(() => _annotate = value),
-                  onResetOrder: cameras.length < 2
-                      ? null
-                      : () => settings.setLiveCameraOrder(const []),
+                SizedBox(
+                  width: double.infinity,
+                  child: _LiveControls(
+                    mode: _mode,
+                    sort: _sort,
+                    locations: locations,
+                    selectedLocation: _locationFilter,
+                    standardActiveCount: _standardActive.length,
+                    standardActiveLimit: _standardActiveLimit,
+                    standardColumns: settings.liveGridColumns,
+                    gridPreset: _gridPreset,
+                    customRows: _customRows,
+                    customColumns: _customColumns,
+                    canOpenFullscreenGrid:
+                        _mode == _LiveMode.grid && assignedGridIds.isNotEmpty,
+                    onModeChanged: (value) => setState(() => _mode = value),
+                    onSortChanged: (value) => setState(() => _sort = value),
+                    onLocationChanged: (value) =>
+                        setState(() => _locationFilter = value),
+                    onColumnsChanged: settings.setLiveGridColumns,
+                    onGridPresetChanged: _setGridPreset,
+                    onCustomRowsChanged: _setCustomRows,
+                    onCustomColumnsChanged: _setCustomColumns,
+                    onOpenFullscreenGrid: _openGridFullscreen,
+                    onResetOrder: ordered.length < 2
+                        ? null
+                        : () => settings.setLiveCameraOrder(const []),
+                  ),
                 ),
                 const SizedBox(height: 18),
               ],
@@ -189,47 +293,433 @@ class _LiveScreenState extends State<LiveScreen>
               child: Center(
                 child: GlassPanel(
                   child: Text(
-                    'Камер пока нет или backend вернул пустой список.',
+                    _cameras.isEmpty
+                        ? 'Камер пока нет или backend вернул пустой список.'
+                        : 'Под выбранный фильтр камер нет.',
                     style: TextStyle(color: colors.muted),
                   ),
                 ),
               ),
             )
-          else
+          else if (_mode == _LiveMode.standard)
             SliverGrid(
               delegate: SliverChildBuilderDelegate((context, index) {
                 final camera = cameras[index];
                 return _DraggableCameraTile(
                   camera: camera,
-                  annotate: _annotate,
+                  annotate: _standardAnnotateFor(camera.cameraId),
+                  active: _standardActive.contains(camera.cameraId),
+                  onActivate: () => _activateStandard(camera.cameraId),
+                  onDeactivate: () => _deactivateStandard(camera.cameraId),
+                  onAnnotateChanged: (value) =>
+                      _setStandardAnnotate(camera.cameraId, value),
                   onMoveBefore: _reorderCameras,
                 );
               }, childCount: cameras.length),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: crossAxisCount,
+                crossAxisCount: standardCrossAxisCount,
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,
                 childAspectRatio: density == LiveDensity.compact ? 1.25 : 1.04,
               ),
+            )
+          else ...[
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: _GridCameraPicker(
+                    cameras: gridSourceCameras,
+                    onQuickAdd: _assignCameraToFirstFree,
+                  ),
+                ),
+              ),
             ),
+            SliverGrid(
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final cameraId = _gridSlots[index];
+                final camera = cameraId == null ? null : cameraById[cameraId];
+                return _GridSlotTile(
+                  index: index,
+                  camera: camera,
+                  annotate: _gridAnnotateFor(index),
+                  active: _activeGridSlots.contains(index),
+                  onCameraDropped: (payload) =>
+                      _dropGridCamera(index, payload),
+                  onActivate: camera == null
+                      ? null
+                      : () => _activateGridSlot(index),
+                  onDeactivate: camera == null
+                      ? null
+                      : () => _deactivateGridSlot(index),
+                  onAnnotateChanged: camera == null
+                      ? null
+                      : (value) => _setGridSlotAnnotate(index, value),
+                  onRemove: camera == null ? null : () => _clearGridSlot(index),
+                );
+              }, childCount: _gridSlots.length),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: gridCrossAxisCount,
+                crossAxisSpacing: 16,
+                mainAxisSpacing: 16,
+                childAspectRatio: width < 600 ? 0.9 : 1.04,
+              ),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  List<String> _locations(List<CameraSummary> cameras) {
+    final values = cameras
+        .map(_cameraLocation)
+        .where((value) => value.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return values;
+  }
+
+  String _cameraLocation(CameraSummary camera) {
+    return (camera.location?.trim().isNotEmpty ?? false)
+        ? camera.location!.trim()
+        : 'Без локации';
+  }
+
+  List<CameraSummary> _filterAndSortCameras(List<CameraSummary> cameras) {
+    var result = cameras;
+    final location = _locationFilter;
+    if (location != null) {
+      result = result
+          .where((camera) => _cameraLocation(camera) == location)
+          .toList();
+    }
+    final sorted = [...result];
+    sorted.sort((a, b) {
+      switch (_sort) {
+        case _LiveSort.location:
+          final byLocation = _cameraLocation(
+            a,
+          ).toLowerCase().compareTo(_cameraLocation(b).toLowerCase());
+          if (byLocation != 0) return byLocation;
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _LiveSort.name:
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _LiveSort.priority:
+          final byScore = _livePriority(b).compareTo(_livePriority(a));
+          if (byScore != 0) return byScore;
+          return a.cameraId.compareTo(b.cameraId);
+      }
+    });
+    return sorted;
+  }
+
+  _GridShape _gridShape() {
+    return switch (_gridPreset) {
+      _GridPreset.twoByTwo => const _GridShape(2, 2),
+      _GridPreset.threeByThree => const _GridShape(3, 3),
+      _GridPreset.fourByFour => const _GridShape(4, 4),
+      _GridPreset.custom => _GridShape(_customRows, _customColumns),
+    };
+  }
+
+  void _ensureGridSlotCount(int count) {
+    if (_gridSlots.length == count) return;
+    final next = List<int?>.filled(count, null);
+    for (var index = 0; index < math.min(count, _gridSlots.length); index++) {
+      next[index] = _gridSlots[index];
+    }
+    _gridSlots = next;
+    _activeGridSlots.removeWhere(
+      (index) => index >= count || _gridSlots[index] == null,
+    );
+    _gridAnnotateDisabledSlots.removeWhere((index) => index >= count);
+  }
+
+  Set<int> _assignedGridIds() {
+    return _gridSlots.whereType<int>().toSet();
+  }
+
+  bool _standardAnnotateFor(int cameraId) {
+    return !_standardAnnotateDisabled.contains(cameraId);
+  }
+
+  bool _gridAnnotateFor(int index) {
+    return !_gridAnnotateDisabledSlots.contains(index);
+  }
+
+  void _setStandardAnnotate(int cameraId, bool value) {
+    setState(() {
+      if (value) {
+        _standardAnnotateDisabled.remove(cameraId);
+      } else {
+        _standardAnnotateDisabled.add(cameraId);
+      }
+    });
+  }
+
+  void _setGridSlotAnnotate(int index, bool value) {
+    setState(() {
+      if (value) {
+        _gridAnnotateDisabledSlots.remove(index);
+      } else {
+        _gridAnnotateDisabledSlots.add(index);
+      }
+    });
+  }
+
+  void _activateStandard(int cameraId) {
+    if (_standardActive.contains(cameraId)) return;
+    if (_standardActive.length >= _standardActiveLimit) {
+      _showSnack('В стандартном режиме можно открыть не более 3 потоков.');
+      return;
+    }
+    setState(() => _standardActive.add(cameraId));
+  }
+
+  void _deactivateStandard(int cameraId) {
+    setState(() => _standardActive.remove(cameraId));
+  }
+
+  void _assignCameraToFirstFree(int cameraId) {
+    final index = _gridSlots.indexWhere((slot) => slot == null);
+    if (index < 0) {
+      _showSnack('В сетке нет свободных ячеек.');
+      return;
+    }
+    _assignGridSlot(index, cameraId);
+  }
+
+  void _dropGridCamera(int index, _GridDragPayload payload) {
+    final sourceSlot = payload.sourceSlot;
+    if (sourceSlot == null) {
+      _assignGridSlot(index, payload.cameraId);
+      return;
+    }
+    _moveGridSlot(sourceSlot, index);
+  }
+
+  void _moveGridSlot(int sourceIndex, int targetIndex) {
+    if (sourceIndex == targetIndex) return;
+    if (sourceIndex < 0 ||
+        sourceIndex >= _gridSlots.length ||
+        targetIndex < 0 ||
+        targetIndex >= _gridSlots.length) {
+      return;
+    }
+    setState(() {
+      final sourceCamera = _gridSlots[sourceIndex];
+      if (sourceCamera == null) return;
+      final targetCamera = _gridSlots[targetIndex];
+      final sourceActive = _activeGridSlots.contains(sourceIndex);
+      final targetActive = _activeGridSlots.contains(targetIndex);
+      final sourceAnnotateDisabled = _gridAnnotateDisabledSlots.contains(
+        sourceIndex,
+      );
+      final targetAnnotateDisabled = _gridAnnotateDisabledSlots.contains(
+        targetIndex,
+      );
+
+      _gridSlots[targetIndex] = sourceCamera;
+      _gridSlots[sourceIndex] = targetCamera;
+      _setGridSlotFlags(
+        targetIndex,
+        active: sourceActive,
+        annotateDisabled: sourceAnnotateDisabled,
+      );
+      if (targetCamera == null) {
+        _activeGridSlots.remove(sourceIndex);
+        _gridAnnotateDisabledSlots.remove(sourceIndex);
+      } else {
+        _setGridSlotFlags(
+          sourceIndex,
+          active: targetActive,
+          annotateDisabled: targetAnnotateDisabled,
+        );
+      }
+    });
+  }
+
+  void _assignGridSlot(int index, int cameraId) {
+    setState(() {
+      final oldIndex = _gridSlots.indexOf(cameraId);
+      final wasActive = oldIndex >= 0 && _activeGridSlots.contains(oldIndex);
+      final wasAnnotateDisabled =
+          oldIndex >= 0 && _gridAnnotateDisabledSlots.contains(oldIndex);
+      if (oldIndex >= 0) {
+        _gridSlots[oldIndex] = null;
+        _activeGridSlots.remove(oldIndex);
+        _gridAnnotateDisabledSlots.remove(oldIndex);
+      }
+      _gridSlots[index] = cameraId;
+      _setGridSlotFlags(
+        index,
+        active: oldIndex < 0 || wasActive,
+        annotateDisabled: wasAnnotateDisabled,
+      );
+    });
+  }
+
+  void _setGridSlotFlags(
+    int index, {
+    required bool active,
+    required bool annotateDisabled,
+  }) {
+    if (active) {
+      _activeGridSlots.add(index);
+    } else {
+      _activeGridSlots.remove(index);
+    }
+    if (annotateDisabled) {
+      _gridAnnotateDisabledSlots.add(index);
+    } else {
+      _gridAnnotateDisabledSlots.remove(index);
+    }
+  }
+
+  void _activateGridSlot(int index) {
+    setState(() => _activeGridSlots.add(index));
+  }
+
+  void _deactivateGridSlot(int index) {
+    setState(() => _activeGridSlots.remove(index));
+  }
+
+  void _clearGridSlot(int index) {
+    setState(() {
+      _gridSlots[index] = null;
+      _activeGridSlots.remove(index);
+      _gridAnnotateDisabledSlots.remove(index);
+    });
+  }
+
+  void _setGridPreset(_GridPreset preset) {
+    setState(() {
+      _gridPreset = preset;
+      _ensureGridSlotCount(_gridShape().slotCount);
+    });
+  }
+
+  void _setCustomRows(int value) {
+    setState(() {
+      _gridPreset = _GridPreset.custom;
+      _customRows = value.clamp(1, 6);
+      _ensureGridSlotCount(_gridShape().slotCount);
+    });
+  }
+
+  void _setCustomColumns(int value) {
+    setState(() {
+      _gridPreset = _GridPreset.custom;
+      _customColumns = value.clamp(1, 6);
+      _ensureGridSlotCount(_gridShape().slotCount);
+    });
+  }
+
+  int _gridCrossAxisCount(double width, _GridShape shape) {
+    if (width < 700) return 1;
+    final maxByWidth = math.max(1, ((width + 16) / (340.0 + 16)).floor());
+    return math.min(shape.columns, maxByWidth);
+  }
+
+  Future<void> _openGridFullscreen() async {
+    final cameraById = {for (final camera in _cameras) camera.cameraId: camera};
+    final activeSlots = Set<int>.from(_activeGridSlots);
+    setState(_activeGridSlots.clear);
+    final fullscreenRestore = await _enterPlatformFullscreen();
+    if (!mounted) {
+      await _exitPlatformFullscreen(fullscreenRestore);
+      return;
+    }
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _GridFullscreenDialog(
+          slots: List<int?>.from(_gridSlots),
+          camerasById: cameraById,
+          activeSlots: activeSlots,
+          annotateBySlot: [
+            for (var index = 0; index < _gridSlots.length; index++)
+              _gridAnnotateFor(index),
+          ],
+        ),
+      );
+    } finally {
+      await _exitPlatformFullscreen(fullscreenRestore);
+      if (mounted) {
+        setState(() {
+          _activeGridSlots
+            ..clear()
+            ..addAll(activeSlots);
+        });
+      }
+    }
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _pruneLiveState() {
+    final cameraIds = _cameras.map((camera) => camera.cameraId).toSet();
+    _standardActive.removeWhere((id) => !cameraIds.contains(id));
+    _gridSlots = [
+      for (final id in _gridSlots) id != null && cameraIds.contains(id) ? id : null,
+    ];
+    _activeGridSlots.removeWhere(
+      (index) => index >= _gridSlots.length || _gridSlots[index] == null,
+    );
+    if (_locationFilter != null && !_locations(_cameras).contains(_locationFilter)) {
+      _locationFilter = null;
+    }
   }
 
   List<CameraSummary> _orderedCameras(
     List<CameraSummary> cameras,
     List<int> order,
   ) {
-    if (order.isEmpty || cameras.length < 2) return cameras;
+    if (cameras.length < 2) return cameras;
+    final defaultOrder = _sortCamerasForLive(cameras);
+    if (order.isEmpty) return defaultOrder;
     final byId = {for (final camera in cameras) camera.cameraId: camera};
     final result = <CameraSummary>[];
     for (final id in order) {
       final camera = byId.remove(id);
       if (camera != null) result.add(camera);
     }
-    result.addAll(byId.values);
+    for (final camera in defaultOrder) {
+      if (byId.remove(camera.cameraId) != null) result.add(camera);
+    }
     return result;
+  }
+
+  List<CameraSummary> _sortCamerasForLive(List<CameraSummary> cameras) {
+    final sorted = [...cameras];
+    sorted.sort((a, b) {
+      final byScore = _livePriority(b).compareTo(_livePriority(a));
+      if (byScore != 0) return byScore;
+      return a.cameraId.compareTo(b.cameraId);
+    });
+    return sorted;
+  }
+
+  int _livePriority(CameraSummary camera) {
+    var score = 0;
+    final searchable =
+        '${camera.name} ${camera.location ?? ''} ${camera.streamUrl ?? ''}'
+            .toLowerCase();
+    if (searchable.contains('demo')) score -= 100;
+    if (camera.onvifEnabled) score += 40;
+    if (camera.supportsPtz) score += 20;
+    if (camera.endpointKinds.contains('rtsp')) score += 12;
+    if (camera.endpointKinds.contains('http')) score += 6;
+    if ((camera.streamUrl ?? '').trim().isNotEmpty) score += 4;
+    if (camera.connectionKind != 'manual') score += 3;
+    return score;
   }
 
   void _reorderCameras(int draggedId, int targetId) {
@@ -249,91 +739,356 @@ class _LiveScreenState extends State<LiveScreen>
   }
 
   int _gridColumns(double width, LiveDensity density, int forcedColumns) {
-    if (width < 600) return 1;
-    if (forcedColumns > 0) return forcedColumns;
+    if (width < 700) return 1;
+    final minTileWidth = density == LiveDensity.compact ? 380.0 : 460.0;
+    final maxByWidth = math.max(1, ((width + 16) / (minTileWidth + 16)).floor());
+    if (forcedColumns > 0) return math.min(forcedColumns, maxByWidth);
     if (density == LiveDensity.focus) return 1;
-    if (width >= 1240) return density == LiveDensity.compact ? 3 : 2;
-    if (width >= 780) return 2;
-    return 1;
+    final preferred = density == LiveDensity.compact ? 4 : 3;
+    return math.min(preferred, maxByWidth);
   }
 }
 
-class _GridControls extends StatelessWidget {
-  const _GridControls({
-    required this.columns,
-    required this.annotate,
+class _LiveControls extends StatelessWidget {
+  const _LiveControls({
+    required this.mode,
+    required this.sort,
+    required this.locations,
+    required this.selectedLocation,
+    required this.standardActiveCount,
+    required this.standardActiveLimit,
+    required this.standardColumns,
+    required this.gridPreset,
+    required this.customRows,
+    required this.customColumns,
+    required this.canOpenFullscreenGrid,
+    required this.onModeChanged,
+    required this.onSortChanged,
+    required this.onLocationChanged,
     required this.onColumnsChanged,
-    required this.onAnnotateChanged,
+    required this.onGridPresetChanged,
+    required this.onCustomRowsChanged,
+    required this.onCustomColumnsChanged,
+    required this.onOpenFullscreenGrid,
     required this.onResetOrder,
   });
 
-  final int columns;
-  final bool annotate;
+  final _LiveMode mode;
+  final _LiveSort sort;
+  final List<String> locations;
+  final String? selectedLocation;
+  final int standardActiveCount;
+  final int standardActiveLimit;
+  final int standardColumns;
+  final _GridPreset gridPreset;
+  final int customRows;
+  final int customColumns;
+  final bool canOpenFullscreenGrid;
+  final ValueChanged<_LiveMode> onModeChanged;
+  final ValueChanged<_LiveSort> onSortChanged;
+  final ValueChanged<String?> onLocationChanged;
   final ValueChanged<int> onColumnsChanged;
-  final ValueChanged<bool> onAnnotateChanged;
+  final ValueChanged<_GridPreset> onGridPresetChanged;
+  final ValueChanged<int> onCustomRowsChanged;
+  final ValueChanged<int> onCustomColumnsChanged;
+  final VoidCallback onOpenFullscreenGrid;
   final VoidCallback? onResetOrder;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final compact = MediaQuery.sizeOf(context).width < 600;
+    final compact = MediaQuery.sizeOf(context).width < 700;
+    final dropdownStyle = TextStyle(
+      color: colors.textStrong,
+      fontWeight: FontWeight.w800,
+      fontSize: 13,
+    );
+
     return GlassPanel(
       padding: EdgeInsets.all(compact ? 10 : 12),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _GridChoice(
+                label: 'Стандартный',
+                selected: mode == _LiveMode.standard,
+                onTap: () => onModeChanged(_LiveMode.standard),
+              ),
+              _GridChoice(
+                label: 'Сетка',
+                selected: mode == _LiveMode.grid,
+                onTap: () => onModeChanged(_LiveMode.grid),
+              ),
+              _ControlChip(
+                icon: Icons.play_circle_rounded,
+                label: '$standardActiveCount / $standardActiveLimit потоков',
+              ),
+              OutlinedButton.icon(
+                onPressed: onResetOrder,
+                icon: const Icon(Icons.restart_alt_rounded, size: 18),
+                label: const Text('Сбросить порядок'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _CompactDropdown<String?>(
+                value: selectedLocation,
+                style: dropdownStyle,
+                hint: 'Все локации',
+                items: [
+                  const DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('Все локации'),
+                  ),
+                  for (final location in locations)
+                    DropdownMenuItem<String?>(
+                      value: location,
+                      child: Text(location),
+                    ),
+                ],
+                onChanged: onLocationChanged,
+              ),
+              _CompactDropdown<_LiveSort>(
+                value: sort,
+                style: dropdownStyle,
+                items: const [
+                  DropdownMenuItem(
+                    value: _LiveSort.priority,
+                    child: Text('Сначала рабочие'),
+                  ),
+                  DropdownMenuItem(
+                    value: _LiveSort.location,
+                    child: Text('По локации'),
+                  ),
+                  DropdownMenuItem(
+                    value: _LiveSort.name,
+                    child: Text('По названию'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onSortChanged(value);
+                },
+              ),
+              if (mode == _LiveMode.standard) ...[
+                _GridChoice(
+                  label: 'Авто',
+                  selected: standardColumns == 0,
+                  onTap: () => onColumnsChanged(0),
+                ),
+                _GridChoice(
+                  label: '1',
+                  selected: standardColumns == 1,
+                  onTap: () => onColumnsChanged(1),
+                ),
+                _GridChoice(
+                  label: '2',
+                  selected: standardColumns == 2,
+                  onTap: () => onColumnsChanged(2),
+                ),
+                _GridChoice(
+                  label: '3',
+                  selected: standardColumns == 3,
+                  onTap: () => onColumnsChanged(3),
+                ),
+              ] else ...[
+                _GridChoice(
+                  label: '2 x 2',
+                  selected: gridPreset == _GridPreset.twoByTwo,
+                  onTap: () => onGridPresetChanged(_GridPreset.twoByTwo),
+                ),
+                _GridChoice(
+                  label: '3 x 3',
+                  selected: gridPreset == _GridPreset.threeByThree,
+                  onTap: () => onGridPresetChanged(_GridPreset.threeByThree),
+                ),
+                _GridChoice(
+                  label: '4 x 4',
+                  selected: gridPreset == _GridPreset.fourByFour,
+                  onTap: () => onGridPresetChanged(_GridPreset.fourByFour),
+                ),
+                _StepperChip(
+                  label: 'Строки',
+                  value: customRows,
+                  selected: gridPreset == _GridPreset.custom,
+                  onChanged: onCustomRowsChanged,
+                ),
+                _StepperChip(
+                  label: 'Колонки',
+                  value: customColumns,
+                  selected: gridPreset == _GridPreset.custom,
+                  onChanged: onCustomColumnsChanged,
+                ),
+                OutlinedButton.icon(
+                  onPressed:
+                      canOpenFullscreenGrid ? onOpenFullscreenGrid : null,
+                  icon: const Icon(Icons.open_in_full_rounded, size: 18),
+                  label: const Text('Полноэкранная сетка'),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactDropdown<T> extends StatelessWidget {
+  const _CompactDropdown({
+    required this.value,
+    required this.items,
+    required this.onChanged,
+    required this.style,
+    this.hint,
+  });
+
+  final T value;
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?> onChanged;
+  final TextStyle style;
+  final String? hint;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      constraints: const BoxConstraints(minWidth: 150, maxWidth: 240),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: colors.surfaceMuted,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          hint: hint == null ? null : Text(hint!, style: style),
+          isExpanded: true,
+          dropdownColor: colors.surfaceElevated,
+          style: style,
+          icon: const Icon(Icons.expand_more_rounded),
+          items: items,
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+class _ControlChip extends StatelessWidget {
+  const _ControlChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: colors.surfaceMuted,
+        border: Border.all(color: colors.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 17, color: colors.primaryAccent),
+          const SizedBox(width: 7),
           Text(
-            'Сетка Live',
+            label,
             style: TextStyle(
-              color: colors.textStrong,
-              fontWeight: FontWeight.w900,
+              color: colors.muted,
+              fontWeight: FontWeight.w800,
               fontSize: 13,
             ),
           ),
-          _GridChoice(
-            label: 'Авто',
-            selected: columns == 0,
-            onTap: () => onColumnsChanged(0),
-          ),
-          _GridChoice(
-            label: '1 x 1',
-            selected: columns == 1,
-            onTap: () => onColumnsChanged(1),
-          ),
-          _GridChoice(
-            label: '2 x 2',
-            selected: columns == 2,
-            onTap: () => onColumnsChanged(2),
-          ),
-          _GridChoice(
-            label: '3 x 3',
-            selected: columns == 3,
-            onTap: () => onColumnsChanged(3),
-          ),
-          OutlinedButton.icon(
-            onPressed: onResetOrder,
-            icon: const Icon(Icons.restart_alt_rounded, size: 18),
-            label: const Text('Сбросить порядок'),
-          ),
-          FilterChip(
-            selected: annotate,
-            onSelected: onAnnotateChanged,
-            label: const Text('Overlay детекции'),
-            avatar: Icon(
-              annotate
-                  ? Icons.visibility_rounded
-                  : Icons.visibility_off_rounded,
-              size: 18,
-            ),
-          ),
-          if (!compact)
-            Text(
-              'Перетаскивайте карточки долгим нажатием.',
-              style: TextStyle(color: colors.muted, fontSize: 12),
-            ),
         ],
+      ),
+    );
+  }
+}
+
+class _StepperChip extends StatelessWidget {
+  const _StepperChip({
+    required this.label,
+    required this.value,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final String label;
+  final int value;
+  final bool selected;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: selected
+            ? colors.primaryAccent.withValues(alpha: 0.16)
+            : colors.surfaceMuted,
+        border: Border.all(
+          color: selected ? colors.primaryAccent : colors.border,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$label: $value',
+            style: TextStyle(
+              color: selected ? colors.primaryAccent : colors.muted,
+              fontWeight: FontWeight.w900,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(width: 5),
+          _MiniIconButton(
+            icon: Icons.remove_rounded,
+            onPressed: value <= 1 ? null : () => onChanged(value - 1),
+          ),
+          _MiniIconButton(
+            icon: Icons.add_rounded,
+            onPressed: value >= 6 ? null : () => onChanged(value + 1),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniIconButton extends StatelessWidget {
+  const _MiniIconButton({required this.icon, this.onPressed});
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 28,
+      height: 28,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        onPressed: onPressed,
+        icon: Icon(icon, size: 16),
       ),
     );
   }
@@ -347,40 +1102,12 @@ class _LiveHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 600;
-        final title = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Live',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style:
-                  (compact
-                          ? Theme.of(context).textTheme.headlineMedium
-                          : Theme.of(context).textTheme.displaySmall)
-                      ?.copyWith(
-                        color: colors.textStrong,
-                        fontWeight: FontWeight.w900,
-                        height: 1.05,
-                      ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Камеры, Processor и быстрые ONVIF-команды',
-              maxLines: compact ? 2 : 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: colors.muted,
-                fontSize: compact ? 13 : null,
-              ),
-            ),
-          ],
-        );
-        final refresh = OutlinedButton.icon(
+    return PageHeader(
+      title: 'Эфир',
+      icon: Icons.live_tv_rounded,
+      trailing: PageActions(
+        children: [
+          OutlinedButton.icon(
           onPressed: loading ? null : onRefresh,
           icon: loading
               ? const SizedBox(
@@ -390,24 +1117,9 @@ class _LiveHeader extends StatelessWidget {
                 )
               : const Icon(Icons.refresh_rounded),
           label: const Text('Обновить'),
-        );
-
-        if (compact) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [title, const SizedBox(height: 10), refresh],
-          );
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: title),
-            const SizedBox(width: 12),
-            refresh,
-          ],
-        );
-      },
+          ),
+        ],
+      ),
     );
   }
 }
@@ -459,15 +1171,442 @@ class _GridChoice extends StatelessWidget {
   }
 }
 
+class _GridCameraPicker extends StatefulWidget {
+  const _GridCameraPicker({required this.cameras, required this.onQuickAdd});
+
+  final List<CameraSummary> cameras;
+  final ValueChanged<int> onQuickAdd;
+
+  @override
+  State<_GridCameraPicker> createState() => _GridCameraPickerState();
+}
+
+class _GridCameraPickerState extends State<_GridCameraPicker> {
+  final _query = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _query.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final compact = MediaQuery.sizeOf(context).width < 700;
+    final filtered = _filterGridPickerCameras(widget.cameras, _query.text);
+    return GlassPanel(
+      padding: const EdgeInsets.all(12),
+      child: widget.cameras.isEmpty
+          ? Text(
+              'Все камеры уже размещены в сетке.',
+              style: TextStyle(color: colors.muted),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _query,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search_rounded),
+                    labelText: 'Поиск камер для сетки',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (filtered.isEmpty)
+                  Text(
+                    'Под фильтр камер нет.',
+                    style: TextStyle(color: colors.muted),
+                  )
+                else if (compact)
+                  _CompactGridCameraPicker(
+                    cameras: filtered,
+                    onQuickAdd: widget.onQuickAdd,
+                  )
+                else
+                  _WideGridCameraPicker(
+                    cameras: filtered,
+                    onQuickAdd: widget.onQuickAdd,
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+class _CompactGridCameraPicker extends StatelessWidget {
+  const _CompactGridCameraPicker({
+    required this.cameras,
+    required this.onQuickAdd,
+  });
+
+  final List<CameraSummary> cameras;
+  final ValueChanged<int> onQuickAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ControlChip(
+          icon: Icons.drag_indicator_rounded,
+          label: 'Камеры для сетки',
+        ),
+        const SizedBox(height: 10),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (final camera in cameras)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _CameraDragChip(
+                    camera: camera,
+                    onQuickAdd: onQuickAdd,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _WideGridCameraPicker extends StatelessWidget {
+  const _WideGridCameraPicker({
+    required this.cameras,
+    required this.onQuickAdd,
+  });
+
+  final List<CameraSummary> cameras;
+  final ValueChanged<int> onQuickAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        _ControlChip(
+          icon: Icons.drag_indicator_rounded,
+          label: 'Камеры для сетки',
+        ),
+        for (final camera in cameras)
+          _CameraDragChip(camera: camera, onQuickAdd: onQuickAdd),
+      ],
+    );
+  }
+}
+
+List<CameraSummary> _filterGridPickerCameras(
+  List<CameraSummary> cameras,
+  String rawQuery,
+) {
+  final query = rawQuery.trim().toLowerCase();
+  if (query.isEmpty) return cameras;
+  final ipLike = RegExp(r'^[0-9.]+$').hasMatch(query);
+  return cameras.where((camera) {
+    final ip = (camera.ipAddress ?? '').toLowerCase();
+    if (ipLike) {
+      return ip.contains(query) ||
+          (camera.streamUrl ?? '').toLowerCase().contains(query);
+    }
+    final text =
+        '${camera.name} ${camera.location ?? ''} ${camera.connectionKind}'
+            .toLowerCase();
+    return _looseContains(text, query);
+  }).toList(growable: false);
+}
+
+bool _looseContains(String text, String query) {
+  if (text.contains(query)) return true;
+  final parts = query
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  if (parts.isEmpty) return true;
+  return parts.every((part) {
+    if (text.contains(part)) return true;
+    return text.split(RegExp(r'\s+')).any((word) => _editDistance(word, part) <= 1);
+  });
+}
+
+int _editDistance(String a, String b) {
+  if ((a.length - b.length).abs() > 1) return 2;
+  if (a == b) return 0;
+  var i = 0;
+  var j = 0;
+  var edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a.codeUnitAt(i) == b.codeUnitAt(j)) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return edits;
+    if (a.length > b.length) {
+      i++;
+    } else if (b.length > a.length) {
+      j++;
+    } else {
+      i++;
+      j++;
+    }
+  }
+  if (i < a.length || j < b.length) edits++;
+  return edits;
+}
+
+class _CameraDragChip extends StatelessWidget {
+  const _CameraDragChip({required this.camera, required this.onQuickAdd});
+
+  final CameraSummary camera;
+  final ValueChanged<int> onQuickAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final label = camera.location?.trim().isNotEmpty == true
+        ? '${camera.name} - ${camera.location}'
+        : camera.name;
+    final chip = ActionChip(
+      avatar: const Icon(Icons.videocam_rounded, size: 18),
+      label: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 210),
+        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+      onPressed: () => onQuickAdd(camera.cameraId),
+    );
+    return LongPressDraggable<_GridDragPayload>(
+      data: _GridDragPayload(cameraId: camera.cameraId),
+      feedback: Material(
+        color: Colors.transparent,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 240),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            color: colors.surfaceElevated,
+            border: Border.all(color: colors.borderStrong),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.28),
+                blurRadius: 22,
+                offset: const Offset(0, 14),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colors.textStrong,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.45, child: chip),
+      child: chip,
+    );
+  }
+}
+
+class _GridSlotTile extends StatefulWidget {
+  const _GridSlotTile({
+    required this.index,
+    required this.camera,
+    required this.annotate,
+    required this.active,
+    required this.onCameraDropped,
+    required this.onActivate,
+    required this.onDeactivate,
+    required this.onAnnotateChanged,
+    required this.onRemove,
+  });
+
+  final int index;
+  final CameraSummary? camera;
+  final bool annotate;
+  final bool active;
+  final ValueChanged<_GridDragPayload> onCameraDropped;
+  final VoidCallback? onActivate;
+  final VoidCallback? onDeactivate;
+  final ValueChanged<bool>? onAnnotateChanged;
+  final VoidCallback? onRemove;
+
+  @override
+  State<_GridSlotTile> createState() => _GridSlotTileState();
+}
+
+class _GridSlotTileState extends State<_GridSlotTile> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return DragTarget<_GridDragPayload>(
+      onWillAcceptWithDetails: (_) {
+        setState(() => _hovered = true);
+        return true;
+      },
+      onLeave: (_) => setState(() => _hovered = false),
+      onAcceptWithDetails: (details) {
+        setState(() => _hovered = false);
+        widget.onCameraDropped(details.data);
+      },
+      builder: (context, candidateData, rejectedData) {
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppTheme.radiusLg),
+            border: Border.all(
+              color: _hovered ? colors.primaryAccent : Colors.transparent,
+              width: 2,
+            ),
+          ),
+          child: widget.camera == null
+              ? _EmptyGridSlot(index: widget.index)
+              : LongPressDraggable<_GridDragPayload>(
+                  data: _GridDragPayload(
+                    cameraId: widget.camera!.cameraId,
+                    sourceSlot: widget.index,
+                  ),
+                  feedback: Material(
+                    color: Colors.transparent,
+                    child: _GridDragPreview(camera: widget.camera!),
+                  ),
+                  childWhenDragging: Opacity(
+                    opacity: 0.45,
+                    child: _CameraTile(
+                      camera: widget.camera!,
+                      annotate: widget.annotate,
+                      active: widget.active,
+                      onActivate: widget.onActivate!,
+                      onDeactivate: widget.onDeactivate!,
+                      onAnnotateChanged: widget.onAnnotateChanged,
+                      onRemove: widget.onRemove,
+                    ),
+                  ),
+                  child: _CameraTile(
+                    camera: widget.camera!,
+                    annotate: widget.annotate,
+                    active: widget.active,
+                    onActivate: widget.onActivate!,
+                    onDeactivate: widget.onDeactivate!,
+                    onAnnotateChanged: widget.onAnnotateChanged,
+                    onRemove: widget.onRemove,
+                  ),
+                ),
+        );
+      },
+    );
+  }
+}
+
+class _GridDragPreview extends StatelessWidget {
+  const _GridDragPreview({required this.camera});
+
+  final CameraSummary camera;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 260),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        color: colors.surfaceElevated,
+        border: Border.all(color: colors.borderStrong),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 22,
+            offset: const Offset(0, 14),
+          ),
+        ],
+      ),
+      child: Text(
+        camera.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: colors.textStrong,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyGridSlot extends StatelessWidget {
+  const _EmptyGridSlot({required this.index});
+
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GlassPanel(
+      padding: const EdgeInsets.all(18),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.add_to_queue_rounded,
+              size: 34,
+              color: colors.primaryAccent,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Ячейка ${index + 1}',
+              style: TextStyle(
+                color: colors.textStrong,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Перетащите камеру сюда',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: colors.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _DraggableCameraTile extends StatefulWidget {
   const _DraggableCameraTile({
     required this.camera,
     required this.annotate,
+    required this.active,
+    required this.onActivate,
+    required this.onDeactivate,
+    required this.onAnnotateChanged,
     required this.onMoveBefore,
   });
 
   final CameraSummary camera;
   final bool annotate;
+  final bool active;
+  final VoidCallback onActivate;
+  final VoidCallback onDeactivate;
+  final ValueChanged<bool> onAnnotateChanged;
   final void Function(int draggedId, int targetId) onMoveBefore;
 
   @override
@@ -536,11 +1675,19 @@ class _DraggableCameraTileState extends State<_DraggableCameraTile> {
               child: _CameraTile(
                 camera: widget.camera,
                 annotate: widget.annotate,
+                active: widget.active,
+                onActivate: widget.onActivate,
+                onDeactivate: widget.onDeactivate,
+                onAnnotateChanged: widget.onAnnotateChanged,
               ),
             ),
             child: _CameraTile(
               camera: widget.camera,
               annotate: widget.annotate,
+              active: widget.active,
+              onActivate: widget.onActivate,
+              onDeactivate: widget.onDeactivate,
+              onAnnotateChanged: widget.onAnnotateChanged,
             ),
           ),
         );
@@ -550,17 +1697,30 @@ class _DraggableCameraTileState extends State<_DraggableCameraTile> {
 }
 
 class _CameraTile extends StatefulWidget {
-  const _CameraTile({required this.camera, required this.annotate});
+  const _CameraTile({
+    required this.camera,
+    required this.annotate,
+    required this.active,
+    required this.onActivate,
+    required this.onDeactivate,
+    this.onAnnotateChanged,
+    this.onRemove,
+  });
 
   final CameraSummary camera;
   final bool annotate;
+  final bool active;
+  final VoidCallback onActivate;
+  final VoidCallback onDeactivate;
+  final ValueChanged<bool>? onAnnotateChanged;
+  final VoidCallback? onRemove;
 
   @override
   State<_CameraTile> createState() => _CameraTileState();
 }
 
 class _CameraTileState extends State<_CameraTile> {
-  static const _ptzSafetyStopDelay = Duration(milliseconds: 900);
+  static const _ptzSafetyStopDelay = Duration(milliseconds: 420);
 
   bool _ptzBusy = false;
   Timer? _ptzSafetyStopTimer;
@@ -591,12 +1751,13 @@ class _CameraTileState extends State<_CameraTile> {
       } else if (stop) {
         await api.ptzStop(token, widget.camera.cameraId);
       } else {
-        await api.ptzRelative(
+        await api.ptzContinuous(
           token,
           widget.camera.cameraId,
           pan: pan,
           tilt: tilt,
           zoom: zoom,
+          timeoutSeconds: 0.25,
         );
       }
     } catch (error) {
@@ -694,28 +1855,36 @@ class _CameraTileState extends State<_CameraTile> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  if (token != null)
+                  if (token != null && widget.active)
                     InteractiveViewer(
                       minScale: 1,
                       maxScale: 5,
-                      child: MjpegStreamView(
-                        uri: api.cameraStreamUri(
-                          camera.cameraId,
-                          annotate: widget.annotate,
-                          maxFps: MediaQuery.sizeOf(context).width < 600
-                              ? 12
-                              : 20,
-                        ),
-                        headers: {'Authorization': 'Bearer $token'},
+                      child: _ResolvedCameraStreamView(
+                        api: api,
+                        token: token,
+                        cameraId: camera.cameraId,
+                        annotate: widget.annotate,
+                        maxFps: MediaQuery.sizeOf(context).width < 600
+                            ? 30
+                            : 60,
                         fit: BoxFit.cover,
                         errorBuilder: (context, error) => _NoStream(
                           camera: camera,
-                          message: 'Нет live-потока: $error',
+                          message: 'Нет эфирного потока: $error',
+                          actionLabel: 'Повторить',
+                          onAction: _restartStream,
                         ),
                       ),
                     )
                   else
-                    _NoStream(camera: camera, message: 'Нет авторизации'),
+                    _NoStream(
+                      camera: camera,
+                      message: token == null
+                          ? 'Нет авторизации'
+                          : 'Поток не открыт',
+                      actionLabel: token == null ? null : 'Открыть поток',
+                      onAction: token == null ? null : widget.onActivate,
+                    ),
                   Positioned(
                     left: 12,
                     top: 12,
@@ -730,17 +1899,49 @@ class _CameraTileState extends State<_CameraTile> {
                     right: 12,
                     top: 12,
                     child: _CameraBadge(
-                      text: camera.detectionEnabled ? 'DETECT' : 'VIEW',
+                      text: camera.detectionEnabled ? 'ДЕТЕКЦИЯ' : 'ПРОСМОТР',
                       active: camera.detectionEnabled,
                     ),
                   ),
                   Positioned(
                     right: 12,
                     bottom: 12,
-                    child: IconButton.filledTonal(
-                      tooltip: 'Во весь экран',
-                      onPressed: _openFullscreen,
-                      icon: const Icon(Icons.fullscreen_rounded),
+                    child: Wrap(
+                      spacing: 8,
+                      children: [
+                        IconButton.filledTonal(
+                          tooltip: widget.annotate
+                              ? 'Отключить оверлей'
+                              : 'Включить оверлей',
+                          onPressed: widget.onAnnotateChanged == null
+                              ? null
+                              : () => widget.onAnnotateChanged!(
+                                    !widget.annotate,
+                                  ),
+                          icon: Icon(
+                            widget.annotate
+                                ? Icons.visibility_rounded
+                                : Icons.visibility_off_rounded,
+                          ),
+                        ),
+                        if (widget.active)
+                          IconButton.filledTonal(
+                            tooltip: 'Остановить поток',
+                            onPressed: widget.onDeactivate,
+                            icon: const Icon(Icons.stop_rounded),
+                          ),
+                        if (widget.onRemove != null)
+                          IconButton.filledTonal(
+                            tooltip: 'Убрать из сетки',
+                            onPressed: widget.onRemove,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        IconButton.filledTonal(
+                          tooltip: 'Во весь экран',
+                          onPressed: _openFullscreen,
+                          icon: const Icon(Icons.fullscreen_rounded),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -797,12 +1998,12 @@ class _CameraTileState extends State<_CameraTile> {
                     busy: _ptzBusy,
                     canZoom: camera.ptzCapabilities.zoom,
                     canHome: camera.ptzCapabilities.home,
-                    onUp: () => _startPtzHold(tilt: 0.35),
-                    onDown: () => _startPtzHold(tilt: -0.35),
-                    onLeft: () => _startPtzHold(pan: -0.35),
-                    onRight: () => _startPtzHold(pan: 0.35),
-                    onZoomIn: () => _startPtzHold(zoom: 0.28),
-                    onZoomOut: () => _startPtzHold(zoom: -0.28),
+                    onUp: () => _startPtzHold(tilt: 0.22),
+                    onDown: () => _startPtzHold(tilt: -0.22),
+                    onLeft: () => _startPtzHold(pan: -0.22),
+                    onRight: () => _startPtzHold(pan: 0.22),
+                    onZoomIn: () => _startPtzHold(zoom: 0.18),
+                    onZoomOut: () => _startPtzHold(zoom: -0.18),
                     onHome: () => _ptz(home: true),
                     onStop: _stopPtzHold,
                     onPresets: _openPresets,
@@ -815,13 +2016,154 @@ class _CameraTileState extends State<_CameraTile> {
       ),
     );
   }
+
+  void _restartStream() {
+    widget.onDeactivate();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onActivate();
+    });
+  }
+}
+
+class _ResolvedCameraStreamView extends StatefulWidget {
+  const _ResolvedCameraStreamView({
+    required this.api,
+    required this.token,
+    required this.cameraId,
+    required this.annotate,
+    required this.maxFps,
+    required this.fit,
+    this.errorBuilder,
+  });
+
+  final ApiClient api;
+  final String token;
+  final int cameraId;
+  final bool annotate;
+  final int maxFps;
+  final BoxFit fit;
+  final Widget Function(BuildContext context, Object error)? errorBuilder;
+
+  @override
+  State<_ResolvedCameraStreamView> createState() =>
+      _ResolvedCameraStreamViewState();
+}
+
+class _ResolvedCameraStreamViewState extends State<_ResolvedCameraStreamView> {
+  List<CameraStreamSource> _sources = const [];
+  bool _loading = true;
+  int _sourceIndex = 0;
+  int _generation = 0;
+  bool _fallbackQueued = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _reloadSources();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ResolvedCameraStreamView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.api != widget.api ||
+        oldWidget.token != widget.token ||
+        oldWidget.cameraId != widget.cameraId ||
+        oldWidget.annotate != widget.annotate ||
+        oldWidget.maxFps != widget.maxFps) {
+      _reloadSources();
+    }
+  }
+
+  void _reloadSources() {
+    _generation += 1;
+    final generation = _generation;
+    setState(() {
+      _loading = true;
+      _sourceIndex = 0;
+      _fallbackQueued = false;
+      _sources = const [];
+    });
+    unawaited(
+      widget.api
+          .cameraStreamSources(
+            widget.token,
+            widget.cameraId,
+            annotate: widget.annotate,
+            maxFps: widget.maxFps,
+          )
+          .catchError((_) {
+            return [
+              CameraStreamSource(
+                uri: widget.api.cameraStreamUri(
+                  widget.cameraId,
+                  annotate: widget.annotate,
+                  maxFps: widget.maxFps,
+                ),
+                headers: const {},
+                kind: 'backend_proxy',
+              ),
+            ];
+          })
+          .then((sources) {
+            if (!mounted || generation != _generation) return;
+            setState(() {
+              _sources = sources;
+              _sourceIndex = 0;
+              _loading = false;
+            });
+          }),
+    );
+  }
+
+  void _tryNextSource(Object error) {
+    if (_fallbackQueued || _sourceIndex + 1 >= _sources.length) return;
+    _fallbackQueued = true;
+    scheduleMicrotask(() {
+      if (!mounted || _sourceIndex + 1 >= _sources.length) return;
+      setState(() {
+        _sourceIndex += 1;
+        _fallbackQueued = false;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    if (_sources.isEmpty) {
+      return widget.errorBuilder?.call(context, 'Источник потока не найден') ??
+          const SizedBox.shrink();
+    }
+
+    final source = _sources[math.min(_sourceIndex, _sources.length - 1)];
+    return MjpegStreamView(
+      key: ValueKey('${source.kind}:${source.uri}:$_sourceIndex'),
+      uri: source.uri,
+      headers: {
+        ...source.headers,
+        'Authorization': 'Bearer ${widget.token}',
+      },
+      fit: widget.fit,
+      errorBuilder: widget.errorBuilder,
+      onError: _tryNextSource,
+    );
+  }
 }
 
 class _NoStream extends StatelessWidget {
-  const _NoStream({required this.camera, required this.message});
+  const _NoStream({
+    required this.camera,
+    required this.message,
+    this.actionLabel,
+    this.onAction,
+  });
 
   final CameraSummary camera;
   final String message;
+  final String? actionLabel;
+  final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -848,6 +2190,14 @@ class _NoStream extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(camera.name, style: TextStyle(color: colors.muted)),
+              if (actionLabel != null && onAction != null) ...[
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  onPressed: onAction,
+                  icon: const Icon(Icons.play_arrow_rounded),
+                  label: Text(actionLabel!),
+                ),
+              ],
             ],
           ),
         ),
@@ -964,6 +2314,7 @@ class _PtzButtonState extends State<_PtzButton> {
 
   void _press() {
     if (widget.onPressed == null) return;
+    if (_holding) return;
     _holding = true;
     widget.onPressed!();
   }
@@ -1077,6 +2428,170 @@ class _InfoPill extends StatelessWidget {
   }
 }
 
+class _GridFullscreenDialog extends StatelessWidget {
+  const _GridFullscreenDialog({
+    required this.slots,
+    required this.camerasById,
+    required this.activeSlots,
+    required this.annotateBySlot,
+  });
+
+  final List<int?> slots;
+  final Map<int, CameraSummary> camerasById;
+  final Set<int> activeSlots;
+  final List<bool> annotateBySlot;
+
+  @override
+  Widget build(BuildContext context) {
+    final token = context.watch<AuthController>().accessToken;
+    final api = context.read<ApiClient>();
+    final slotCount = slots.isEmpty ? 1 : slots.length;
+    final columns = math.max(1, math.sqrt(slotCount).ceil());
+    return Dialog.fullscreen(
+      backgroundColor: Colors.black,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GridView.builder(
+              padding: const EdgeInsets.all(12),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+                childAspectRatio: 16 / 9,
+              ),
+              itemCount: slots.length,
+              itemBuilder: (context, index) {
+                final cameraId = slots[index];
+                final camera =
+                    cameraId == null ? null : camerasById[cameraId];
+                if (camera == null || token == null || !activeSlots.contains(index)) {
+                  return Container(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    alignment: Alignment.center,
+                    child: Text(
+                      camera?.name ?? 'Свободная ячейка',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  );
+                }
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _ResolvedCameraStreamView(
+                      api: api,
+                      token: token,
+                      cameraId: camera.cameraId,
+                      annotate: index < annotateBySlot.length
+                          ? annotateBySlot[index]
+                          : true,
+                      maxFps: 30,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error) => Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(
+                            'Нет эфирного потока: $error',
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 10,
+                      top: 10,
+                      child: _CameraBadge(text: camera.name, active: true),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          Positioned(
+            right: 18,
+            top: 18,
+            child: IconButton.filled(
+              tooltip: 'Закрыть',
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ignore: unused_element
+class _FullscreenGridCell extends StatelessWidget {
+  const _FullscreenGridCell({
+    required this.index,
+    required this.slots,
+    required this.camerasById,
+    required this.activeSlots,
+    required this.annotateBySlot,
+    required this.api,
+    required this.token,
+  });
+
+  final int index;
+  final List<int?> slots;
+  final Map<int, CameraSummary> camerasById;
+  final Set<int> activeSlots;
+  final List<bool> annotateBySlot;
+  final ApiClient api;
+  final String? token;
+
+  @override
+  Widget build(BuildContext context) {
+    final cameraId = index < slots.length ? slots[index] : null;
+    final camera = cameraId == null ? null : camerasById[cameraId];
+    if (camera == null || token == null || !activeSlots.contains(index)) {
+      return Container(
+        color: Colors.white.withValues(alpha: 0.06),
+        alignment: Alignment.center,
+        child: Text(
+          camera?.name ?? 'Свободная ячейка',
+          style: const TextStyle(color: Colors.white70),
+        ),
+      );
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _ResolvedCameraStreamView(
+          api: api,
+          token: token!,
+          cameraId: camera.cameraId,
+          annotate: index < annotateBySlot.length ? annotateBySlot[index] : true,
+          maxFps: 30,
+          fit: BoxFit.contain,
+          errorBuilder: (context, error) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Нет эфирного потока: $error',
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 10,
+          top: 10,
+          child: _CameraBadge(text: camera.name, active: true),
+        ),
+      ],
+    );
+  }
+}
+
 class _FullscreenCameraDialog extends StatefulWidget {
   const _FullscreenCameraDialog({required this.camera, required this.annotate});
 
@@ -1089,7 +2604,7 @@ class _FullscreenCameraDialog extends StatefulWidget {
 }
 
 class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
-  static const _ptzSafetyStopDelay = Duration(milliseconds: 900);
+  static const _ptzSafetyStopDelay = Duration(milliseconds: 420);
 
   final _focusNode = FocusNode();
   Timer? _ptzSafetyStopTimer;
@@ -1121,6 +2636,7 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
         pan: pan,
         tilt: tilt,
         zoom: zoom,
+        timeoutSeconds: 0.25,
       );
       _ptzSafetyStopTimer = Timer(_ptzSafetyStopDelay, () {
         if (!mounted) return;
@@ -1153,20 +2669,20 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
       Navigator.of(context).pop();
     } else if (key == LogicalKeyboardKey.keyW ||
         key == LogicalKeyboardKey.arrowUp) {
-      _move(tilt: 0.35);
+      _move(tilt: 0.22);
     } else if (key == LogicalKeyboardKey.keyS ||
         key == LogicalKeyboardKey.arrowDown) {
-      _move(tilt: -0.35);
+      _move(tilt: -0.22);
     } else if (key == LogicalKeyboardKey.keyA ||
         key == LogicalKeyboardKey.arrowLeft) {
-      _move(pan: -0.35);
+      _move(pan: -0.22);
     } else if (key == LogicalKeyboardKey.keyD ||
         key == LogicalKeyboardKey.arrowRight) {
-      _move(pan: 0.35);
+      _move(pan: 0.22);
     } else if (key == LogicalKeyboardKey.keyQ) {
-      _move(zoom: -0.25);
+      _move(zoom: -0.18);
     } else if (key == LogicalKeyboardKey.keyE) {
-      _move(zoom: 0.25);
+      _move(zoom: 0.18);
     }
   }
 
@@ -1187,19 +2703,18 @@ class _FullscreenCameraDialogState extends State<_FullscreenCameraDialog> {
                   : InteractiveViewer(
                       minScale: 1,
                       maxScale: 8,
-                      child: MjpegStreamView(
-                        uri: api.cameraStreamUri(
-                          widget.camera.cameraId,
-                          annotate: widget.annotate,
-                          maxFps: 24,
-                        ),
-                        headers: {'Authorization': 'Bearer $token'},
+                      child: _ResolvedCameraStreamView(
+                        api: api,
+                        token: token,
+                        cameraId: widget.camera.cameraId,
+                        annotate: widget.annotate,
+                        maxFps: 60,
                         fit: BoxFit.contain,
                         errorBuilder: (context, error) => Center(
                           child: Padding(
                             padding: const EdgeInsets.all(24),
                             child: Text(
-                              'Нет live-потока: $error',
+                              'Нет эфирного потока: $error',
                               maxLines: 5,
                               overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.center,

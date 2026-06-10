@@ -15,25 +15,159 @@ void main() {
   runApp(const ProcessorGuiApp());
 }
 
-class ProcessorGuiApp extends StatelessWidget {
+enum ProcessorThemeMode { dark, light }
+
+class ProcessorGuiApp extends StatefulWidget {
   const ProcessorGuiApp({super.key});
+
+  @override
+  State<ProcessorGuiApp> createState() => _ProcessorGuiAppState();
+}
+
+class _ProcessorGuiAppState extends State<ProcessorGuiApp> {
+  ProcessorThemeMode _themeMode = ProcessorThemeMode.dark;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadThemeMode());
+  }
+
+  Future<void> _loadThemeMode() async {
+    try {
+      final bridge = await RuntimeBridge.detect();
+      final config = await bridge.readConfig();
+      if (!mounted) return;
+      setState(() => _themeMode = processorThemeModeFrom(config));
+    } catch (_) {
+      // The main screen will show a runtime error if the Processor bundle is absent.
+    }
+  }
+
+  Future<void> _setThemeMode(ProcessorThemeMode value) async {
+    if (value == _themeMode) return;
+    setState(() => _themeMode = value);
+    try {
+      final bridge = await RuntimeBridge.detect();
+      final config = Map<String, dynamic>.from(await bridge.readConfig());
+      config['theme_mode'] = value.name;
+      await bridge.writeConfig(config);
+    } catch (_) {
+      // Keep the visual switch responsive even if config persistence is unavailable.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'CCTV Processor',
-      theme: ProcessorTheme.dark(),
-      home: const ProcessorHome(),
+      title: 'CCTV Процессор',
+      themeAnimationDuration: ProcessorMotion.theme,
+      themeAnimationCurve: ProcessorMotion.emphasized,
+      themeMode: _themeMode == ProcessorThemeMode.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
+      theme: ProcessorTheme.light(),
+      darkTheme: ProcessorTheme.dark(),
+      home: ProcessorHome(
+        themeMode: _themeMode,
+        onThemeModeChanged: _setThemeMode,
+      ),
     );
   }
 }
 
 class ProcessorHome extends StatefulWidget {
-  const ProcessorHome({super.key});
+  const ProcessorHome({
+    super.key,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+  });
+
+  final ProcessorThemeMode themeMode;
+  final Future<void> Function(ProcessorThemeMode mode) onThemeModeChanged;
 
   @override
   State<ProcessorHome> createState() => _ProcessorHomeState();
+}
+
+class ProcessorMotion {
+  const ProcessorMotion._();
+
+  static const fast = Duration(milliseconds: 140);
+  static const standard = Duration(milliseconds: 220);
+  static const theme = Duration(milliseconds: 360);
+  static const curve = Curves.easeOutCubic;
+  static const emphasized = Cubic(0.2, 0, 0, 1);
+
+  static Duration resolved(BuildContext context, Duration duration) {
+    final media = MediaQuery.maybeOf(context);
+    if (media == null) return duration;
+    if (media.disableAnimations || media.accessibleNavigation) {
+      return Duration.zero;
+    }
+    return duration;
+  }
+}
+
+ProcessorThemeMode processorThemeModeFrom(Map<String, dynamic> config) {
+  final value = '${config['theme_mode'] ?? ''}'.trim().toLowerCase();
+  return ProcessorThemeMode.values.firstWhere(
+    (mode) => mode.name == value,
+    orElse: () => ProcessorThemeMode.dark,
+  );
+}
+
+class PressScale extends StatefulWidget {
+  const PressScale({
+    super.key,
+    required this.child,
+    this.enabled = true,
+    this.scale = 0.975,
+  });
+
+  final Widget child;
+  final bool enabled;
+  final double scale;
+
+  @override
+  State<PressScale> createState() => _PressScaleState();
+}
+
+class _PressScaleState extends State<PressScale> {
+  bool _pressed = false;
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final targetScale = !widget.enabled
+        ? 1.0
+        : _pressed
+        ? widget.scale
+        : _hovered
+        ? 1.01
+        : 1.0;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() {
+        _hovered = false;
+        _pressed = false;
+      }),
+      child: Listener(
+        onPointerDown: widget.enabled
+            ? (_) => setState(() => _pressed = true)
+            : null,
+        onPointerCancel: (_) => setState(() => _pressed = false),
+        onPointerUp: (_) => setState(() => _pressed = false),
+        child: AnimatedScale(
+          scale: targetScale,
+          duration: ProcessorMotion.fast,
+          curve: ProcessorMotion.curve,
+          child: widget.child,
+        ),
+      ),
+    );
+  }
 }
 
 class _ProcessorHomeState extends State<ProcessorHome> {
@@ -67,6 +201,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   bool _busy = false;
   bool _refreshing = false;
   bool _running = false;
+  bool _stopping = false;
   DateTime? _lastFullRefresh;
   DateTime? _lastMetricsRefresh;
   DateTime? _startedAt;
@@ -111,7 +246,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       _bridge = bridge;
       _config = config;
       _accelPreference = '${config['processor_accel'] ?? 'auto'}';
-      _statusMessage = 'Runtime найден: ${bridge.launcherDescription}';
+      _statusMessage = 'Среда выполнения найдена: ${bridge.launcherDescription}';
     });
     _syncControllersFromConfig();
     await _refreshAll();
@@ -140,6 +275,19 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         '${_config['theme_primary_color'] ?? '#49C8E8'}';
     _secondaryColorController.text =
         '${_config['theme_secondary_color'] ?? '#4C6FFF'}';
+  }
+
+  Future<void> _toggleThemeMode() async {
+    final next = widget.themeMode == ProcessorThemeMode.dark
+        ? ProcessorThemeMode.light
+        : ProcessorThemeMode.dark;
+    setState(() {
+      _config = {..._config, 'theme_mode': next.name};
+      _statusMessage = next == ProcessorThemeMode.dark
+          ? 'Включена тёмная тема.'
+          : 'Включена светлая тема.';
+    });
+    await widget.onThemeModeChanged(next);
   }
 
   Map<String, dynamic> _configFromControllers() {
@@ -187,6 +335,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       _secondaryColorController.text,
       '#4C6FFF',
     );
+    next['theme_mode'] = widget.themeMode.name;
     next.putIfAbsent('processor_node_uid', () => randomHex(32));
     return normalizeProcessorConfig(next, _bridge?.runtimeDir.path);
   }
@@ -209,6 +358,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           (_lastFullRefresh == null ||
               now.difference(_lastFullRefresh!) >= const Duration(minutes: 5));
       final config = await bridge.readConfig();
+      final runtimePid = await bridge.runningHeadlessPid();
       final metrics = includeMetricsRefresh
           ? await bridge.localMetrics()
           : _metrics;
@@ -248,8 +398,17 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           status['storage'],
           status['storage_error'],
         );
+        if (_process == null) {
+          _running = runtimePid != null;
+          if (_running && _startedAt == null) {
+            _startedAt = DateTime.now();
+          }
+          if (!_running) {
+            _startedAt = null;
+          }
+        }
         _statusMessage = _running
-            ? 'Processor запущен локально. PID: ${_process?.pid ?? '-'}'
+            ? 'Процессор запущен локально. PID: ${_process?.pid ?? runtimePid ?? '-'}'
             : _statusMessage;
       });
       if (includeFullRefresh || _gallery.isEmpty) {
@@ -324,7 +483,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       setState(() {
         _config = next;
         _statusMessage = _running
-            ? 'Настройки сохранены. Для runtime-параметров перезапустите Processor.'
+            ? 'Настройки сохранены. Для параметров среды выполнения перезапустите Процессор.'
             : 'Настройки сохранены.';
       });
       _syncControllersFromConfig();
@@ -360,7 +519,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   Future<void> _testBackend() async {
     final url = _backendController.text.trim().replaceAll(RegExp(r'/+$'), '');
     if (url.isEmpty) {
-      setState(() => _statusMessage = 'Введите URL backend.');
+      setState(() => _statusMessage = 'Введите адрес сервера.');
       return;
     }
     setState(() {
@@ -396,13 +555,13 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     if (bridge == null) return;
     final code = _codeController.text.trim();
     if (_backendController.text.trim().isEmpty || code.isEmpty) {
-      setState(() => _statusMessage = 'Нужны URL backend и код подключения.');
+      setState(() => _statusMessage = 'Нужны адрес сервера и код подключения.');
       return;
     }
     final connectConfig = _configFromControllers();
     setState(() {
       _busy = true;
-      _statusMessage = 'Подключение Processor к backend...';
+      _statusMessage = 'Подключение Процессора к серверу...';
     });
     try {
       final payload = await bridge.connectProcessor(connectConfig, code);
@@ -422,7 +581,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _config = config;
         _codeController.clear();
         _statusMessage =
-            'Подключено. Processor ID: ${_asMap(payload)['processor_id'] ?? config['processor_id']}.';
+            'Подключено. ID Процессора: ${_asMap(payload)['processor_id'] ?? config['processor_id']}.';
         _selectedTab = 'dashboard';
       });
       _syncControllersFromConfig();
@@ -473,15 +632,28 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       setState(() {
         _selectedTab = 'connect';
         _statusMessage =
-            'Сначала подключите Processor к backend и получите API-ключ.';
+            'Сначала подключите Процессор к серверу и получите API-ключ.';
       });
       return;
     }
     setState(() {
       _busy = true;
-      _statusMessage = 'Запуск headless Processor...';
+      _statusMessage = 'Запуск фонового Процессора...';
     });
     try {
+      final existingPid = await bridge.runningHeadlessPid();
+      if (existingPid != null) {
+        if (!mounted) return;
+        setState(() {
+          _process = null;
+          _running = true;
+          _startedAt ??= DateTime.now();
+          _stopping = false;
+          _statusMessage = 'Процессор уже запущен. PID: $existingPid';
+        });
+        await _refreshAll(allowWhileBusy: true);
+        return;
+      }
       final process = await bridge.startHeadless(
         onOutput: (line) => _appendSessionLog(line),
       );
@@ -490,16 +662,34 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _process = process;
         _running = true;
         _startedAt = DateTime.now();
-        _statusMessage = 'Processor запущен. PID: ${process.pid}';
+        _stopping = false;
+        _statusMessage = 'Процессор запущен. PID: ${process.pid}';
       });
       unawaited(
-        process.exitCode.then((code) {
+        process.exitCode.then((code) async {
           if (!mounted) return;
-          unawaited(_markProcessorOffline());
+          final stoppedByUser = _stopping;
+          final existingPid = await bridge.runningHeadlessPid();
+          if (!stoppedByUser && existingPid != null) {
+            if (!mounted) return;
+            setState(() {
+              _running = true;
+              _process = null;
+              _startedAt ??= DateTime.now();
+              _stopping = false;
+              _statusMessage = 'Процессор уже запущен. PID: $existingPid';
+            });
+            return;
+          }
+          await _markProcessorOffline();
           setState(() {
             _running = false;
             _process = null;
-            _statusMessage = 'Processor завершился с кодом $code.';
+            _startedAt = null;
+            _stopping = false;
+            _statusMessage = stoppedByUser
+                ? 'Процессор остановлен.'
+                : 'Процессор завершился с кодом $code.';
           });
         }),
       );
@@ -512,13 +702,29 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   }
 
   Future<void> _stopProcessor() async {
+    final bridge = _bridge;
     final process = _process;
     if (process == null) {
+      final existingPid = await bridge?.runningHeadlessPid();
+      if (existingPid != null) {
+        setState(() {
+          _stopping = true;
+          _statusMessage = 'Остановка Процессора...';
+        });
+        await bridge!.stopRuntimeProcess(existingPid);
+      }
       await _markProcessorOffline();
-      setState(() => _running = false);
+      setState(() {
+        _running = false;
+        _startedAt = null;
+        _stopping = false;
+      });
       return;
     }
-    setState(() => _statusMessage = 'Остановка Processor...');
+    setState(() {
+      _stopping = true;
+      _statusMessage = 'Остановка Процессора...';
+    });
     try {
       process.kill();
       await process.exitCode.timeout(const Duration(seconds: 6));
@@ -532,7 +738,9 @@ class _ProcessorHomeState extends State<ProcessorHome> {
     setState(() {
       _running = false;
       _process = null;
-      _statusMessage = 'Processor остановлен.';
+      _startedAt = null;
+      _stopping = false;
+      _statusMessage = 'Процессор остановлен.';
     });
   }
 
@@ -562,11 +770,11 @@ class _ProcessorHomeState extends State<ProcessorHome> {
       await response.drain<void>();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         _appendSessionLog(
-          'Failed to mark Processor offline: HTTP ${response.statusCode}\n',
+          'Не удалось перевести Процессор в offline: HTTP ${response.statusCode}\n',
         );
       }
     } catch (error) {
-      _appendSessionLog('Failed to mark Processor offline: $error\n');
+      _appendSessionLog('Не удалось перевести Процессор в offline: $error\n');
     } finally {
       client.close(force: true);
     }
@@ -628,19 +836,20 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   @override
   Widget build(BuildContext context) {
     final bridge = _bridge;
+    final colors = context.processorColors;
     return Scaffold(
       body: DecoratedBox(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF08111F), Color(0xFF050812), Color(0xFF0C0716)],
+            colors: [colors.backdropStart, colors.bg, colors.backdropEnd],
           ),
         ),
         child: Stack(
           children: [
-            const Positioned.fill(child: _ProcessorAuroraBackdrop()),
-            const Positioned.fill(child: _GridBackdrop()),
+            const Positioned.fill(child: RepaintBoundary(child: _ProcessorAuroraBackdrop())),
+            const Positioned.fill(child: RepaintBoundary(child: _GridBackdrop())),
             SafeArea(
               child: Row(
                 children: [
@@ -652,7 +861,22 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                   ),
                   Expanded(
                     child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 180),
+                      duration: ProcessorMotion.resolved(
+                        context,
+                        ProcessorMotion.standard,
+                      ),
+                      switchInCurve: ProcessorMotion.emphasized,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, animation) {
+                        final offset = Tween<Offset>(
+                          begin: const Offset(0, 0.012),
+                          end: Offset.zero,
+                        ).animate(animation);
+                        return FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(position: offset, child: child),
+                        );
+                      },
                       child: bridge == null
                           ? const Center(child: CircularProgressIndicator())
                           : _buildContent(bridge),
@@ -685,6 +909,8 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             running: _running,
             busy: _busy,
             onRefresh: _refreshAll,
+            themeMode: widget.themeMode,
+            onToggleTheme: _toggleThemeMode,
           ),
           const SizedBox(height: 14),
           Expanded(
@@ -703,23 +929,37 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   }
 
   Widget _dashboardPage(RuntimeBridge bridge) {
+    final colors = context.processorColors;
     final uptime = _startedAt == null
         ? '-'
         : _formatDuration(DateTime.now().difference(_startedAt!));
+    final processorId = _config['processor_id'];
+    final bound = processorId != null && '$processorId'.trim().isNotEmpty;
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _HeroPanel(
-            eyebrow: 'PROCESSOR CONTROL',
+            eyebrow: 'УПРАВЛЕНИЕ ПРОЦЕССОРОМ',
             title:
-                '${_config['processor_name'] ?? Platform.localHostname} · ID ${_config['processor_id'] ?? 'не назначен'}',
+                '${_config['processor_name'] ?? Platform.localHostname} · ${bound ? 'ID $processorId' : 'не подключён'}',
             trailing: Wrap(
               spacing: 10,
               runSpacing: 10,
               children: [
+                if (!bound)
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => setState(() => _selectedTab = 'connect'),
+                    icon: const Icon(Icons.link_rounded),
+                    label: const Text('Подключить'),
+                  ),
                 ElevatedButton.icon(
-                  onPressed: _busy || _running ? null : _startProcessor,
+                  onPressed: _busy || _running || !bound
+                      ? null
+                      : _startProcessor,
                   icon: const Icon(Icons.play_arrow_rounded),
                   label: const Text('Запустить'),
                 ),
@@ -734,13 +974,18 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           const SizedBox(height: 14),
           LayoutBuilder(
             builder: (context, constraints) {
-              final compact = constraints.maxWidth < 980;
+              final compact = constraints.maxWidth < 720;
+              final columns = constraints.maxWidth >= 1180
+                  ? 4
+                  : constraints.maxWidth >= 840
+                      ? 3
+                      : 2;
               final cards = [
                 _MetricCard(
                   label: 'Сервис',
                   value: _running ? 'Работает' : 'Остановлен',
                   icon: Icons.power_settings_new_rounded,
-                  accent: _running ? AppPalette.success : AppPalette.warning,
+                  accent: _running ? colors.success : colors.warning,
                 ),
                 _MetricCard(
                   label: 'CPU',
@@ -775,7 +1020,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                   icon: Icons.videocam_rounded,
                 ),
                 _MetricCard(
-                  label: 'Uptime',
+                  label: 'Время работы',
                   value: uptime,
                   icon: Icons.timer_rounded,
                 ),
@@ -793,80 +1038,72 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 );
               }
               return GridView.count(
-                crossAxisCount: constraints.maxWidth > 1280 ? 4 : 3,
+                crossAxisCount: columns,
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 crossAxisSpacing: 12,
                 mainAxisSpacing: 12,
-                childAspectRatio: 2.9,
+                childAspectRatio: columns == 2 ? 3.4 : 2.9,
                 children: cards,
               );
             },
           ),
           const SizedBox(height: 14),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 3,
-                child: _GlassPanel(
-                  child: _Section(
-                    title: 'Назначенные камеры',
-                    subtitle: _status['assignments_error'] == null
-                        ? null
-                        : '${_status['assignments_error']}',
-                    child: _assignments.isEmpty
-                        ? const _EmptyState(
-                            text: 'Камеры пока не назначены этому Processor.',
-                          )
-                        : Column(
-                            children: [
-                              for (final item in _assignments.take(8))
-                                _CameraAssignmentRow(item: _asMap(item)),
-                            ],
-                          ),
-                  ),
-                ),
+          _TwoColumnLayout(
+            primaryFlex: 3,
+            secondaryFlex: 2,
+            primary: _GlassPanel(
+              child: _Section(
+                title: 'Назначенные камеры',
+                subtitle: _status['assignments_error'] == null
+                    ? null
+                    : '${_status['assignments_error']}',
+                child: _assignments.isEmpty
+                    ? const _EmptyState(
+                        text: 'Камеры пока не назначены этому Процессору.',
+                      )
+                    : Column(
+                        children: [
+                          for (final item in _assignments.take(8))
+                            _CameraAssignmentRow(item: _asMap(item)),
+                        ],
+                      ),
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                flex: 2,
-                child: _GlassPanel(
-                  child: _Section(
-                    title: 'Быстрые действия',
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _ActionTile(
-                          label: 'Открыть записи',
-                          icon: Icons.video_library_rounded,
-                          onTap: () => _openRuntimePath(
-                            '${_config['recordings_dir'] ?? ''}',
-                          ),
-                        ),
-                        _ActionTile(
-                          label: 'Открыть снимки',
-                          icon: Icons.image_rounded,
-                          onTap: () => _openRuntimePath(
-                            '${_config['snapshots_dir'] ?? ''}',
-                          ),
-                        ),
-                        _ActionTile(
-                          label: 'Открыть лог',
-                          icon: Icons.subject_rounded,
-                          onTap: () => _openRuntimePath(bridge.logPath),
-                        ),
-                        _ActionTile(
-                          label: 'Открыть конфиг',
-                          icon: Icons.tune_rounded,
-                          onTap: () => _openRuntimePath(bridge.configPath),
-                        ),
-                      ],
+            ),
+            secondary: _GlassPanel(
+              child: _Section(
+                title: 'Быстрые действия',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _ActionTile(
+                      label: 'Открыть записи',
+                      icon: Icons.video_library_rounded,
+                      onTap: () => _openRuntimePath(
+                        '${_config['recordings_dir'] ?? ''}',
+                      ),
                     ),
-                  ),
+                    _ActionTile(
+                      label: 'Открыть снимки',
+                      icon: Icons.image_rounded,
+                      onTap: () => _openRuntimePath(
+                        '${_config['snapshots_dir'] ?? ''}',
+                      ),
+                    ),
+                    _ActionTile(
+                      label: 'Открыть лог',
+                      icon: Icons.subject_rounded,
+                      onTap: () => _openRuntimePath(bridge.logPath),
+                    ),
+                    _ActionTile(
+                      label: 'Открыть конфиг',
+                      icon: Icons.tune_rounded,
+                      onTap: () => _openRuntimePath(bridge.configPath),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         ],
       ),
@@ -875,98 +1112,90 @@ class _ProcessorHomeState extends State<ProcessorHome> {
 
   Widget _connectPage(RuntimeBridge bridge) {
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         children: [
           _HeroPanel(
-            eyebrow: 'PROCESSOR LINK',
-            title: 'Подключение к backend',
+            eyebrow: 'ПОДКЛЮЧЕНИЕ',
+            title: 'Подключение к серверу',
             trailing: _ConnectionBadge(connected: _status['connected'] == true),
           ),
           const SizedBox(height: 14),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 3,
-                child: _GlassPanel(
-                  child: _Section(
-                    title: 'Данные подключения',
-                    child: Column(
+          _TwoColumnLayout(
+            primaryFlex: 3,
+            secondaryFlex: 2,
+            primary: _GlassPanel(
+              child: _Section(
+                title: 'Данные подключения',
+                child: Column(
+                  children: [
+                    _TextField(
+                      controller: _backendController,
+                      label: 'Адрес сервера',
+                      hint: 'http://127.0.0.1:8001',
+                    ),
+                    _CodeInputField(
+                      controller: _codeController,
+                      label: 'Код подключения',
+                    ),
+                    _TextField(
+                      controller: _nameController,
+                      label: 'Имя Процессора',
+                      hint: Platform.localHostname,
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
                       children: [
-                        _TextField(
-                          controller: _backendController,
-                          label: 'Backend URL',
-                          hint: 'http://127.0.0.1:8001',
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _testBackend,
+                          icon: const Icon(Icons.health_and_safety_rounded),
+                          label: const Text('Проверить'),
                         ),
-                        _CodeInputField(
-                          controller: _codeController,
-                          label: 'Код подключения',
+                        ElevatedButton.icon(
+                          onPressed: _busy ? null : _connectProcessor,
+                          icon: const Icon(Icons.link_rounded),
+                          label: const Text('Подключить'),
                         ),
-                        _TextField(
-                          controller: _nameController,
-                          label: 'Имя Processor',
-                          hint: Platform.localHostname,
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: _busy ? null : _testBackend,
-                              icon: const Icon(Icons.health_and_safety_rounded),
-                              label: const Text('Проверить'),
-                            ),
-                            const SizedBox(width: 10),
-                            ElevatedButton.icon(
-                              onPressed: _busy ? null : _connectProcessor,
-                              icon: const Icon(Icons.link_rounded),
-                              label: const Text('Подключить'),
-                            ),
-                            const SizedBox(width: 10),
-                            OutlinedButton.icon(
-                              onPressed: _busy || _running
-                                  ? null
-                                  : _disconnectProcessor,
-                              icon: const Icon(Icons.link_off_rounded),
-                              label: const Text('Сбросить ключ'),
-                            ),
-                          ],
+                        OutlinedButton.icon(
+                          onPressed:
+                              _busy || _running ? null : _disconnectProcessor,
+                          icon: const Icon(Icons.link_off_rounded),
+                          label: const Text('Сбросить ключ'),
                         ),
                       ],
                     ),
-                  ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                flex: 2,
-                child: _GlassPanel(
-                  child: _Section(
-                    title: 'Локальная сводка',
-                    child: Column(
-                      children: [
-                        _InfoRow('Runtime', bridge.runtimeDir.path),
-                        _InfoRow('Launcher', bridge.launcherDescription),
-                        _InfoRow('Backend', '${_config['backend_url'] ?? '-'}'),
-                        _InfoRow(
-                          'Processor ID',
-                          '${_config['processor_id'] ?? '-'}',
-                        ),
-                        _InfoRow(
-                          'API key',
-                          '${_config['api_key'] ?? ''}'.isEmpty
-                              ? 'нет'
-                              : 'сохранён локально',
-                        ),
-                        _InfoRow(
-                          'Публикуемый IP',
-                          '${_config['advertised_ip'] ?? 'авто'}',
-                        ),
-                      ],
+            ),
+            secondary: _GlassPanel(
+              child: _Section(
+                title: 'Локальная сводка',
+                child: Column(
+                  children: [
+                    _InfoRow('Среда выполнения', bridge.runtimeDir.path),
+                    _InfoRow('Запуск', bridge.launcherDescription),
+                    _InfoRow('Сервер', '${_config['backend_url'] ?? '-'}'),
+                    _InfoRow(
+                      'ID Процессора',
+                      '${_config['processor_id'] ?? '-'}',
                     ),
-                  ),
+                    _InfoRow(
+                      'API-ключ',
+                      '${_config['api_key'] ?? ''}'.isEmpty
+                          ? 'нет'
+                          : 'сохранён локально',
+                    ),
+                    _InfoRow(
+                      'Публикуемый IP',
+                      '${_config['advertised_ip'] ?? 'авто'}',
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         ],
       ),
@@ -975,20 +1204,21 @@ class _ProcessorHomeState extends State<ProcessorHome> {
 
   Widget _settingsPage(RuntimeBridge bridge) {
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         children: [
           _HeroPanel(
-            eyebrow: 'PROCESSOR SETUP',
-            title: 'Настройки runtime',
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
+            eyebrow: 'НАСТРОЙКИ ПРОЦЕССОРА',
+            title: 'Настройки среды выполнения',
+            trailing: Wrap(
+              spacing: 10,
+              runSpacing: 10,
               children: [
                 OutlinedButton.icon(
                   onPressed: _busy || _running ? null : _resetConfig,
                   icon: const Icon(Icons.restart_alt_rounded),
                   label: const Text('Сбросить'),
                 ),
-                const SizedBox(width: 10),
                 ElevatedButton.icon(
                   onPressed: _busy ? null : _saveSettings,
                   icon: const Icon(Icons.save_rounded),
@@ -1000,7 +1230,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
           const SizedBox(height: 14),
           LayoutBuilder(
             builder: (context, constraints) {
-              final compact = constraints.maxWidth < 980;
+              final compact = constraints.maxWidth < 860;
               final cards = [
                 _settingsPerformance(),
                 _settingsStorage(bridge),
@@ -1094,18 +1324,21 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                 Expanded(
                   child: _DropdownField<int>(
                     label: 'Сканирование лиц',
-                    value: _sanitizeDivisor(_config['face_scan_divisor'], 8),
-                    values: const [1, 2, 4, 8, 16, 32, 64, 120],
+                    value: _sanitizeFaceScanDivisor(
+                      _config['face_scan_divisor'],
+                      8,
+                    ),
+                    values: const [2, 4, 8, 16, 32, 64, 120],
                     labelBuilder: _divisorLabel,
                     onChanged: (value) => setState(
-                      () => _config['face_scan_divisor'] = value ?? 8,
+                      () => _config['face_scan_divisor'] = value ?? 4,
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: _DropdownField<int>(
-                    label: 'Оверлей live',
+                    label: 'Оверлей эфира',
                     value: _sanitizeDivisor(
                       _config['overlay_frame_divisor'],
                       1,
@@ -1129,7 +1362,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                   onTap: () => _applyPreset(32, 8),
                 ),
                 _PresetChip(label: 'Баланс', onTap: () => _applyPreset(8, 1)),
-                _PresetChip(label: 'Максимум', onTap: () => _applyPreset(1, 1)),
+                _PresetChip(label: 'Максимум', onTap: () => _applyPreset(2, 1)),
               ],
             ),
           ],
@@ -1204,22 +1437,22 @@ class _ProcessorHomeState extends State<ProcessorHome> {
   Widget _settingsRuntime() {
     return _GlassPanel(
       child: _Section(
-        title: 'Media runtime',
+        title: 'Медиасервер',
         child: Column(
           children: [
             _TextField(
               controller: _mediaPortController,
-              label: 'Media port',
+              label: 'Порт медиасервера',
               numeric: true,
             ),
             _TextField(
               controller: _mediaTokenController,
-              label: 'Media token',
+              label: 'Токен медиасервера',
               obscure: true,
             ),
             _SmallNote(
               text:
-                  'Token используется backend для live/архивного proxy. Если изменить его во время работы, перезапустите Processor.',
+                  'Токен используется сервером для доступа к эфиру и архиву. Если изменить его во время работы, перезапустите Процессор.',
             ),
           ],
         ),
@@ -1267,7 +1500,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                     _secondaryColorController.text = '#4C6FFF';
                     setState(() {});
                   },
-                  child: const Text('Processor'),
+                  child: const Text('Процессор'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton(
@@ -1276,7 +1509,7 @@ class _ProcessorHomeState extends State<ProcessorHome> {
                     _secondaryColorController.text = '#6F7BFF';
                     setState(() {});
                   },
-                  child: const Text('Console'),
+                  child: const Text('Консоль'),
                 ),
               ],
             ),
@@ -1288,11 +1521,12 @@ class _ProcessorHomeState extends State<ProcessorHome> {
 
   Widget _diagnosticsPage(RuntimeBridge bridge) {
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         children: [
           _HeroPanel(
-            eyebrow: 'RUNTIME DIAGNOSTICS',
-            title: 'Диагностика Processor',
+            eyebrow: 'ДИАГНОСТИКА',
+            title: 'Диагностика Процессора',
             trailing: ElevatedButton.icon(
               onPressed: _busy ? null : _runPrewarm,
               icon: const Icon(Icons.model_training_rounded),
@@ -1300,47 +1534,31 @@ class _ProcessorHomeState extends State<ProcessorHome> {
             ),
           ),
           const SizedBox(height: 14),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _JsonCard(title: 'Acceleration', payload: _acceleration),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: _JsonCard(title: 'System info', payload: _systemInfo),
-              ),
-            ],
+          _TwoColumnLayout(
+            primary: _JsonCard(title: 'Acceleration', payload: _acceleration),
+            secondary: _JsonCard(title: 'System info', payload: _systemInfo),
           ),
           const SizedBox(height: 14),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _GlassPanel(
-                  child: _Section(
-                    title: 'Галерея персон',
-                    child: _gallery.isEmpty
-                        ? const _EmptyState(
-                            text: 'Галерея пуста или Processor не подключён.',
-                          )
-                        : Column(
-                            children: [
-                              for (final item in _gallery.take(12))
-                                _InfoRow(
-                                  '${_asMap(item)['person_id'] ?? '-'}',
-                                  '${_asMap(item)['label'] ?? item}',
-                                ),
-                            ],
-                          ),
-                  ),
-                ),
+          _TwoColumnLayout(
+            primary: _GlassPanel(
+              child: _Section(
+                title: 'Галерея персон',
+                child: _gallery.isEmpty
+                    ? const _EmptyState(
+                        text: 'Галерея пуста или Процессор не подключён.',
+                      )
+                    : Column(
+                        children: [
+                          for (final item in _gallery.take(12))
+                            _InfoRow(
+                              '${_asMap(item)['person_id'] ?? '-'}',
+                              '${_asMap(item)['label'] ?? item}',
+                            ),
+                        ],
+                      ),
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: _JsonCard(title: 'CLI status', payload: _status),
-              ),
-            ],
+            ),
+            secondary: _JsonCard(title: 'CLI status', payload: _status),
           ),
         ],
       ),
@@ -1360,21 +1578,20 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         _HeroPanel(
           eyebrow: 'SERVICE LOG',
           title: 'Журнал работы',
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
+          trailing: Wrap(
+            spacing: 10,
+            runSpacing: 10,
             children: [
               OutlinedButton.icon(
                 onPressed: () => _openRuntimePath(bridge.logPath),
                 icon: const Icon(Icons.open_in_new_rounded),
                 label: const Text('processor.log'),
               ),
-              const SizedBox(width: 10),
               OutlinedButton.icon(
                 onPressed: () => _openRuntimePath(bridge.processOutputLogPath),
                 icon: const Icon(Icons.terminal_rounded),
                 label: const Text('stdout/stderr'),
               ),
-              const SizedBox(width: 10),
               OutlinedButton.icon(
                 onPressed: () => setState(() {
                   _sessionLog = '';
@@ -1389,12 +1606,14 @@ class _ProcessorHomeState extends State<ProcessorHome> {
         const SizedBox(height: 14),
         Expanded(
           child: _GlassPanel(
-            child: SelectableText(
-              text,
-              style: GoogleFonts.jetBrainsMono(
-                fontSize: 12,
-                height: 1.35,
-                color: AppPalette.text,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text,
+                style: GoogleFonts.jetBrainsMono(
+                  fontSize: 12,
+                  height: 1.35,
+                  color: context.processorColors.text,
+                ),
               ),
             ),
           ),
@@ -1405,10 +1624,11 @@ class _ProcessorHomeState extends State<ProcessorHome> {
 
   Widget _helpPage() {
     return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 18),
       child: Column(
         children: const [
           _HeroPanel(
-            eyebrow: 'PROCESSOR GUIDE',
+            eyebrow: 'СПРАВКА',
             title: 'Справка по нативному GUI',
           ),
           SizedBox(height: 14),
@@ -1458,6 +1678,46 @@ class RuntimeBridge {
   String get processOutputLogPath =>
       joinPath(runtimeDir.path, 'processor_gui_output.log');
 
+  Future<int?> runningHeadlessPid() async {
+    if (!Platform.isWindows) return null;
+    final executableFile = File(_executable);
+    final executableName = executableFile.uri.pathSegments.isEmpty
+        ? ''
+        : executableFile.uri.pathSegments.last;
+    if (!executableName.toLowerCase().endsWith('.exe')) return null;
+    final safePath = executableFile.path.replaceAll("'", "''");
+    final safeName = executableName.replaceAll("'", "''");
+    final script =
+        '''
+\$targetPath = '$safePath'
+Get-CimInstance Win32_Process -Filter "Name='$safeName'" |
+  Where-Object { \$_.ExecutablePath -eq \$targetPath } |
+  Select-Object -First 1 -ExpandProperty ProcessId
+''';
+    try {
+      final result = await Process.run('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        script,
+      ]).timeout(const Duration(seconds: 5));
+      if (result.exitCode != 0) return null;
+      return int.tryParse('${result.stdout}'.trim());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> stopRuntimeProcess(int pid) async {
+    if (pid <= 0) return;
+    if (Platform.isWindows) {
+      await Process.run('taskkill', ['/PID', '$pid', '/T', '/F']);
+      return;
+    }
+    Process.killPid(pid);
+  }
+
   static Future<RuntimeBridge> detect() async {
     final appDir = File(Platform.resolvedExecutable).parent;
     final processorRuntimeBinaries = Platform.isWindows
@@ -1477,7 +1737,7 @@ class RuntimeBridge {
       final hasCli = await bundledCli.exists();
       return RuntimeBridge(
         runtimeDir: bundledDir,
-        launcherDescription: 'bundled Python Processor runtime',
+        launcherDescription: 'портативная Python-среда Процессора',
         executable: bundledExe.path,
         baseArgs: const [],
         cliExecutable: hasCli ? bundledCli.path : bundledExe.path,
@@ -1493,7 +1753,7 @@ class RuntimeBridge {
       final hasCli = await localCli.exists();
       return RuntimeBridge(
         runtimeDir: appDir,
-        launcherDescription: 'local Python Processor runtime',
+        launcherDescription: 'локальная Python-среда Процессора',
         executable: localExe.path,
         baseArgs: const [],
         cliExecutable: hasCli ? localCli.path : localExe.path,
@@ -1524,7 +1784,7 @@ class RuntimeBridge {
           final hasCli = cli.path != distExe.path;
           return RuntimeBridge(
             runtimeDir: distDir,
-            launcherDescription: 'repository Python Processor runtime',
+            launcherDescription: 'Python-среда Процессора из репозитория',
             executable: distExe.path,
             baseArgs: const [],
             cliExecutable: cli.path,
@@ -1540,7 +1800,7 @@ class RuntimeBridge {
       final cliPy = File(joinPath(repo.path, 'processor', 'cli.py'));
       return RuntimeBridge(
         runtimeDir: Directory(joinPath(repo.path, 'processor')),
-        launcherDescription: 'source Python runtime',
+        launcherDescription: 'исходная Python-среда',
         executable: pythonExecutable,
         baseArgs: [runRuntime.path],
         cliExecutable: pythonExecutable,
@@ -1550,7 +1810,7 @@ class RuntimeBridge {
     }
 
     throw StateError(
-      'Не найден Processor runtime. Положите папку processor рядом с GUI или запускайте из репозитория.',
+      'Не найдена среда выполнения Процессора. Положите папку processor рядом с интерфейсом или запускайте из репозитория.',
     );
   }
 
@@ -1623,7 +1883,7 @@ class RuntimeBridge {
   }) async {
     final baseUrl = _backendBaseUrl(config);
     if (baseUrl.isEmpty) {
-      throw StateError('Backend URL is empty');
+      throw StateError('Адрес сервера не задан');
     }
     final payload = {
       'code': code,
@@ -1791,7 +2051,24 @@ class RuntimeBridge {
     List<String> args, {
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    final commandArgs = [..._cliBaseArgs, ...args];
+    File? captureFile;
+    var commandArgs = [..._cliBaseArgs, ...args];
+    if (cliIsSlowBundle) {
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      captureFile = File(
+        joinPath(
+          Directory.systemTemp.path,
+          'cctv_processor_cli_$stamp.json',
+        ),
+      );
+      commandArgs = [
+        ..._cliBaseArgs,
+        '--cli-capture-file',
+        captureFile.path,
+        ...args,
+      ];
+    }
+
     final result = await Process.run(
       _cliExecutable,
       commandArgs,
@@ -1800,11 +2077,31 @@ class RuntimeBridge {
       stdoutEncoding: utf8,
       stderrEncoding: utf8,
     ).timeout(timeout);
-    final commandResult = CommandResult(
-      exitCode: result.exitCode,
-      stdout: sanitizeProcessOutput('${result.stdout}'),
-      stderr: sanitizeProcessOutput('${result.stderr}'),
-    );
+
+    CommandResult commandResult;
+    if (captureFile != null && await captureFile.exists()) {
+      try {
+        final payload = jsonDecode(await captureFile.readAsString());
+        final data = payload is Map ? payload : const {};
+        commandResult = CommandResult(
+          exitCode: _nullableInt(data['exit_code']) ?? result.exitCode,
+          stdout: sanitizeProcessOutput('${data['stdout'] ?? ''}'),
+          stderr: sanitizeProcessOutput('${data['stderr'] ?? ''}'),
+        );
+      } finally {
+        try {
+          await captureFile.delete();
+        } catch (_) {
+          // Temporary diagnostics files are best-effort cleanup.
+        }
+      }
+    } else {
+      commandResult = CommandResult(
+        exitCode: result.exitCode,
+        stdout: sanitizeProcessOutput('${result.stdout}'),
+        stderr: sanitizeProcessOutput('${result.stderr}'),
+      );
+    }
     if (commandResult.exitCode != 0) {
       throw StateError(
         commandResult.stderr.trim().isEmpty
@@ -1957,7 +2254,7 @@ if ($nvidia) {
         '''
 Add-Type -AssemblyName System.Windows.Forms
 \$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-\$dialog.Description = "Выберите папку Processor"
+\$dialog.Description = "Выберите папку Процессора"
 \$dialog.ShowNewFolderButton = \$true
 if ('$safeInitial' -and (Test-Path '$safeInitial')) { \$dialog.SelectedPath = '$safeInitial' }
 if (\$dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output \$dialog.SelectedPath }
@@ -2082,7 +2379,7 @@ class LocalMetrics {
         ? ''
         : ' ${gpuUtilPercent!.toStringAsFixed(0)}%';
     final temp = gpuTempC == null ? '' : ' ${gpuTempC!.toStringAsFixed(0)}C';
-    return '${name.length > 22 ? '${name.substring(0, 22)}...' : name}$util$temp';
+    return '$name$util$temp';
   }
 
   factory LocalMetrics.fromJson(Map<String, dynamic> json) {
@@ -2118,6 +2415,7 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     const items = [
       ('dashboard', Icons.dashboard_rounded, 'Монитор'),
       ('connect', Icons.link_rounded, 'Подключение'),
@@ -2131,9 +2429,9 @@ class _Sidebar extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(18, 18, 8, 18),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppPalette.panel.withValues(alpha: 0.78),
+        color: colors.panel.withValues(alpha: 0.78),
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppPalette.border),
+        border: Border.all(color: colors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2142,10 +2440,13 @@ class _Sidebar extends StatelessWidget {
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(22),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF14313D), Color(0xFF0A1425)],
+              gradient: LinearGradient(
+                colors: [
+                  colors.accent.withValues(alpha: 0.22),
+                  colors.surface.withValues(alpha: 0.90),
+                ],
               ),
-              border: Border.all(color: AppPalette.border),
+              border: Border.all(color: colors.border),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2153,19 +2454,19 @@ class _Sidebar extends StatelessWidget {
                 Text(
                   'CCTV',
                   style: TextStyle(
-                    color: AppPalette.accent,
+                    color: colors.accent,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Processor',
+                  'Процессор',
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Нативная оболочка для Python runtime',
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  'Локальное управление сервисом',
+                  style: TextStyle(color: colors.muted, fontSize: 12),
                 ),
               ],
             ),
@@ -2183,7 +2484,7 @@ class _Sidebar extends StatelessWidget {
             ),
           const Spacer(),
           _RuntimePill(
-            label: connected ? 'Backend связан' : 'Нет привязки',
+            label: connected ? 'Сервер связан' : 'Нет привязки',
             active: connected,
           ),
           const SizedBox(height: 8),
@@ -2212,37 +2513,37 @@ class _NavButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-        decoration: BoxDecoration(
-          color: active
-              ? AppPalette.accent.withValues(alpha: 0.16)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: active ? AppPalette.borderStrong : Colors.transparent,
+    final colors = context.processorColors;
+    return PressScale(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: ProcessorMotion.resolved(context, ProcessorMotion.fast),
+          curve: ProcessorMotion.curve,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            color: active
+                ? colors.accent.withValues(alpha: 0.16)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: active ? colors.borderStrong : Colors.transparent,
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              icon,
-              color: active ? AppPalette.accent : AppPalette.text,
-              size: 20,
-            ),
-            const SizedBox(width: 10),
-            Text(
-              label,
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                color: active ? AppPalette.accent : AppPalette.text,
+          child: Row(
+            children: [
+              Icon(icon, color: active ? colors.accent : colors.text, size: 20),
+              const SizedBox(width: 10),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: active ? colors.accent : colors.text,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -2257,26 +2558,18 @@ class _RuntimePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
+    final statusColor = active ? colors.success : colors.warning;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: (active ? AppPalette.success : AppPalette.warning).withValues(
-          alpha: 0.12,
-        ),
+        color: statusColor.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: (active ? AppPalette.success : AppPalette.warning).withValues(
-            alpha: 0.28,
-          ),
-        ),
+        border: Border.all(color: statusColor.withValues(alpha: 0.28)),
       ),
       child: Row(
         children: [
-          Icon(
-            Icons.circle,
-            size: 9,
-            color: active ? AppPalette.success : AppPalette.warning,
-          ),
+          Icon(Icons.circle, size: 9, color: statusColor),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -2297,6 +2590,8 @@ class _TopStatusBar extends StatelessWidget {
     required this.running,
     required this.busy,
     required this.onRefresh,
+    required this.themeMode,
+    required this.onToggleTheme,
   });
 
   final String message;
@@ -2304,9 +2599,12 @@ class _TopStatusBar extends StatelessWidget {
   final bool running;
   final bool busy;
   final VoidCallback onRefresh;
+  final ProcessorThemeMode themeMode;
+  final VoidCallback onToggleTheme;
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return _GlassPanel(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       child: Row(
@@ -2316,11 +2614,11 @@ class _TopStatusBar extends StatelessWidget {
             height: 40,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              gradient: const LinearGradient(
-                colors: [AppPalette.accent, AppPalette.secondary],
+              gradient: LinearGradient(
+                colors: [colors.accent, colors.secondary],
               ),
             ),
-            child: const Icon(Icons.memory_rounded, color: Color(0xFF06111D)),
+            child: Icon(Icons.memory_rounded, color: colors.activeForeground),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -2338,11 +2636,17 @@ class _TopStatusBar extends StatelessWidget {
                   bridge.runtimeDir.path,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  style: TextStyle(color: colors.muted, fontSize: 12),
                 ),
               ],
             ),
           ),
+          const SizedBox(width: 8),
+          _ProcessorThemeToggle(
+            themeMode: themeMode,
+            onPressed: onToggleTheme,
+          ),
+          const SizedBox(width: 8),
           if (busy)
             const SizedBox(
               width: 18,
@@ -2361,6 +2665,110 @@ class _TopStatusBar extends StatelessWidget {
   }
 }
 
+class _ProcessorThemeToggle extends StatelessWidget {
+  const _ProcessorThemeToggle({
+    required this.themeMode,
+    required this.onPressed,
+  });
+
+  final ProcessorThemeMode themeMode;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.processorColors;
+    final dark = themeMode == ProcessorThemeMode.dark;
+    const moonBackground = Color(0xFF102A4A);
+    const moonBorder = Color(0xFF28496D);
+    const moonColor = Color(0xFFD7E8FF);
+    return Tooltip(
+      message: dark ? 'Включить светлую тему' : 'Включить тёмную тему',
+      child: PressScale(
+        child: IconButton(
+          onPressed: onPressed,
+          style: IconButton.styleFrom(
+            fixedSize: const Size(42, 42),
+            backgroundColor: dark ? moonBackground : colors.surfaceMuted,
+            foregroundColor: dark ? moonColor : colors.warning,
+            side: BorderSide(color: dark ? moonBorder : colors.border),
+          ),
+          icon: AnimatedSwitcher(
+            duration: ProcessorMotion.resolved(
+              context,
+              ProcessorMotion.standard,
+            ),
+            switchInCurve: ProcessorMotion.emphasized,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) {
+              final curved = CurvedAnimation(
+                parent: animation,
+                curve: ProcessorMotion.emphasized,
+                reverseCurve: Curves.easeInCubic,
+              );
+              return FadeTransition(
+                opacity: curved,
+                child: RotationTransition(
+                  turns: Tween<double>(
+                    begin: dark ? -0.08 : 0.08,
+                    end: 0,
+                  ).animate(curved),
+                  child: ScaleTransition(
+                    scale: Tween<double>(begin: 0.84, end: 1).animate(curved),
+                    child: child,
+                  ),
+                ),
+              );
+            },
+            child: Icon(
+              dark ? Icons.dark_mode_rounded : Icons.wb_sunny_rounded,
+              key: ValueKey<bool>(dark),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TwoColumnLayout extends StatelessWidget {
+  const _TwoColumnLayout({
+    required this.primary,
+    required this.secondary,
+    this.primaryFlex = 1,
+    this.secondaryFlex = 1,
+  });
+
+  final Widget primary;
+  final Widget secondary;
+  final int primaryFlex;
+  final int secondaryFlex;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 900) {
+          return Column(
+            children: [
+              primary,
+              const SizedBox(height: 14),
+              secondary,
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(flex: primaryFlex, child: primary),
+            const SizedBox(width: 14),
+            Expanded(flex: secondaryFlex, child: secondary),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _HeroPanel extends StatelessWidget {
   const _HeroPanel({required this.eyebrow, required this.title, this.trailing});
 
@@ -2370,28 +2778,50 @@ class _HeroPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return _GlassPanel(
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 720;
+          final titleBlock = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                eyebrow,
+                style: TextStyle(
+                  color: colors.accent,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                title,
+                maxLines: compact ? 3 : 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.displaySmall,
+              ),
+            ],
+          );
+          if (compact) {
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  eyebrow,
-                  style: const TextStyle(
-                    color: AppPalette.accent,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(title, style: Theme.of(context).textTheme.displaySmall),
+                titleBlock,
+                if (trailing != null) ...[
+                  const SizedBox(height: 14),
+                  Align(alignment: Alignment.centerLeft, child: trailing!),
+                ],
               ],
-            ),
-          ),
-          if (trailing != null) ...[const SizedBox(width: 18), trailing!],
-        ],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: titleBlock),
+              if (trailing != null) ...[const SizedBox(width: 18), trailing!],
+            ],
+          );
+        },
       ),
     );
   }
@@ -2408,6 +2838,8 @@ class _GlassPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     const radius = 24.0;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
@@ -2420,20 +2852,20 @@ class _GlassPanel extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                AppPalette.surface.withValues(alpha: 0.58),
-                AppPalette.panel.withValues(alpha: 0.42),
+                colors.surface.withValues(alpha: dark ? 0.58 : 0.72),
+                colors.panel.withValues(alpha: dark ? 0.42 : 0.82),
               ],
             ),
             borderRadius: BorderRadius.circular(radius),
-            border: Border.all(color: AppPalette.border),
+            border: Border.all(color: colors.border),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.18),
+                color: colors.shadow.withValues(alpha: dark ? 0.18 : 0.08),
                 blurRadius: 34,
                 offset: const Offset(0, 20),
               ),
               BoxShadow(
-                color: AppPalette.accent.withValues(alpha: 0.05),
+                color: colors.accent.withValues(alpha: dark ? 0.05 : 0.07),
                 blurRadius: 44,
                 offset: Offset.zero,
               ),
@@ -2445,9 +2877,9 @@ class _GlassPanel extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                Colors.white.withValues(alpha: 0.1),
+                Colors.white.withValues(alpha: dark ? 0.1 : 0.32),
                 Colors.white.withValues(alpha: 0),
-                AppPalette.accent.withValues(alpha: 0.035),
+                colors.accent.withValues(alpha: dark ? 0.035 : 0.05),
               ],
               stops: const [0, 0.45, 1],
             ),
@@ -2464,16 +2896,18 @@ class _MetricCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.icon,
-    this.accent = AppPalette.accent,
+    this.accent,
   });
 
   final String label;
   final String value;
   final IconData icon;
-  final Color accent;
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
+    final resolvedAccent = accent ?? colors.accent;
     return _GlassPanel(
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -2482,11 +2916,11 @@ class _MetricCard extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.14),
+              color: resolvedAccent.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: accent.withValues(alpha: 0.28)),
+              border: Border.all(color: resolvedAccent.withValues(alpha: 0.28)),
             ),
-            child: Icon(icon, color: accent),
+            child: Icon(icon, color: resolvedAccent),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -2494,15 +2928,26 @@ class _MetricCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleLarge,
+                Tooltip(
+                  message: value,
+                  waitDuration: const Duration(milliseconds: 450),
+                  child: Text(
+                    value,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontSize: value.length > 36
+                          ? 16
+                          : value.length > 22
+                              ? 18
+                              : null,
+                      height: 1.05,
+                    ),
+                  ),
                 ),
                 Text(
                   label,
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  style: TextStyle(color: colors.muted, fontSize: 12),
                 ),
               ],
             ),
@@ -2522,6 +2967,7 @@ class _Section extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     final sectionSubtitle = subtitle?.trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2531,7 +2977,7 @@ class _Section extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             sectionSubtitle,
-            style: TextStyle(color: AppPalette.muted, fontSize: 13),
+            style: TextStyle(color: colors.muted, fontSize: 13),
           ),
         ],
         const SizedBox(height: 16),
@@ -2585,6 +3031,7 @@ class _CodeInputFieldState extends State<_CodeInputField> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     const length = 8;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -2596,7 +3043,7 @@ class _CodeInputFieldState extends State<_CodeInputField> {
             child: Text(
               widget.label,
               style: TextStyle(
-                color: AppPalette.muted,
+                color: colors.muted,
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
               ),
@@ -2684,24 +3131,26 @@ class _CodeCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 120),
+      duration: ProcessorMotion.resolved(context, ProcessorMotion.fast),
+      curve: ProcessorMotion.curve,
       width: width,
       height: 58,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: AppPalette.surface.withValues(alpha: filled ? 0.95 : 0.78),
+        color: colors.surface.withValues(alpha: filled ? 0.95 : 0.78),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: active
-              ? AppPalette.accent
-              : (filled ? AppPalette.borderStrong : AppPalette.border),
+              ? colors.accent
+              : (filled ? colors.borderStrong : colors.border),
           width: active ? 1.8 : 1.1,
         ),
         boxShadow: active
             ? [
                 BoxShadow(
-                  color: AppPalette.accent.withValues(alpha: 0.18),
+                  color: colors.accent.withValues(alpha: 0.18),
                   blurRadius: 18,
                   spreadRadius: 1,
                 ),
@@ -2710,8 +3159,8 @@ class _CodeCell extends StatelessWidget {
       ),
       child: Text(
         char,
-        style: const TextStyle(
-          color: AppPalette.textStrong,
+        style: TextStyle(
+          color: colors.textStrong,
           fontSize: 22,
           height: 1,
           fontWeight: FontWeight.w900,
@@ -2806,11 +3255,12 @@ class _PresetChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return ActionChip(
       label: Text(label),
       onPressed: onTap,
-      backgroundColor: AppPalette.accent.withValues(alpha: 0.12),
-      side: BorderSide(color: AppPalette.accent.withValues(alpha: 0.24)),
+      backgroundColor: colors.accent.withValues(alpha: 0.12),
+      side: BorderSide(color: colors.accent.withValues(alpha: 0.24)),
     );
   }
 }
@@ -2823,6 +3273,7 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
@@ -2833,7 +3284,7 @@ class _InfoRow extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                color: AppPalette.muted,
+                color: colors.muted,
                 fontWeight: FontWeight.w800,
                 fontSize: 12,
               ),
@@ -2882,17 +3333,18 @@ class _CameraAssignmentRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppPalette.panel.withValues(alpha: 0.52),
+        color: colors.panel.withValues(alpha: 0.52),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppPalette.border),
+        border: Border.all(color: colors.border),
       ),
       child: Row(
         children: [
-          const Icon(Icons.videocam_rounded, color: AppPalette.accent),
+          Icon(Icons.videocam_rounded, color: colors.accent),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -2907,7 +3359,7 @@ class _CameraAssignmentRow extends StatelessWidget {
                   '${item['source'] ?? item['stream_url'] ?? item['ip_address'] ?? '-'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: AppPalette.muted, fontSize: 12),
+                  style: TextStyle(color: colors.muted, fontSize: 12),
                 ),
               ],
             ),
@@ -2926,10 +3378,11 @@ class _MiniBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
-        color: AppPalette.secondary.withValues(alpha: 0.15),
+        color: colors.secondary.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
@@ -2951,9 +3404,14 @@ class _JsonCard extends StatelessWidget {
     return _GlassPanel(
       child: _Section(
         title: title,
-        child: SelectableText(
-          const JsonEncoder.withIndent('  ').convert(payload),
-          style: GoogleFonts.jetBrainsMono(fontSize: 12, height: 1.35),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 420),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              const JsonEncoder.withIndent('  ').convert(payload),
+              style: GoogleFonts.jetBrainsMono(fontSize: 12, height: 1.35),
+            ),
+          ),
         ),
       ),
     );
@@ -2967,15 +3425,16 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: AppPalette.panel.withValues(alpha: 0.45),
+        color: colors.panel.withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppPalette.border),
+        border: Border.all(color: colors.border),
       ),
-      child: Text(text, style: TextStyle(color: AppPalette.muted)),
+      child: Text(text, style: TextStyle(color: colors.muted)),
     );
   }
 }
@@ -2987,11 +3446,12 @@ class _SmallNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Align(
       alignment: Alignment.centerLeft,
       child: Text(
         text,
-        style: TextStyle(color: AppPalette.muted, fontSize: 12, height: 1.35),
+        style: TextStyle(color: colors.muted, fontSize: 12, height: 1.35),
       ),
     );
   }
@@ -3004,7 +3464,7 @@ class _ConnectionBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _MiniBadge(connected ? 'API key сохранён' : 'Нужна привязка');
+    return _MiniBadge(connected ? 'API-ключ сохранён' : 'Нужна привязка');
   }
 }
 
@@ -3015,13 +3475,14 @@ class _ColorPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     return Container(
       width: 44,
       height: 44,
       decoration: BoxDecoration(
         color: parseColor(color),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppPalette.borderStrong),
+        border: Border.all(color: colors.borderStrong),
       ),
     );
   }
@@ -3060,30 +3521,31 @@ class _HelpGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.processorColors;
     const items = [
       (
         'Подключение',
-        'Укажите backend URL и код подключения. После успешной привязки API-ключ остаётся локально в processor_config.json.',
+        'Укажите адрес сервера и код подключения. После успешной привязки API-ключ остаётся локально в processor_config.json.',
       ),
       (
         'Запуск',
-        'Кнопка запуска поднимает тот же Python Processor в headless-режиме. Вся логика обнаружения остаётся в Python.',
+        'Кнопка запуска поднимает тот же Python-процесс в фоновом режиме. Вся логика обнаружения остаётся в Python.',
       ),
       (
         'Настройки',
-        'Частоты, папки, media token, порт и ускорение пишутся в тот же конфиг. Для runtime-параметров нужен перезапуск.',
+        'Частоты, папки, медиатокен, порт и ускорение пишутся в тот же конфиг. Для параметров среды выполнения нужен перезапуск.',
       ),
       (
         'Диагностика',
-        'Раздел использует существующие CLI-команды status, system-info, acceleration и gallery.',
+        'Раздел использует встроенный CLI-режим Runtime для команд status, system-info, acceleration и gallery.',
       ),
       (
         'Журнал',
         'Показывает stdout/stderr текущего процесса и хвост processor.log. Очистка окна не удаляет файл.',
       ),
       (
-        'Portable',
-        'Для портативной сборки рядом с GUI кладётся папка processor с CCTV-Processor-Runtime и CCTV-Processor-CLI.',
+        'Портативная сборка',
+        'Для портативной сборки рядом с GUI кладётся папка processor с CCTV-Processor-Runtime. Отдельный CLI не требуется.',
       ),
     ];
     return GridView.count(
@@ -3103,7 +3565,7 @@ class _HelpGrid extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   item.$2,
-                  style: TextStyle(color: AppPalette.muted, height: 1.35),
+                  style: TextStyle(color: colors.muted, height: 1.35),
                 ),
               ],
             ),
@@ -3118,15 +3580,21 @@ class _GridBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(painter: _GridPainter());
+    return CustomPaint(
+      painter: _GridPainter(color: context.processorColors.textStrong),
+    );
   }
 }
 
 class _GridPainter extends CustomPainter {
+  const _GridPainter({required this.color});
+
+  final Color color;
+
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.028)
+      ..color = color.withValues(alpha: 0.028)
       ..strokeWidth = 1;
     const step = 44.0;
     for (var x = 0.0; x < size.width; x += step) {
@@ -3138,7 +3606,9 @@ class _GridPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _GridPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
 }
 
 class _ProcessorAuroraBackdrop extends StatelessWidget {
@@ -3146,16 +3616,39 @@ class _ProcessorAuroraBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(painter: _ProcessorAuroraPainter());
+    final colors = context.processorColors;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return CustomPaint(
+      painter: _ProcessorAuroraPainter(
+        primary: colors.accent,
+        secondary: colors.secondary,
+        dark: dark,
+      ),
+    );
   }
 }
 
 class _ProcessorAuroraPainter extends CustomPainter {
+  const _ProcessorAuroraPainter({
+    required this.primary,
+    required this.secondary,
+    required this.dark,
+  });
+
+  final Color primary;
+  final Color secondary;
+  final bool dark;
+
   @override
   void paint(Canvas canvas, Size size) {
+    final alpha = dark ? 0.40 : 0.24;
     final upperPaint = Paint()
-      ..shader = const LinearGradient(
-        colors: [Color(0x665EF0FF), Color(0x4D4C6FFF), Color(0x001643FF)],
+      ..shader = LinearGradient(
+        colors: [
+          primary.withValues(alpha: alpha),
+          secondary.withValues(alpha: alpha * 0.76),
+          secondary.withValues(alpha: 0),
+        ],
       ).createShader(Offset.zero & size)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 34);
 
@@ -3182,10 +3675,14 @@ class _ProcessorAuroraPainter extends CustomPainter {
     canvas.drawPath(upperPath, upperPaint);
 
     final lowerPaint = Paint()
-      ..shader = const LinearGradient(
+      ..shader = LinearGradient(
         begin: Alignment.bottomLeft,
         end: Alignment.topRight,
-        colors: [Color(0x521643FF), Color(0x3D4C6FFF), Color(0x005EF0FF)],
+        colors: [
+          secondary.withValues(alpha: alpha * 0.80),
+          primary.withValues(alpha: alpha * 0.60),
+          primary.withValues(alpha: 0),
+        ],
       ).createShader(Offset.zero & size)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 42);
 
@@ -3206,68 +3703,242 @@ class _ProcessorAuroraPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _ProcessorAuroraPainter oldDelegate) {
+    return oldDelegate.primary != primary ||
+        oldDelegate.secondary != secondary ||
+        oldDelegate.dark != dark;
+  }
+}
+
+extension ProcessorColorsContext on BuildContext {
+  ProcessorColors get processorColors {
+    return Theme.of(this).extension<ProcessorColors>() ??
+        ProcessorColors.dark();
+  }
+}
+
+class ProcessorColors extends ThemeExtension<ProcessorColors> {
+  const ProcessorColors({
+    required this.bg,
+    required this.backdropStart,
+    required this.backdropEnd,
+    required this.panel,
+    required this.surface,
+    required this.surfaceMuted,
+    required this.text,
+    required this.textStrong,
+    required this.muted,
+    required this.border,
+    required this.borderStrong,
+    required this.accent,
+    required this.secondary,
+    required this.success,
+    required this.warning,
+    required this.danger,
+    required this.activeForeground,
+    required this.shadow,
+  });
+
+  final Color bg;
+  final Color backdropStart;
+  final Color backdropEnd;
+  final Color panel;
+  final Color surface;
+  final Color surfaceMuted;
+  final Color text;
+  final Color textStrong;
+  final Color muted;
+  final Color border;
+  final Color borderStrong;
+  final Color accent;
+  final Color secondary;
+  final Color success;
+  final Color warning;
+  final Color danger;
+  final Color activeForeground;
+  final Color shadow;
+
+  static ProcessorColors dark() => const ProcessorColors(
+    bg: Color(0xFF050812),
+    backdropStart: Color(0xFF08111F),
+    backdropEnd: Color(0xFF0C0716),
+    panel: Color(0xFF0A1020),
+    surface: Color(0xFF121B2B),
+    surfaceMuted: Color(0xFF182437),
+    text: Color(0xFFE7EEF9),
+    textStrong: Colors.white,
+    muted: Color(0xFFA7B6CA),
+    border: Color(0x26FFFFFF),
+    borderStrong: Color(0x525EF0FF),
+    accent: Color(0xFF5EF0FF),
+    secondary: Color(0xFF4C6FFF),
+    success: Color(0xFF22C55E),
+    warning: Color(0xFFF59E0B),
+    danger: Color(0xFFEF4444),
+    activeForeground: Color(0xFF06111D),
+    shadow: Colors.black,
+  );
+
+  static ProcessorColors light() => const ProcessorColors(
+    bg: Color(0xFFF6FAFF),
+    backdropStart: Color(0xFFEAF5FF),
+    backdropEnd: Color(0xFFF8FBFF),
+    panel: Color(0xFFFFFFFF),
+    surface: Color(0xFFEAF2FB),
+    surfaceMuted: Color(0xFFE3EDF8),
+    text: Color(0xFF334155),
+    textStrong: Color(0xFF0F172A),
+    muted: Color(0xFF64748B),
+    border: Color(0xFFD6E2F0),
+    borderStrong: Color(0x995EBFEA),
+    accent: Color(0xFF147EA3),
+    secondary: Color(0xFF4C6FFF),
+    success: Color(0xFF15803D),
+    warning: Color(0xFFD97706),
+    danger: Color(0xFFDC2626),
+    activeForeground: Colors.white,
+    shadow: Color(0xFF1E293B),
+  );
+
+  @override
+  ProcessorColors copyWith({
+    Color? bg,
+    Color? backdropStart,
+    Color? backdropEnd,
+    Color? panel,
+    Color? surface,
+    Color? surfaceMuted,
+    Color? text,
+    Color? textStrong,
+    Color? muted,
+    Color? border,
+    Color? borderStrong,
+    Color? accent,
+    Color? secondary,
+    Color? success,
+    Color? warning,
+    Color? danger,
+    Color? activeForeground,
+    Color? shadow,
+  }) {
+    return ProcessorColors(
+      bg: bg ?? this.bg,
+      backdropStart: backdropStart ?? this.backdropStart,
+      backdropEnd: backdropEnd ?? this.backdropEnd,
+      panel: panel ?? this.panel,
+      surface: surface ?? this.surface,
+      surfaceMuted: surfaceMuted ?? this.surfaceMuted,
+      text: text ?? this.text,
+      textStrong: textStrong ?? this.textStrong,
+      muted: muted ?? this.muted,
+      border: border ?? this.border,
+      borderStrong: borderStrong ?? this.borderStrong,
+      accent: accent ?? this.accent,
+      secondary: secondary ?? this.secondary,
+      success: success ?? this.success,
+      warning: warning ?? this.warning,
+      danger: danger ?? this.danger,
+      activeForeground: activeForeground ?? this.activeForeground,
+      shadow: shadow ?? this.shadow,
+    );
+  }
+
+  @override
+  ProcessorColors lerp(ThemeExtension<ProcessorColors>? other, double t) {
+    if (other is! ProcessorColors) return this;
+    return ProcessorColors(
+      bg: Color.lerp(bg, other.bg, t)!,
+      backdropStart: Color.lerp(backdropStart, other.backdropStart, t)!,
+      backdropEnd: Color.lerp(backdropEnd, other.backdropEnd, t)!,
+      panel: Color.lerp(panel, other.panel, t)!,
+      surface: Color.lerp(surface, other.surface, t)!,
+      surfaceMuted: Color.lerp(surfaceMuted, other.surfaceMuted, t)!,
+      text: Color.lerp(text, other.text, t)!,
+      textStrong: Color.lerp(textStrong, other.textStrong, t)!,
+      muted: Color.lerp(muted, other.muted, t)!,
+      border: Color.lerp(border, other.border, t)!,
+      borderStrong: Color.lerp(borderStrong, other.borderStrong, t)!,
+      accent: Color.lerp(accent, other.accent, t)!,
+      secondary: Color.lerp(secondary, other.secondary, t)!,
+      success: Color.lerp(success, other.success, t)!,
+      warning: Color.lerp(warning, other.warning, t)!,
+      danger: Color.lerp(danger, other.danger, t)!,
+      activeForeground: Color.lerp(
+        activeForeground,
+        other.activeForeground,
+        t,
+      )!,
+      shadow: Color.lerp(shadow, other.shadow, t)!,
+    );
+  }
 }
 
 class ProcessorTheme {
-  static ThemeData dark() {
+  static ThemeData light() => _build(ProcessorColors.light(), Brightness.light);
+
+  static ThemeData dark() => _build(ProcessorColors.dark(), Brightness.dark);
+
+  static ThemeData _build(ProcessorColors colors, Brightness brightness) {
     final base = ThemeData(
       useMaterial3: true,
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: AppPalette.bg,
+      brightness: brightness,
+      scaffoldBackgroundColor: colors.bg,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: AppPalette.accent,
-        brightness: Brightness.dark,
-        primary: AppPalette.accent,
-        secondary: AppPalette.secondary,
-        surface: AppPalette.surface,
+        seedColor: colors.accent,
+        brightness: brightness,
+        primary: colors.accent,
+        secondary: colors.secondary,
+        surface: colors.surface,
       ),
+      extensions: [colors],
     );
     final textTheme = GoogleFonts.spaceGroteskTextTheme(
       base.textTheme,
-    ).apply(bodyColor: AppPalette.text, displayColor: AppPalette.textStrong);
+    ).apply(bodyColor: colors.text, displayColor: colors.textStrong);
     return base.copyWith(
       textTheme: textTheme.copyWith(
         displaySmall: GoogleFonts.spaceGrotesk(
           fontSize: 30,
           fontWeight: FontWeight.w900,
-          color: AppPalette.textStrong,
+          color: colors.textStrong,
           height: 1.05,
         ),
         headlineSmall: GoogleFonts.spaceGrotesk(
           fontSize: 19,
           fontWeight: FontWeight.w900,
-          color: AppPalette.textStrong,
+          color: colors.textStrong,
         ),
         titleLarge: GoogleFonts.spaceGrotesk(
           fontSize: 18,
           fontWeight: FontWeight.w900,
-          color: AppPalette.textStrong,
+          color: colors.textStrong,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: AppPalette.panel.withValues(alpha: 0.62),
-        labelStyle: TextStyle(color: AppPalette.muted, fontSize: 13),
-        hintStyle: TextStyle(color: AppPalette.muted, fontSize: 13),
+        fillColor: colors.panel.withValues(
+          alpha: brightness == Brightness.dark ? 0.62 : 0.86,
+        ),
+        labelStyle: TextStyle(color: colors.muted, fontSize: 13),
+        hintStyle: TextStyle(color: colors.muted, fontSize: 13),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: AppPalette.border),
+          borderSide: BorderSide(color: colors.border),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: AppPalette.border),
+          borderSide: BorderSide(color: colors.border),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: AppPalette.accent),
+          borderSide: BorderSide(color: colors.accent),
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           elevation: 0,
-          backgroundColor: AppPalette.accent,
-          foregroundColor: const Color(0xFF06111D),
+          backgroundColor: colors.accent,
+          foregroundColor: colors.activeForeground,
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
           textStyle: const TextStyle(fontWeight: FontWeight.w900),
           shape: RoundedRectangleBorder(
@@ -3277,8 +3948,8 @@ class ProcessorTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: AppPalette.textStrong,
-          side: const BorderSide(color: AppPalette.border),
+          foregroundColor: colors.textStrong,
+          side: BorderSide(color: colors.border),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
@@ -3287,22 +3958,6 @@ class ProcessorTheme {
       ),
     );
   }
-}
-
-class AppPalette {
-  static const bg = Color(0xFF050812);
-  static const panel = Color(0xFF0A1020);
-  static const surface = Color(0xFF121B2B);
-  static const text = Color(0xFFE7EEF9);
-  static const textStrong = Colors.white;
-  static const muted = Color(0xFFA7B6CA);
-  static const border = Color(0x26FFFFFF);
-  static const borderStrong = Color(0x525EF0FF);
-  static const accent = Color(0xFF5EF0FF);
-  static const secondary = Color(0xFF4C6FFF);
-  static const success = Color(0xFF22C55E);
-  static const warning = Color(0xFFF59E0B);
-  static const danger = Color(0xFFEF4444);
 }
 
 Map<String, dynamic> defaultProcessorConfig({String? runtimeDir}) {
@@ -3319,9 +3974,10 @@ Map<String, dynamic> defaultProcessorConfig({String? runtimeDir}) {
     'max_workers': 4,
     'processor_accel': 'auto',
     'motion_threshold': 25.0,
-    'face_scan_divisor': 8,
+    'face_scan_divisor': 4,
     'overlay_frame_divisor': 1,
     'face_scan_interval': 0.35,
+    'theme_mode': ProcessorThemeMode.dark.name,
     'theme_primary_color': '#49C8E8',
     'theme_secondary_color': '#4C6FFF',
     'recording_segment_seconds': 60,
@@ -3338,6 +3994,7 @@ Map<String, dynamic> normalizeProcessorConfig(
 ) {
   final base = runtimeDir ?? Directory.current.path;
   final config = Map<String, dynamic>.from(raw);
+  config['theme_mode'] = processorThemeModeFrom(config).name;
   config['processor_name'] = '${config['processor_name'] ?? ''}'.trim().isEmpty
       ? Platform.localHostname
       : '${config['processor_name']}';
@@ -3392,7 +4049,7 @@ Map<String, dynamic> normalizeProcessorConfig(
     min: 1,
     max: 65535,
   );
-  config['face_scan_divisor'] = _sanitizeDivisor(
+  config['face_scan_divisor'] = _sanitizeFaceScanDivisor(
     config['face_scan_divisor'],
     8,
   );
@@ -3433,8 +4090,11 @@ int _sanitizeDivisor(Object? value, int fallback) {
   return choices.last;
 }
 
+int _sanitizeFaceScanDivisor(Object? value, int fallback) {
+  return math.max(2, _sanitizeDivisor(value, fallback));
+}
+
 String _divisorLabel(int value) {
-  if (value == 1) return 'Покадровая';
   if (value == 120) return '1 кадр / 5 сек';
   return '/$value';
 }

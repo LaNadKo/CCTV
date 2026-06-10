@@ -1,6 +1,6 @@
 # CCTV Комплекс
 
-`CCTV Комплекс` - система видеонаблюдения с центральным backend, web-консолью, нативной консолью оператора и отдельным локальным Processor. Backend хранит пользователей, роли, камеры, события, ревью, записи, отчеты и настройки Processor. Processor читает назначенные камеры, запускает распознавание лиц и людей, рисует overlay, ведет локальный media server и передает результаты в backend.
+`CCTV Комплекс` - система видеонаблюдения с центральным backend, нативной консолью оператора и отдельным локальным Processor. Backend хранит пользователей, роли, камеры, события, ревью, записи, отчеты и настройки Processor. Processor читает назначенные камеры, запускает распознавание лиц и людей, рисует overlay, ведет локальный media server и передает результаты в backend.
 
 Проект рассчитан на рабочий стенд, где серверная часть может жить в Docker, а операторские и процессорные приложения запускаются как portable-сборки на Windows. Android-клиент использует тот же backend API.
 
@@ -15,10 +15,9 @@
 - Processor registration через код подключения;
 - heartbeat, assignments и очередь команд для Processor;
 - API-ключи для сервисных клиентов;
-- web-консоль на React/Vite;
 - Native Console на Flutter для Windows и Android;
 - Native Processor GUI на Flutter для локального управления Python runtime;
-- Docker-профили для backend, frontend, nginx, MediaMTX и Processor;
+- Docker-профили для backend, nginx, MediaMTX и Processor;
 - production-настройки: проверка секретов, TrustedHost, CORS, security headers, закрытый OpenAPI по умолчанию.
 
 ## Структура репозитория
@@ -32,7 +31,6 @@
 | `cctv_ai/` | общая AI-логика, runtime environment, ONNX Runtime, face/body inference |
 | `processor/` | Python Processor: CLI, headless runtime, media server, обработка камер, сборка PyInstaller |
 | `processor/systemd/` | шаблоны systemd для Linux-запуска Processor |
-| `frontend/` | серверная web-консоль на React, TypeScript и Vite |
 | `native/cctv_console/` | Flutter Native Console для Windows и Android |
 | `native/cctv_processor_gui/` | Flutter GUI для локального управления Processor runtime |
 | `migrations/` | Alembic-миграции PostgreSQL |
@@ -51,12 +49,10 @@ flowchart LR
     Processor --> Backend["FastAPI backend"]
     Backend <--> DB["PostgreSQL"]
     Backend <--> MediaMTX["MediaMTX"]
-    Backend --> Web["Web Console"]
     Backend --> NativeConsole["Native Console<br/>Windows / Android"]
     ProcessorGUI["Native Processor GUI"] --> ProcessorCLI["CCTV-Processor-CLI"]
     ProcessorCLI --> Processor
     Nginx["nginx / HTTPS"] --> Backend
-    Nginx --> Web
 ```
 
 Backend является точкой управления. В нем создаются пользователи, камеры, персоны, назначения Processor, события и записи. Processor не требует ручного дублирования конфигурации камер: после подключения к backend он получает assignments через API. Если администратор назначил новую камеру, backend ставит команду `reload_assignments`, а Processor забирает ее в своем poll loop.
@@ -161,7 +157,6 @@ sequenceDiagram
 | `db` | PostgreSQL | `core`, `server`, `server-cpu`, `server-gpu`, `gpu-nvidia` |
 | `backend` | FastAPI API и встроенная server-side web-раздача | `core`, `server`, `server-cpu`, `server-gpu`, `gpu-nvidia` |
 | `mediamtx` | RTSP/RTMP/HLS media service | `core`, `server`, `server-cpu`, `server-gpu`, `gpu-nvidia` |
-| `frontend` | React web-консоль за nginx | `with-frontend`, `server`, `server-cpu`, `server-gpu`, `gpu-nvidia` |
 | `nginx` | reverse proxy и HTTP/HTTPS вход | `with-nginx`, `public` |
 | `certbot` | продление Let's Encrypt | `with-nginx`, `public` |
 | `processor` | CPU/auto Processor в контейнере | `with-processor`, `server-cpu` |
@@ -212,7 +207,7 @@ sequenceDiagram
 | Команда | Что поднимает |
 | --- | --- |
 | `.\scripts\cctv-up.ps1 -Profile core` | PostgreSQL, backend, MediaMTX |
-| `.\scripts\cctv-up.ps1 -Profile server` | backend, MediaMTX, web-консоль |
+| `.\scripts\cctv-up.ps1 -Profile server` | backend, MediaMTX |
 | `.\scripts\cctv-up.ps1 -Profile server-cpu` | сервер и Docker Processor на CPU/auto |
 | `.\scripts\cctv-up.ps1 -Profile server-gpu` | сервер и Docker Processor с NVIDIA |
 | `.\scripts\cctv-up.ps1 -Profile public -Domain cctv.example.com -Email admin@example.com -IssueCertificate` | сервер, nginx, первичный сертификат Let's Encrypt и автопродление через certbot |
@@ -235,7 +230,7 @@ Copy-Item .env.example .env
 docker compose --profile core up -d --build backend mediamtx
 ```
 
-Сервер с web-консолью:
+Обычный сервер:
 
 ```powershell
 docker compose --profile server up -d --build
@@ -271,8 +266,8 @@ Invoke-WebRequest http://127.0.0.1:8000/health/db
 
 ## Первый запуск с нуля
 
-1. Поднимите `db`, `backend`, `mediamtx`, при необходимости `frontend` и `nginx`.
-2. Откройте Console или web-интерфейс.
+1. Поднимите `db`, `backend`, `mediamtx`, при необходимости `nginx`.
+2. Откройте Native Console или используйте backend API.
 3. Войдите под `BOOTSTRAP_ADMIN_LOGIN` и `BOOTSTRAP_ADMIN_PASSWORD`.
 4. Создайте камеры. Для RTSP укажите основной поток в `stream_url` или через endpoint `rtsp`.
 5. Откройте раздел Processor и создайте код подключения.
@@ -336,7 +331,7 @@ Nginx нужен, когда backend и web надо открыть через �
 
 - `/health` идет в backend;
 - API-префиксы идут в backend;
-- остальная web-навигация идет во frontend;
+- корневой web-маршрут возвращает `404`;
 - `/.well-known/acme-challenge/` отдается certbot webroot;
 - HTTPS включается через `NGINX_HTTPS_ENABLED=true`.
 
@@ -517,7 +512,7 @@ flutter build windows --release
 
 Папку `processor` внутри portable не удаляют: там лежит Python runtime, CLI, модели, конфиг и media-директории.
 
-## Локальная разработка backend и frontend
+## Локальная разработка backend
 
 Backend:
 
@@ -526,14 +521,6 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\alembic.exe upgrade head
 .\.venv\Scripts\uvicorn.exe app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Frontend:
-
-```powershell
-cd frontend
-npm install
-npm run dev
 ```
 
 Processor в dev-режиме:
@@ -673,7 +660,7 @@ Backend container запускается не от root, с `read_only`, `tmpfs`
 2. Найдите владельца поведения через `rg`.
 3. Внесите узкую правку.
 4. Запустите форматирование и тесты для затронутой части.
-5. Пересоберите Docker или portable-артефакт, если менялся backend, frontend, Processor или Flutter.
+5. Пересоберите Docker или portable-артефакт, если менялся backend, Processor или Flutter.
 6. Проверьте функциональный путь, а не только сборку.
 7. Обновите README, если изменились команды, порты, роли, профили или схема данных.
 

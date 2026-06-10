@@ -5,8 +5,8 @@ from typing import List
 import cv2
 import httpx
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
@@ -181,6 +181,9 @@ async def _extract_best_face_embedding_via_processor(
 
 @router.get("", response_model=List[PersonOut])
 async def list_persons(
+    q: str | None = Query(default=None, max_length=160),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[PersonOut]:
@@ -194,12 +197,32 @@ async def list_persons(
         .group_by(models.PersonEmbedding.person_id)
         .subquery()
     )
-    res = await session.execute(
+    stmt = (
         select(models.Person, func.coalesce(counts.c.cnt, 0))
         .outerjoin(counts, counts.c.person_id == models.Person.person_id)
         .where(models.Person.deleted_at.is_(None))
-        .order_by(models.Person.person_id)
     )
+    normalized = (q or "").strip().lower()
+    if normalized:
+        search_text = func.lower(
+            cast(models.Person.person_id, String)
+            + " "
+            + func.coalesce(models.Person.last_name, "")
+            + " "
+            + func.coalesce(models.Person.first_name, "")
+            + " "
+            + func.coalesce(models.Person.middle_name, "")
+        )
+        stmt = stmt.where(
+            or_(
+                search_text.contains(normalized),
+                search_text.op("%")(normalized),
+                func.similarity(search_text, normalized) >= 0.16,
+            )
+        ).order_by(func.similarity(search_text, normalized).desc(), models.Person.person_id)
+    else:
+        stmt = stmt.order_by(models.Person.person_id)
+    res = await session.execute(stmt.offset(offset).limit(limit))
     items: List[PersonOut] = []
     for person, count in res.all():
         items.append(

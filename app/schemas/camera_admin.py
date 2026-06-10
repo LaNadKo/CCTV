@@ -30,11 +30,11 @@ class PtzCapabilitiesOut(BaseModel):
 
 
 class CameraCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=64)
     ip_address: Optional[str] = None
     stream_url: Optional[str] = None
     status_id: Optional[int] = None
-    location: Optional[str] = None
+    location: Optional[str] = Field(default=None, max_length=64)
     detection_enabled: bool = False
     recording_mode: str = Field(default="continuous", pattern="^(continuous|event)$")
     connection_kind: str = Field(default="manual", pattern="^(manual|onvif|rtsp|http)$")
@@ -45,11 +45,11 @@ class CameraCreate(BaseModel):
 
 
 class CameraUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
     ip_address: Optional[str] = None
     stream_url: Optional[str] = None
     status_id: Optional[int] = None
-    location: Optional[str] = None
+    location: Optional[str] = Field(default=None, max_length=64)
     detection_enabled: Optional[bool] = None
     recording_mode: Optional[str] = Field(default=None, pattern="^(continuous|event)$")
     tracking_enabled: Optional[bool] = None
@@ -111,7 +111,7 @@ class PtzContinuousMoveIn(BaseModel):
     pan: float = Field(default=0.0, ge=-1.0, le=1.0)
     tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
     zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
-    timeout_seconds: Optional[float] = Field(default=0.45, ge=0.1, le=1.5)
+    timeout_seconds: Optional[float] = Field(default=0.25, ge=0.1, le=0.8)
 
 
 class PtzAbsoluteMoveIn(BaseModel):

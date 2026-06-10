@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
@@ -8,8 +10,12 @@ import '../../core/network/api_client.dart';
 import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/page_header.dart';
 import '../auth/auth_controller.dart';
-import '../modules/module_screens.dart' show ModuleColumn, ReportTable;
+import '../modules/module_screens.dart'
+    show ModuleColumn, ReportSearchScope, ReportTable;
+
+enum _ReportsView { summary, tables, export }
 
 class ReportsDashboardScreen extends StatefulWidget {
   const ReportsDashboardScreen({super.key});
@@ -25,19 +31,25 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
 
   DateTime? _dateFrom;
   DateTime? _dateTo;
-  int? _groupId;
-  int? _cameraId;
-  int? _processorId;
-  int? _userId;
-  int? _personId;
+  final Set<int> _groupIds = <int>{};
+  final Set<int> _cameraIds = <int>{};
+  final Set<int> _processorIds = <int>{};
+  final Set<int> _userIds = <int>{};
+  final Set<int> _personIds = <int>{};
 
   Map<String, dynamic>? _dashboard;
   Map<String, dynamic>? _appearances;
+  Timer? _appearanceSearchDebounce;
+  String _appearanceSearch = '';
+  int _appearanceTotal = 0;
+  bool _appearanceHasMore = false;
+  bool _loadingMoreAppearances = false;
   List<Map<String, dynamic>> _groups = const [];
   List<Map<String, dynamic>> _users = const [];
   List<Map<String, dynamic>> _persons = const [];
   List<CameraSummary> _cameras = const [];
   List<ProcessorOut> _processors = const [];
+  _ReportsView _view = _ReportsView.summary;
 
   static const _sections = [
     _ReportSection(
@@ -47,7 +59,7 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
     ),
     _ReportSection('groups', 'Группы камер', Icons.account_tree_rounded),
     _ReportSection('cameras', 'Камеры', Icons.videocam_rounded),
-    _ReportSection('processors', 'Processor', Icons.memory_rounded),
+    _ReportSection('processors', 'Процессор', Icons.memory_rounded),
     _ReportSection('events', 'События и ревью', Icons.fact_check_rounded),
     _ReportSection('archive', 'Архив записей', Icons.video_library_rounded),
     _ReportSection('security', 'Безопасность', Icons.shield_rounded),
@@ -58,6 +70,12 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _appearanceSearchDebounce?.cancel();
+    super.dispose();
   }
 
   @override
@@ -123,20 +141,89 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
   Future<void> _loadReports() async {
     final (api, token) = _deps();
     final dashboard = await api
-        .getJson('/reports/dashboard', token: token, query: _dashboardQuery())
-        .then(_map);
-    final appearances = await api
-        .getJson(
-          '/reports/appearances',
+        .getJsonWithQuery(
+          '/reports/dashboard',
           token: token,
-          query: _appearanceQuery(),
+          query: _dashboardQuery(),
         )
         .then(_map);
+    final appearances = await _fetchAppearancesPage(api, token, offset: 0);
     if (!mounted) return;
     setState(() {
       _dashboard = dashboard;
       _appearances = appearances;
+      _syncAppearancePageState(appearances);
     });
+  }
+
+  Future<Map<String, dynamic>> _fetchAppearancesPage(
+    ApiClient api,
+    String token, {
+    required int offset,
+  }) {
+    return api
+        .getJsonWithQuery(
+          '/reports/appearances',
+          token: token,
+          query: _appearanceQuery(offset: offset),
+        )
+        .then(_map);
+  }
+
+  void _syncAppearancePageState(Map<String, dynamic> page) {
+    _appearanceTotal = (page['total'] as num?)?.toInt() ?? 0;
+    _appearanceHasMore = page['has_more'] == true;
+  }
+
+  Future<void> _loadMoreAppearances() async {
+    if (_loadingMoreAppearances || !_appearanceHasMore) return;
+    setState(() => _loadingMoreAppearances = true);
+    try {
+      final (api, token) = _deps();
+      final current = _mapList(_appearances?['items']);
+      final page = await _fetchAppearancesPage(
+        api,
+        token,
+        offset: current.length,
+      );
+      final nextItems = _mapList(page['items']);
+      if (!mounted) return;
+      setState(() {
+        _appearances = {
+          ...page,
+          'items': [...current, ...nextItems],
+        };
+        _syncAppearancePageState(page);
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _loadingMoreAppearances = false);
+    }
+  }
+
+  void _onReportSearchChanged(String value) {
+    _appearanceSearch = value.trim();
+    _appearanceSearchDebounce?.cancel();
+    _appearanceSearchDebounce = Timer(
+      const Duration(milliseconds: 320),
+      _reloadAppearancesForSearch,
+    );
+  }
+
+  Future<void> _reloadAppearancesForSearch() async {
+    if (!mounted) return;
+    try {
+      final (api, token) = _deps();
+      final page = await _fetchAppearancesPage(api, token, offset: 0);
+      if (!mounted) return;
+      setState(() {
+        _appearances = page;
+        _syncAppearancePageState(page);
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    }
   }
 
   Future<void> _export(_ReportSection section, String format) async {
@@ -146,7 +233,7 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
           ? await api.downloadAppearanceReport(
               token,
               format: format,
-              personId: _personId,
+              personIds: _personIds,
               dateFrom: _iso(_dateFrom),
               dateTo: _iso(_dateTo),
             )
@@ -156,53 +243,66 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
               format: format,
               dateFrom: _iso(_dateFrom),
               dateTo: _iso(_dateTo),
-              groupId: _groupId,
-              cameraId: _cameraId,
-              processorId: _processorId,
-              userId: _userId,
+              groupIds: _groupIds,
+              cameraIds: _cameraIds,
+              processorIds: _processorIds,
+              userIds: _userIds,
+              personIds: _personIds,
             );
       await OpenFilex.open(file.path);
       _toast('Отчёт сохранён: ${file.path}');
     });
   }
 
-  Future<void> _pickDateTime({required bool from}) async {
+  Future<void> _pickDateRange() async {
     final now = DateTime.now();
-    final current = (from ? _dateFrom : _dateTo) ?? now;
-    final initial = current.isAfter(now) ? now : current;
-    final date = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(2020),
-      lastDate: now,
-    );
-    if (date == null || !mounted) return;
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(initial),
-    );
-    if (time == null) return;
+    final today = DateTime(now.year, now.month, now.day);
+    final firstDate = DateTime(2020);
+    var initialStart = _dateFrom == null
+        ? today.subtract(const Duration(days: 7))
+        : DateTime(_dateFrom!.year, _dateFrom!.month, _dateFrom!.day);
+    if (initialStart.isBefore(firstDate)) initialStart = firstDate;
+    if (initialStart.isAfter(today)) initialStart = today;
+    var initialEnd = _dateTo == null
+        ? today
+        : DateTime(_dateTo!.year, _dateTo!.month, _dateTo!.day);
+    if (initialEnd.isBefore(initialStart)) initialEnd = initialStart;
+    if (initialEnd.isAfter(today)) initialEnd = today;
 
-    var selected = DateTime(
-      date.year,
-      date.month,
-      date.day,
-      time.hour,
-      time.minute,
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: firstDate,
+      lastDate: today,
+      initialDateRange: DateTimeRange(start: initialStart, end: initialEnd),
+      currentDate: today,
+      helpText: 'Выберите период',
+      cancelText: 'Отмена',
+      confirmText: 'Готово',
+      saveText: 'Применить',
+      fieldStartHintText: 'Начало',
+      fieldEndHintText: 'Конец',
+      fieldStartLabelText: 'Начало периода',
+      fieldEndLabelText: 'Конец периода',
     );
-    if (selected.isAfter(now)) selected = now;
+    if (range == null || !mounted) return;
+
+    final start = DateTime(
+      range.start.year,
+      range.start.month,
+      range.start.day,
+    );
+    final endOfDay = DateTime(
+      range.end.year,
+      range.end.month,
+      range.end.day,
+      23,
+      59,
+      59,
+      999,
+    );
     setState(() {
-      if (from) {
-        _dateFrom = selected;
-        if (_dateTo != null && _dateTo!.isBefore(selected)) {
-          _dateTo = selected;
-        }
-      } else {
-        _dateTo = selected;
-        if (_dateFrom != null && _dateFrom!.isAfter(selected)) {
-          _dateFrom = selected;
-        }
-      }
+      _dateFrom = start;
+      _dateTo = endOfDay.isAfter(now) ? now : endOfDay;
     });
   }
 
@@ -210,11 +310,11 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
     setState(() {
       _dateFrom = null;
       _dateTo = null;
-      _groupId = null;
-      _cameraId = null;
-      _processorId = null;
-      _userId = null;
-      _personId = null;
+      _groupIds.clear();
+      _cameraIds.clear();
+      _processorIds.clear();
+      _userIds.clear();
+      _personIds.clear();
     });
     _applyFilters();
   }
@@ -241,41 +341,36 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
     }
   }
 
-  Map<String, String?> _dashboardQuery() => {
-    'date_from': _iso(_dateFrom),
-    'date_to': _iso(_dateTo),
-    if (_groupId != null) 'group_id': '$_groupId',
-    if (_cameraId != null) 'camera_id': '$_cameraId',
-    if (_processorId != null) 'processor_id': '$_processorId',
-    if (_userId != null) 'user_id': '$_userId',
-  };
+  List<MapEntry<String, String?>> _dashboardQuery() => [
+    MapEntry('date_from', _iso(_dateFrom)),
+    MapEntry('date_to', _iso(_dateTo)),
+    for (final id in _groupIds) MapEntry('group_ids', '$id'),
+    for (final id in _cameraIds) MapEntry('camera_ids', '$id'),
+    for (final id in _processorIds) MapEntry('processor_ids', '$id'),
+    for (final id in _userIds) MapEntry('user_ids', '$id'),
+    for (final id in _personIds) MapEntry('person_ids', '$id'),
+  ];
 
-  Map<String, String?> _appearanceQuery() => {
-    'date_from': _iso(_dateFrom),
-    'date_to': _iso(_dateTo),
-    if (_personId != null) 'person_id': '$_personId',
-  };
+  List<MapEntry<String, String?>> _appearanceQuery({required int offset}) => [
+    MapEntry('date_from', _iso(_dateFrom)),
+    MapEntry('date_to', _iso(_dateTo)),
+    for (final id in _personIds) MapEntry('person_ids', '$id'),
+    if (_appearanceSearch.isNotEmpty) MapEntry('q', _appearanceSearch),
+    const MapEntry('limit', '200'),
+    MapEntry('offset', '$offset'),
+  ];
 
   void _normalizeSelectedIds() {
-    if (_groupId != null &&
-        !_groups.any((item) => item['group_id'] == _groupId)) {
-      _groupId = null;
-    }
-    if (_cameraId != null &&
-        !_cameras.any((item) => item.cameraId == _cameraId)) {
-      _cameraId = null;
-    }
-    if (_processorId != null &&
-        !_processors.any((item) => item.processorId == _processorId)) {
-      _processorId = null;
-    }
-    if (_userId != null && !_users.any((item) => item['user_id'] == _userId)) {
-      _userId = null;
-    }
-    if (_personId != null &&
-        !_persons.any((item) => item['person_id'] == _personId)) {
-      _personId = null;
-    }
+    final groupIds = _groups.map((item) => item['group_id']).whereType<int>();
+    final cameraIds = _cameras.map((item) => item.cameraId);
+    final processorIds = _processors.map((item) => item.processorId);
+    final userIds = _users.map((item) => item['user_id']).whereType<int>();
+    final personIds = _persons.map((item) => item['person_id']).whereType<int>();
+    _groupIds.removeWhere((id) => !groupIds.contains(id));
+    _cameraIds.removeWhere((id) => !cameraIds.contains(id));
+    _processorIds.removeWhere((id) => !processorIds.contains(id));
+    _userIds.removeWhere((id) => !userIds.contains(id));
+    _personIds.removeWhere((id) => !personIds.contains(id));
   }
 
   void _toast(String message) {
@@ -318,21 +413,41 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
                   processors: _processorItems(),
                   users: _userItems(),
                   persons: _personItems(),
-                  groupId: _groupId,
-                  cameraId: _cameraId,
-                  processorId: _processorId,
-                  userId: _userId,
-                  personId: _personId,
-                  onPickFrom: () => _pickDateTime(from: true),
-                  onPickTo: () => _pickDateTime(from: false),
-                  onClearFrom: () => setState(() => _dateFrom = null),
-                  onClearTo: () => setState(() => _dateTo = null),
-                  onGroupChanged: (value) => setState(() => _groupId = value),
-                  onCameraChanged: (value) => setState(() => _cameraId = value),
-                  onProcessorChanged: (value) =>
-                      setState(() => _processorId = value),
-                  onUserChanged: (value) => setState(() => _userId = value),
-                  onPersonChanged: (value) => setState(() => _personId = value),
+                  groupIds: _groupIds,
+                  cameraIds: _cameraIds,
+                  processorIds: _processorIds,
+                  userIds: _userIds,
+                  personIds: _personIds,
+                  onPickPeriod: _pickDateRange,
+                  onClearPeriod: () => setState(() {
+                    _dateFrom = null;
+                    _dateTo = null;
+                  }),
+                  onGroupsChanged: (value) => setState(() {
+                    _groupIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
+                  onCamerasChanged: (value) => setState(() {
+                    _cameraIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
+                  onProcessorsChanged: (value) => setState(() {
+                    _processorIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
+                  onUsersChanged: (value) => setState(() {
+                    _userIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
+                  onPersonsChanged: (value) => setState(() {
+                    _personIds
+                      ..clear()
+                      ..addAll(value);
+                  }),
                   onApply: _applyFilters,
                   onClear: _clearFilters,
                 ),
@@ -341,102 +456,113 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
                   _InlineError(message: _error!),
                 ],
                 const SizedBox(height: 14),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    _Metric(
-                      label: 'События',
-                      value: '${events['total_events'] ?? 0}',
-                    ),
-                    _Metric(
-                      label: 'Pending review',
-                      value: '${events['pending_reviews'] ?? 0}',
-                    ),
-                    _Metric(
-                      label: 'Файлы архива',
-                      value: '${archive['total_files'] ?? 0}',
-                    ),
-                    _Metric(
-                      label: 'Покрытие 2FA',
-                      value: '${security['totp_coverage_percent'] ?? 0}%',
-                    ),
-                  ],
+                _ReportsModeTabs(
+                  value: _view,
+                  onChanged: (value) => setState(() => _view = value),
                 ),
                 const SizedBox(height: 14),
-                _ExportPanel(
-                  sections: _sections,
-                  busy: _busy,
-                  onExport: _export,
-                ),
-                const SizedBox(height: 14),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final narrow = constraints.maxWidth < 920;
-                    final cards = [
-                      _SimpleListCard(
-                        title: 'Камеры',
-                        items: cameras,
-                        columns: const [
-                          'name',
-                          'group_name',
-                          'connection_kind',
-                          'event_count',
-                        ],
+                if (_view == _ReportsView.summary) ...[
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      _Metric(
+                        label: 'События',
+                        value: '${events['total_events'] ?? 0}',
                       ),
-                      _SimpleListCard(
-                        title: 'Processor',
-                        items: processors,
-                        columns: const [
-                          'name',
-                          'status',
-                          'assigned_cameras',
-                          'event_count',
-                        ],
+                      _Metric(
+                        label: 'Ревью',
+                        value: '${events['pending_reviews'] ?? 0}',
                       ),
-                      _SimpleListCard(
-                        title: 'Группы',
-                        items: groups,
-                        columns: const [
-                          'name',
-                          'camera_count',
-                          'event_count',
-                          'pending_reviews',
-                        ],
+                      _Metric(
+                        label: 'Файлы архива',
+                        value: '${archive['total_files'] ?? 0}',
                       ),
-                    ];
-                    if (narrow) {
-                      return Column(
-                        children: [
-                          for (final card in cards) ...[
-                            card,
-                            const SizedBox(height: 14),
+                      _Metric(
+                        label: 'Покрытие 2FA',
+                        value: '${security['totp_coverage_percent'] ?? 0}%',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final narrow = constraints.maxWidth < 920;
+                      final cards = [
+                        _SimpleListCard(
+                          title: 'Камеры',
+                          items: cameras,
+                          columns: const [
+                            'name',
+                            'group_name',
+                            'connection_kind',
+                            'event_count',
                           ],
+                        ),
+                        _SimpleListCard(
+                          title: 'Процессор',
+                          items: processors,
+                          columns: const [
+                            'name',
+                            'status',
+                            'assigned_cameras',
+                            'event_count',
+                          ],
+                        ),
+                        _SimpleListCard(
+                          title: 'Группы',
+                          items: groups,
+                          columns: const [
+                            'name',
+                            'camera_count',
+                            'event_count',
+                            'pending_reviews',
+                          ],
+                        ),
+                      ];
+                      if (narrow) {
+                        return Column(
+                          children: [
+                            for (final card in cards) ...[
+                              card,
+                              const SizedBox(height: 14),
+                            ],
+                          ],
+                        );
+                      }
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: cards[0]),
+                          const SizedBox(width: 14),
+                          Expanded(child: cards[1]),
+                          const SizedBox(width: 14),
+                          Expanded(child: cards[2]),
                         ],
                       );
-                    }
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: cards[0]),
-                        const SizedBox(width: 14),
-                        Expanded(child: cards[1]),
-                        const SizedBox(width: 14),
-                        Expanded(child: cards[2]),
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 14),
-                _RecentActivityCard(
-                  actions: _mapList(userActions['recent_actions']),
-                  appearances: appearanceItems,
-                ),
-                const SizedBox(height: 14),
-                _DetailedReportSections(
-                  dashboard: dashboard,
-                  appearances: appearanceItems,
-                ),
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  _RecentActivityCard(
+                    actions: _mapList(userActions['recent_actions']),
+                    appearances: appearanceItems,
+                  ),
+                ] else if (_view == _ReportsView.tables)
+                  _DetailedReportSections(
+                    dashboard: dashboard,
+                    appearances: appearanceItems,
+                    appearanceTotal: _appearanceTotal,
+                    appearanceHasMore: _appearanceHasMore,
+                    loadingMoreAppearances: _loadingMoreAppearances,
+                    onAppearanceSearchChanged: _onReportSearchChanged,
+                    onLoadMoreAppearances: _loadMoreAppearances,
+                  )
+                else
+                  _ExportPanel(
+                    sections: _sections,
+                    busy: _busy,
+                    onExport: _export,
+                  ),
                 const SizedBox(height: 24),
               ],
             ),
@@ -469,7 +595,7 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
       _SelectItem(
         id: item.processorId,
         label: item.name,
-        subtitle: item.online ? 'online' : item.status,
+        subtitle: item.online ? 'онлайн' : item.status,
       ),
   ];
 
@@ -478,7 +604,7 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
       _SelectItem(
         id: item['user_id'] as int,
         label: _userLabel(item),
-        subtitle: 'login: ${item['login'] ?? '-'}',
+        subtitle: 'Логин: ${item['login'] ?? '-'}',
       ),
   ];
 
@@ -492,33 +618,135 @@ class _ReportsDashboardScreenState extends State<ReportsDashboardScreen>
   ];
 }
 
-class _DetailedReportSections extends StatelessWidget {
+class _ReportsModeTabs extends StatelessWidget {
+  const _ReportsModeTabs({required this.value, required this.onChanged});
+
+  final _ReportsView value;
+  final ValueChanged<_ReportsView> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 480;
+        return SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<_ReportsView>(
+            showSelectedIcon: false,
+            segments: [
+              ButtonSegment(
+                value: _ReportsView.summary,
+                icon: compact
+                    ? null
+                    : const Icon(Icons.dashboard_customize_rounded, size: 18),
+                label: const Text('Сводка'),
+              ),
+              ButtonSegment(
+                value: _ReportsView.tables,
+                icon: compact
+                    ? null
+                    : const Icon(Icons.table_rows_rounded, size: 18),
+                label: Text(compact ? 'Данные' : 'Таблицы'),
+              ),
+              ButtonSegment(
+                value: _ReportsView.export,
+                icon: compact
+                    ? null
+                    : const Icon(Icons.file_download_rounded, size: 18),
+                label: const Text('Экспорт'),
+              ),
+            ],
+            selected: {value},
+            onSelectionChanged: (selected) => onChanged(selected.first),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _DetailedReportSections extends StatefulWidget {
   const _DetailedReportSections({
     required this.dashboard,
     required this.appearances,
+    required this.appearanceTotal,
+    required this.appearanceHasMore,
+    required this.loadingMoreAppearances,
+    required this.onAppearanceSearchChanged,
+    required this.onLoadMoreAppearances,
   });
 
   final Map<String, dynamic> dashboard;
   final List<Map<String, dynamic>> appearances;
+  final int appearanceTotal;
+  final bool appearanceHasMore;
+  final bool loadingMoreAppearances;
+  final ValueChanged<String> onAppearanceSearchChanged;
+  final VoidCallback onLoadMoreAppearances;
+
+  @override
+  State<_DetailedReportSections> createState() =>
+      _DetailedReportSectionsState();
+}
+
+class _DetailedReportSectionsState extends State<_DetailedReportSections> {
+  final _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  void _onSearchChanged() {
+    setState(() {});
+    widget.onAppearanceSearchChanged(_searchController.text);
+  }
+
+  @override
+  void dispose() {
+    _searchController
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final events = _map(dashboard['events']);
-    final archive = _map(dashboard['archive']);
-    final security = _map(dashboard['security']);
-    final userActions = _map(dashboard['user_actions']);
-    return Column(
-      children: [
+    final events = _map(widget.dashboard['events']);
+    final archive = _map(widget.dashboard['archive']);
+    final security = _map(widget.dashboard['security']);
+    final userActions = _map(widget.dashboard['user_actions']);
+    return ReportSearchScope(
+      query: _searchController.text,
+      child: Column(
+        children: [
+          TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              labelText: 'Поиск по всем таблицам',
+              hintText: 'Название, идентификатор, статус или значение',
+              prefixIcon: const Icon(Icons.search_rounded),
+              suffixIcon: _searchController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Очистить',
+                      onPressed: _searchController.clear,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 14),
         ReportTable(
           title: 'Камеры',
-          rows: _mapList(dashboard['cameras']),
+          rows: _mapList(widget.dashboard['cameras']),
           columns: const [
             ModuleColumn('Камера', ['name'], width: 180),
             ModuleColumn('Группа', ['group_name'], width: 150),
             ModuleColumn('Локация', ['location'], width: 150),
             ModuleColumn('Тип', ['connection_kind'], width: 90),
-            ModuleColumn('Processor', ['assigned_processor'], width: 150),
-            ModuleColumn('Online', ['is_online'], width: 80),
+            ModuleColumn('Процессор', ['assigned_processor'], width: 150),
+            ModuleColumn('Онлайн', ['is_online'], width: 80),
             ModuleColumn('PTZ', ['supports_ptz'], width: 70),
             ModuleColumn('Детекция', ['detection_enabled'], width: 95),
             ModuleColumn('События', ['event_count'], width: 90),
@@ -535,12 +763,12 @@ class _DetailedReportSections extends StatelessWidget {
           children: [
             ReportTable(
               title: 'Группы камер',
-              rows: _mapList(dashboard['groups']),
+              rows: _mapList(widget.dashboard['groups']),
               columns: const [
                 ModuleColumn('Группа', ['name'], width: 180),
                 ModuleColumn('Камер', ['camera_count'], width: 80),
-                ModuleColumn('Online', ['online_cameras'], width: 80),
-                ModuleColumn('Offline', ['offline_cameras'], width: 80),
+                ModuleColumn('Онлайн', ['online_cameras'], width: 80),
+                ModuleColumn('Офлайн', ['offline_cameras'], width: 80),
                 ModuleColumn('События', ['event_count'], width: 90),
                 ModuleColumn('Распознано', ['recognized_count'], width: 105),
                 ModuleColumn('Ревью', ['pending_reviews'], width: 80),
@@ -549,12 +777,12 @@ class _DetailedReportSections extends StatelessWidget {
               ],
             ),
             ReportTable(
-              title: 'Processor',
-              rows: _mapList(dashboard['processors']),
+              title: 'Процессор',
+              rows: _mapList(widget.dashboard['processors']),
               columns: const [
                 ModuleColumn('Узел', ['name'], width: 180),
                 ModuleColumn('Статус', ['status'], width: 100),
-                ModuleColumn('Online', ['is_online'], width: 80),
+                ModuleColumn('Онлайн', ['is_online'], width: 80),
                 ModuleColumn('IP', ['ip_address'], width: 130),
                 ModuleColumn('Версия', ['version'], width: 120),
                 ModuleColumn('Heartbeat', ['last_heartbeat'], width: 145),
@@ -564,7 +792,7 @@ class _DetailedReportSections extends StatelessWidget {
                 ModuleColumn('CPU', ['cpu_percent'], width: 80),
                 ModuleColumn('RAM', ['ram_percent'], width: 80),
                 ModuleColumn('GPU', ['gpu_util_percent'], width: 80),
-                ModuleColumn('Uptime', ['uptime_seconds'], width: 85),
+                ModuleColumn('Время', ['uptime_seconds'], width: 85),
               ],
             ),
             ReportTable(
@@ -656,7 +884,7 @@ class _DetailedReportSections extends StatelessWidget {
         const SizedBox(height: 14),
         ReportTable(
           title: 'Появления персон',
-          rows: appearances,
+          rows: widget.appearances,
           columns: const [
             ModuleColumn('Персона', ['person_label', 'person_id'], width: 180),
             ModuleColumn('Камера', ['camera_name', 'camera_id'], width: 180),
@@ -665,7 +893,30 @@ class _DetailedReportSections extends StatelessWidget {
             ModuleColumn('Событие', ['event_id'], width: 90),
           ],
         ),
-      ],
+        if (widget.appearanceHasMore) ...[
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.center,
+            child: FilledButton.tonalIcon(
+              onPressed: widget.loadingMoreAppearances
+                  ? null
+                  : widget.onLoadMoreAppearances,
+              icon: widget.loadingMoreAppearances
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.expand_more_rounded),
+              label: Text(
+                'Показать ещё '
+                '(${widget.appearances.length} из ${widget.appearanceTotal})',
+              ),
+            ),
+          ),
+        ],
+        ],
+      ),
     );
   }
 }
@@ -681,7 +932,7 @@ class _ReportTableGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1180 ? 2 : 1;
+        final columns = constraints.maxWidth >= 1680 ? 2 : 1;
         final rows = <Widget>[];
 
         for (var i = 0; i < children.length; i += columns) {
@@ -723,63 +974,23 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 600;
-        final title = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Отчёты',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                color: colors.textStrong,
-                fontWeight: FontWeight.w900,
-                fontSize: compact ? 24 : null,
-                height: 1.05,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Сводка по пользователям, камерам, Processor, событиям, архиву и безопасности.',
-              maxLines: compact ? 3 : 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: colors.muted,
-                fontSize: compact ? 13 : 13,
-                height: 1.25,
-              ),
-            ),
-          ],
-        );
-        final refresh = IconButton.filledTonal(
-          onPressed: busy ? null : onRefresh,
-          icon: busy
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.refresh_rounded),
-        );
-
-        if (compact) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [title, const SizedBox(height: 10), refresh],
-          );
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: title),
-            refresh,
-          ],
-        );
-      },
+    return PageHeader(
+      title: 'Отчёты',
+      icon: Icons.analytics_rounded,
+      trailing: PageActions(
+        children: [
+          IconButton.filledTonal(
+            onPressed: busy ? null : onRefresh,
+            icon: busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -794,20 +1005,18 @@ class _Filters extends StatelessWidget {
     required this.processors,
     required this.users,
     required this.persons,
-    required this.groupId,
-    required this.cameraId,
-    required this.processorId,
-    required this.userId,
-    required this.personId,
-    required this.onPickFrom,
-    required this.onPickTo,
-    required this.onClearFrom,
-    required this.onClearTo,
-    required this.onGroupChanged,
-    required this.onCameraChanged,
-    required this.onProcessorChanged,
-    required this.onUserChanged,
-    required this.onPersonChanged,
+    required this.groupIds,
+    required this.cameraIds,
+    required this.processorIds,
+    required this.userIds,
+    required this.personIds,
+    required this.onPickPeriod,
+    required this.onClearPeriod,
+    required this.onGroupsChanged,
+    required this.onCamerasChanged,
+    required this.onProcessorsChanged,
+    required this.onUsersChanged,
+    required this.onPersonsChanged,
     required this.onApply,
     required this.onClear,
   });
@@ -820,129 +1029,228 @@ class _Filters extends StatelessWidget {
   final List<_SelectItem> processors;
   final List<_SelectItem> users;
   final List<_SelectItem> persons;
-  final int? groupId;
-  final int? cameraId;
-  final int? processorId;
-  final int? userId;
-  final int? personId;
-  final VoidCallback onPickFrom;
-  final VoidCallback onPickTo;
-  final VoidCallback onClearFrom;
-  final VoidCallback onClearTo;
-  final ValueChanged<int?> onGroupChanged;
-  final ValueChanged<int?> onCameraChanged;
-  final ValueChanged<int?> onProcessorChanged;
-  final ValueChanged<int?> onUserChanged;
-  final ValueChanged<int?> onPersonChanged;
+  final Set<int> groupIds;
+  final Set<int> cameraIds;
+  final Set<int> processorIds;
+  final Set<int> userIds;
+  final Set<int> personIds;
+  final VoidCallback onPickPeriod;
+  final VoidCallback onClearPeriod;
+  final ValueChanged<Set<int>> onGroupsChanged;
+  final ValueChanged<Set<int>> onCamerasChanged;
+  final ValueChanged<Set<int>> onProcessorsChanged;
+  final ValueChanged<Set<int>> onUsersChanged;
+  final ValueChanged<Set<int>> onPersonsChanged;
   final VoidCallback onApply;
   final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
-    return GlassPanel(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const spacing = 10.0;
+        final maxWidth = constraints.maxWidth;
+        final contentWidth = (maxWidth - 32).clamp(0.0, maxWidth).toDouble();
+        final columns = contentWidth < 460 ? 1 : (contentWidth < 860 ? 2 : 3);
+        final rawFieldWidth =
+            (contentWidth - spacing * (columns - 1)) / columns;
+        final fieldWidth = columns == 1
+            ? contentWidth
+            : rawFieldWidth.clamp(148.0, 248.0).toDouble();
+        final periodWidth = columns == 1
+            ? contentWidth
+            : (fieldWidth * 2 + spacing).clamp(fieldWidth, contentWidth);
+        final actionWidth = contentWidth < 420 ? fieldWidth : null;
+        final compactLabels = contentWidth < 460;
+        final fields = SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
             children: [
-              _DateTimeButton(
-                label: 'Дата/время от',
-                value: dateFrom,
-                onPick: onPickFrom,
-                onClear: onClearFrom,
+              _DateRangeButton(
+                width: periodWidth.toDouble(),
+                compact: compactLabels,
+                dateFrom: dateFrom,
+                dateTo: dateTo,
+                onPick: onPickPeriod,
+                onClear: onClearPeriod,
               ),
-              _DateTimeButton(
-                label: 'Дата/время до',
-                value: dateTo,
-                onPick: onPickTo,
-                onClear: onClearTo,
-              ),
-              _SearchableSelect(
+              _SearchableMultiSelect(
+                width: fieldWidth,
                 label: 'Группа',
-                value: groupId,
+                values: groupIds,
                 items: groups,
                 icon: Icons.account_tree_rounded,
-                onChanged: onGroupChanged,
+                onChanged: onGroupsChanged,
               ),
-              _SearchableSelect(
+              _SearchableMultiSelect(
+                width: fieldWidth,
                 label: 'Камера',
-                value: cameraId,
+                values: cameraIds,
                 items: cameras,
                 icon: Icons.videocam_rounded,
-                onChanged: onCameraChanged,
+                onChanged: onCamerasChanged,
               ),
-              _SearchableSelect(
-                label: 'Processor',
-                value: processorId,
+              _SearchableMultiSelect(
+                width: fieldWidth,
+                label: compactLabels ? 'Узел' : 'Процессор',
+                values: processorIds,
                 items: processors,
                 icon: Icons.memory_rounded,
-                onChanged: onProcessorChanged,
+                onChanged: onProcessorsChanged,
               ),
-              _SearchableSelect(
-                label: 'Пользователь',
-                value: userId,
+              _SearchableMultiSelect(
+                width: fieldWidth,
+                label: compactLabels ? 'Польз.' : 'Пользователь',
+                values: userIds,
                 items: users,
                 icon: Icons.manage_accounts_rounded,
-                onChanged: onUserChanged,
+                onChanged: onUsersChanged,
               ),
-              _SearchableSelect(
-                label: 'Персона для появлений',
-                value: personId,
+              _SearchableMultiSelect(
+                width: fieldWidth,
+                label: 'Персона',
+                values: personIds,
                 items: persons,
                 icon: Icons.badge_rounded,
-                onChanged: onPersonChanged,
+                onChanged: onPersonsChanged,
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
+        );
+        final actions = SizedBox(
+          width: double.infinity,
+          child: Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              ElevatedButton.icon(
-                onPressed: busy ? null : onApply,
-                icon: const Icon(Icons.filter_alt_rounded, size: 18),
-                label: const Text('Применить'),
+              SizedBox(
+                width: actionWidth,
+                child: ElevatedButton.icon(
+                  onPressed: busy ? null : onApply,
+                  icon: const Icon(Icons.filter_alt_rounded, size: 18),
+                  label: const Text('Применить'),
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: busy ? null : onClear,
-                icon: const Icon(Icons.filter_alt_off_rounded, size: 18),
-                label: const Text('Сбросить'),
-              ),
-              Text(
-                'Экспорт использует текущие фильтры экрана.',
-                style: TextStyle(color: context.colors.muted, fontSize: 12),
+              SizedBox(
+                width: actionWidth,
+                child: OutlinedButton.icon(
+                  onPressed: busy ? null : onClear,
+                  icon: const Icon(
+                    Icons.filter_alt_off_rounded,
+                    size: 18,
+                  ),
+                  label: const Text('Сбросить'),
+                ),
               ),
             ],
           ),
-        ],
-      ),
+        );
+        final content = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            fields,
+            const SizedBox(height: 14),
+            actions,
+          ],
+        );
+
+        if (compactLabels) {
+          return SizedBox(
+            width: double.infinity,
+            child: GlassPanel(
+              padding: EdgeInsets.zero,
+              child: ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
+                childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                iconColor: context.colors.primaryAccent,
+                collapsedIconColor: context.colors.muted,
+                title: const Text(
+                  'Фильтры',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+                subtitle: Text(
+                  _filtersSummary(
+                    dateFrom: dateFrom,
+                    dateTo: dateTo,
+                    groupIds: groupIds,
+                    cameraIds: cameraIds,
+                    processorIds: processorIds,
+                    userIds: userIds,
+                    personIds: personIds,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                children: [content],
+              ),
+            ),
+          );
+        }
+
+        return SizedBox(
+          width: double.infinity,
+          child: GlassPanel(
+            padding: const EdgeInsets.all(16),
+            child: content,
+          ),
+        );
+      },
     );
   }
 }
 
-class _DateTimeButton extends StatelessWidget {
-  const _DateTimeButton({
-    required this.label,
-    required this.value,
+String _filtersSummary({
+  required DateTime? dateFrom,
+  required DateTime? dateTo,
+  required Set<int> groupIds,
+  required Set<int> cameraIds,
+  required Set<int> processorIds,
+  required Set<int> userIds,
+  required Set<int> personIds,
+}) {
+  final active = <bool>[
+    dateFrom != null || dateTo != null,
+    groupIds.isNotEmpty,
+    cameraIds.isNotEmpty,
+    processorIds.isNotEmpty,
+    userIds.isNotEmpty,
+    personIds.isNotEmpty,
+  ].where((value) => value).length;
+  if (active == 0) {
+    return 'Без ограничений';
+  }
+  return '$active активн. · ${_displayPeriod(dateFrom, dateTo)}';
+}
+
+class _DateRangeButton extends StatelessWidget {
+  const _DateRangeButton({
+    required this.width,
+    required this.compact,
+    required this.dateFrom,
+    required this.dateTo,
     required this.onPick,
     required this.onClear,
   });
 
-  final String label;
-  final DateTime? value;
+  final double width;
+  final bool compact;
+  final DateTime? dateFrom;
+  final DateTime? dateTo;
   final VoidCallback onPick;
   final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final hasValue = dateFrom != null || dateTo != null;
     return SizedBox(
-      width: 230,
+      width: width,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: onPick,
@@ -962,11 +1270,13 @@ class _DateTimeButton extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      label,
+                      compact ? 'Период' : 'Период отчёта',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: colors.muted, fontSize: 12),
                     ),
                     Text(
-                      value == null ? 'Не выбрано' : _displayDate(value!),
+                      _displayPeriod(dateFrom, dateTo),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -978,7 +1288,7 @@ class _DateTimeButton extends StatelessWidget {
                   ],
                 ),
               ),
-              if (value != null)
+              if (hasValue)
                 IconButton(
                   tooltip: 'Очистить',
                   onPressed: onClear,
@@ -994,27 +1304,29 @@ class _DateTimeButton extends StatelessWidget {
   }
 }
 
-class _SearchableSelect extends StatelessWidget {
-  const _SearchableSelect({
+class _SearchableMultiSelect extends StatelessWidget {
+  const _SearchableMultiSelect({
+    required this.width,
     required this.label,
-    required this.value,
+    required this.values,
     required this.items,
     required this.icon,
     required this.onChanged,
   });
 
+  final double width;
   final String label;
-  final int? value;
+  final Set<int> values;
   final List<_SelectItem> items;
   final IconData icon;
-  final ValueChanged<int?> onChanged;
+  final ValueChanged<Set<int>> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final selected = _itemById(items, value);
+    final selected = _selectedSummary(items, values);
     return SizedBox(
-      width: 248,
+      width: width,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => _openPicker(context),
@@ -1035,10 +1347,12 @@ class _SearchableSelect extends StatelessWidget {
                   children: [
                     Text(
                       label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: colors.muted, fontSize: 12),
                     ),
                     Text(
-                      selected?.label ?? 'Все',
+                      selected,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -1059,36 +1373,36 @@ class _SearchableSelect extends StatelessWidget {
   }
 
   Future<void> _openPicker(BuildContext context) async {
-    final selected = await showModalBottomSheet<int>(
+    final selected = await showModalBottomSheet<Set<int>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => _SelectSheet(label: label, items: items),
+      builder: (context) =>
+          _MultiSelectSheet(label: label, items: items, initialValues: values),
     );
-    if (selected == null || selected == _SelectSheet.cancelled) return;
-    if (selected == _SelectSheet.all) {
-      onChanged(null);
-      return;
-    }
+    if (selected == null) return;
     onChanged(selected);
   }
 }
 
-class _SelectSheet extends StatefulWidget {
-  const _SelectSheet({required this.label, required this.items});
-
-  static const int cancelled = -2147483648;
-  static const int all = -2147483647;
+class _MultiSelectSheet extends StatefulWidget {
+  const _MultiSelectSheet({
+    required this.label,
+    required this.items,
+    required this.initialValues,
+  });
 
   final String label;
   final List<_SelectItem> items;
+  final Set<int> initialValues;
 
   @override
-  State<_SelectSheet> createState() => _SelectSheetState();
+  State<_MultiSelectSheet> createState() => _MultiSelectSheetState();
 }
 
-class _SelectSheetState extends State<_SelectSheet> {
+class _MultiSelectSheetState extends State<_MultiSelectSheet> {
   final _query = TextEditingController();
+  late final Set<int> _selected = {...widget.initialValues};
 
   @override
   void initState() {
@@ -1142,8 +1456,7 @@ class _SelectSheetState extends State<_SelectSheet> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () =>
-                        Navigator.pop(context, _SelectSheet.cancelled),
+                    onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close_rounded),
                   ),
                 ],
@@ -1168,7 +1481,7 @@ class _SelectSheetState extends State<_SelectSheet> {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                onTap: () => Navigator.pop(context, _SelectSheet.all),
+                onTap: () => Navigator.pop(context, <int>{}),
               ),
               const Divider(height: 1),
               Expanded(
@@ -1186,6 +1499,16 @@ class _SelectSheetState extends State<_SelectSheet> {
                           final item = filtered[index];
                           return ListTile(
                             contentPadding: EdgeInsets.zero,
+                            leading: Checkbox(
+                              value: _selected.contains(item.id),
+                              onChanged: (checked) => setState(() {
+                                if (checked == true) {
+                                  _selected.add(item.id);
+                                } else {
+                                  _selected.remove(item.id);
+                                }
+                              }),
+                            ),
                             title: Text(
                               item.label,
                               maxLines: 1,
@@ -1206,10 +1529,34 @@ class _SelectSheetState extends State<_SelectSheet> {
                                       fontSize: 12,
                                     ),
                                   ),
-                            onTap: () => Navigator.pop(context, item.id),
+                            onTap: () => setState(() {
+                              if (_selected.contains(item.id)) {
+                                _selected.remove(item.id);
+                              } else {
+                                _selected.add(item.id);
+                              }
+                            }),
                           );
                         },
                       ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => setState(_selected.clear),
+                      child: const Text('Очистить'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context, {..._selected}),
+                      child: const Text('Готово'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -1245,11 +1592,6 @@ class _ExportPanel extends StatelessWidget {
               fontWeight: FontWeight.w900,
               fontSize: 16,
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'PDF, Excel и Word формируются backend-ом по активным фильтрам.',
-            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -1552,12 +1894,16 @@ class _SelectItem {
   final String subtitle;
 }
 
-_SelectItem? _itemById(List<_SelectItem> items, int? id) {
-  if (id == null) return null;
+String _selectedSummary(List<_SelectItem> items, Set<int> ids) {
+  if (ids.isEmpty) return 'Все';
+  final labels = <String>[];
   for (final item in items) {
-    if (item.id == id) return item;
+    if (ids.contains(item.id)) labels.add(item.label);
+    if (labels.length == 2) break;
   }
-  return null;
+  if (ids.length == 1 && labels.isNotEmpty) return labels.first;
+  final prefix = labels.isEmpty ? '' : '${labels.join(', ')} · ';
+  return '$prefix${ids.length} выбрано';
 }
 
 Map<String, dynamic> _map(Object? value) {
@@ -1578,8 +1924,13 @@ List<Map<String, dynamic>> _mapList(Object? value) {
 
 String? _iso(DateTime? value) => value?.toIso8601String();
 
-String _displayDate(DateTime value) {
-  return DateFormat('dd.MM.yyyy HH:mm').format(value.toLocal());
+String _displayPeriod(DateTime? from, DateTime? to) {
+  final dateFormat = DateFormat('dd.MM.yyyy');
+  if (from == null && to == null) return 'Не выбран';
+  if (from == null) return 'До ${dateFormat.format(to!.toLocal())}';
+  if (to == null) return 'От ${dateFormat.format(from.toLocal())}';
+  return '${dateFormat.format(from.toLocal())} - '
+      '${dateFormat.format(to.toLocal())}';
 }
 
 String _personLabel(Map<String, dynamic> person) {

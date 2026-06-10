@@ -27,16 +27,15 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "http://127.0.0.1:8000",
             "http://localhost:8000",
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
         ],
         validation_alias="CORS_ORIGINS",
     )
     allowed_hosts: list[str] = Field(default_factory=lambda: ["*"], validation_alias="ALLOWED_HOSTS")
     enable_docs: bool | None = Field(default=None, validation_alias="ENABLE_DOCS")
+    nginx_available: bool = Field(default=False, validation_alias="CCTV_NGINX_AVAILABLE")
     bootstrap_admin_login: str = Field(default="admin", validation_alias="BOOTSTRAP_ADMIN_LOGIN")
     bootstrap_admin_password: str | None = Field(default=None, validation_alias="BOOTSTRAP_ADMIN_PASSWORD")
-    allow_default_admin: bool = Field(default=True, validation_alias="ALLOW_DEFAULT_ADMIN")
+    allow_default_admin: bool = Field(default=False, validation_alias="ALLOW_DEFAULT_ADMIN")
     allow_legacy_query_tokens: bool = Field(default=False, validation_alias="ALLOW_LEGACY_QUERY_TOKENS")
     auth_rate_limit_attempts: int = Field(default=8, validation_alias="AUTH_RATE_LIMIT_ATTEMPTS")
     auth_rate_limit_window_seconds: int = Field(default=60, validation_alias="AUTH_RATE_LIMIT_WINDOW_SECONDS")

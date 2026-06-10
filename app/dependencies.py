@@ -1,3 +1,4 @@
+import hashlib
 import time
 
 from fastapi import Depends, HTTPException, Request, status
@@ -19,6 +20,10 @@ _SERVICE_SCOPE_CACHE_TTL = 300.0
 
 def clear_service_scope_cache() -> None:
     _service_scope_cache.clear()
+
+
+def _service_scope_cache_key(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
 async def _user_from_token(
@@ -92,7 +97,8 @@ async def get_service_identity(
     session: AsyncSession = Depends(get_session),
 ) -> tuple[int, list[str]]:
     now = time.monotonic()
-    cached = _service_scope_cache.get(api_key)
+    cache_key = _service_scope_cache_key(api_key)
+    cached = _service_scope_cache.get(cache_key)
     if cached and cached[0] > now:
         return cached[1], cached[2]
 
@@ -107,7 +113,7 @@ async def get_service_identity(
             continue
         if verify_api_key(api_key, key_hash):
             scopes = scopes_raw.split(",") if scopes_raw else []
-            _service_scope_cache[api_key] = (now + _SERVICE_SCOPE_CACHE_TTL, api_key_id, scopes)
+            _service_scope_cache[cache_key] = (now + _SERVICE_SCOPE_CACHE_TTL, api_key_id, scopes)
             if len(_service_scope_cache) > 256:
                 expired = [raw for raw, (deadline, _, _) in _service_scope_cache.items() if deadline <= now]
                 for raw in expired:

@@ -1,18 +1,30 @@
-FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+ARG CCTV_UID=999
+ARG CCTV_GID=999
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
-    PROCESSOR_ACCEL=nvidia
+    PROCESSOR_ACCEL=nvidia \
+    PROCESSOR_BODY_ACCEL=cpu \
+    LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cufft/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip ffmpeg libgl1 libglib2.0-0 && \
+    python3 python3-pip libglib2.0-0 && \
+    groupadd --gid "${CCTV_GID}" cctv && \
+    useradd --uid "${CCTV_UID}" --gid cctv --home-dir /app --shell /usr/sbin/nologin cctv && \
     ln -sf /usr/bin/python3 /usr/local/bin/python && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY processor/requirements-nvidia.txt ./requirements.txt
 RUN python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-COPY processor/ ./processor/
-COPY cctv_ai/ ./cctv_ai/
+COPY --chown=cctv:cctv processor/ ./processor/
+COPY --chown=cctv:cctv cctv_ai/ ./cctv_ai/
+COPY processor/docker-entrypoint.sh /usr/local/bin/cctv-processor-entrypoint.sh
+RUN mkdir -p /app/processor-runtime /app/media/recordings /app/media/snapshots && \
+    chmod +x /usr/local/bin/cctv-processor-entrypoint.sh && \
+    chown -R cctv:cctv /app
 
+ENTRYPOINT ["cctv-processor-entrypoint.sh"]
 CMD ["python", "-m", "processor.runtime"]

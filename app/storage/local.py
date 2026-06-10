@@ -12,7 +12,12 @@ class LocalStorageBackend(StorageBackend):
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _full_path(self, remote_path: str) -> Path:
-        return self.root / remote_path
+        path = (self.root / str(remote_path or "").lstrip("/\\")).resolve()
+        try:
+            path.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError("Remote path escapes storage root") from exc
+        return path
 
     async def upload(self, remote_path: str, data: bytes) -> None:
         p = self._full_path(remote_path)

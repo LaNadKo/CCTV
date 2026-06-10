@@ -1,8 +1,13 @@
+import asyncio
+import logging
+import time
 from typing import List
 from pathlib import Path
 from datetime import datetime
 
+import cv2
 import httpx
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Query
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
@@ -13,9 +18,20 @@ from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query, get_current_user_optional, get_service_scopes
 from app.permissions import check_permission, user_camera_permission_sync, is_admin
 from app.processor_media import get_processor_by_id, get_processor_media_base_url, get_processor_media_headers
-from app.schemas.detections import DetectionIn, DetectionResponse, EventReviewUpdate, PendingEvent
+from app.schemas.detections import (
+    DetectionIn,
+    DetectionResponse,
+    EventReviewUpdate,
+    PendingEvent,
+    ReviewCandidate,
+)
+from app.vision import extract_best_face_embedding as _extract_best_face_embedding
 
 router = APIRouter(prefix="/detections", tags=["detections"])
+log = logging.getLogger(__name__)
+
+_CANDIDATE_CACHE_TTL_SECONDS = 180.0
+_candidate_cache: dict[int, tuple[float, list[ReviewCandidate]]] = {}
 
 
 async def _find_event_type_id(session: AsyncSession, name: str) -> int:
@@ -24,6 +40,126 @@ async def _find_event_type_id(session: AsyncSession, name: str) -> int:
     if et is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown event type: {name}")
     return et.event_type_id
+
+
+def _person_label(person: models.Person) -> str:
+    parts = [person.last_name, person.first_name, person.middle_name]
+    return " ".join(part for part in parts if part) or f"Персона #{person.person_id}"
+
+
+def _cos_sim(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-6))
+
+
+def _decode_image(data: bytes) -> np.ndarray | None:
+    arr = np.frombuffer(data, dtype=np.uint8)
+    if arr.size == 0:
+        return None
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+async def _read_event_snapshot_bytes(session: AsyncSession, event: models.Event) -> bytes | None:
+    local_snapshot = Path("snapshots").resolve() / f"event_{event.event_id}.jpg"
+    if local_snapshot.exists():
+        try:
+            return local_snapshot.read_bytes()
+        except OSError:
+            return None
+
+    if event.processor_id is None:
+        return None
+    proc = await get_processor_by_id(session, event.processor_id)
+    if proc is None:
+        return None
+    try:
+        url = f"{get_processor_media_base_url(proc)}/media/snapshots/event_{event.event_id}.jpg"
+    except RuntimeError:
+        return None
+    headers = get_processor_media_headers(proc)
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            upstream = await client.get(url, headers=headers)
+        if upstream.status_code < 400:
+            return upstream.content
+    except httpx.HTTPError:
+        return None
+    return None
+
+
+async def _event_candidate_persons(
+    session: AsyncSession,
+    event: models.Event,
+    limit: int = 3,
+) -> list[ReviewCandidate]:
+    limit = max(1, min(limit, 5))
+    cached = _candidate_cache.get(event.event_id)
+    now = time.monotonic()
+    if cached and now - cached[0] <= _CANDIDATE_CACHE_TTL_SECONDS:
+        return cached[1][:limit]
+
+    image_bytes = await _read_event_snapshot_bytes(session, event)
+    if not image_bytes:
+        _candidate_cache[event.event_id] = (now, [])
+        return []
+    image = _decode_image(image_bytes)
+    if image is None:
+        _candidate_cache[event.event_id] = (now, [])
+        return []
+
+    try:
+        emb = await asyncio.to_thread(_extract_best_face_embedding, image)
+    except Exception:
+        log.exception("Local review candidate embedding extraction failed for event=%s", event.event_id)
+        emb = None
+    if emb is None:
+        try:
+            from app.routers.persons import _extract_best_face_embedding_via_processor
+
+            emb = await _extract_best_face_embedding_via_processor(session, image, event.camera_id)
+        except HTTPException as exc:
+            log.warning(
+                "Processor review candidate embedding extraction failed for event=%s detail=%s",
+                event.event_id,
+                exc.detail,
+            )
+            emb = None
+        except Exception:
+            log.exception("Processor review candidate embedding extraction crashed for event=%s", event.event_id)
+            emb = None
+    if emb is None:
+        _candidate_cache[event.event_id] = (now, [])
+        return []
+
+    result = await session.execute(
+        select(models.PersonEmbedding, models.Person)
+        .join(models.Person, models.PersonEmbedding.person_id == models.Person.person_id)
+        .where(models.Person.deleted_at.is_(None))
+    )
+    best_by_person: dict[int, tuple[float, models.Person]] = {}
+    probe = np.asarray(emb, dtype=np.float32)
+    for embedding_row, person in result.all():
+        ref = np.frombuffer(embedding_row.embedding, dtype=np.float32)
+        if ref.size == 0 or ref.shape != probe.shape:
+            continue
+        similarity = _cos_sim(probe, ref)
+        previous = best_by_person.get(person.person_id)
+        if previous is None or similarity > previous[0]:
+            best_by_person[person.person_id] = (similarity, person)
+
+    candidates = [
+        ReviewCandidate(
+            person_id=person.person_id,
+            person_label=_person_label(person),
+            similarity=round(max(0.0, min(similarity, 1.0)), 4),
+            probability=round(max(0.0, min(similarity, 1.0)) * 100.0, 2),
+        )
+        for similarity, person in best_by_person.values()
+        if similarity >= 0.35
+    ]
+    candidates.sort(key=lambda item: item.similarity, reverse=True)
+    candidates = candidates[:5]
+    _candidate_cache[event.event_id] = (now, candidates)
+    return candidates[:limit]
 
 
 async def _notify_admins_for_camera(session: AsyncSession, camera_id: int, event_id: int) -> None:
@@ -182,6 +318,22 @@ async def event_snapshot(
         return FileResponse(local_snapshot, media_type="image/jpeg")
 
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Snapshot not found")
+
+
+@router.get("/events/{event_id}/candidates", response_model=list[ReviewCandidate])
+async def event_candidates(
+    event_id: int,
+    limit: int = Query(default=3, ge=1, le=5),
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+) -> list[ReviewCandidate]:
+    event = await session.get(models.Event, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+    perm = user_camera_permission_sync(current_user)
+    if not check_permission(perm, "control"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review this event")
+    return await _event_candidate_persons(session, event, limit=limit)
 
 
 @router.post("/events/{event_id}/review", response_model=dict)

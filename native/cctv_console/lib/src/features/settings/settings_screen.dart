@@ -1,11 +1,16 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'package:flex_color_picker/flex_color_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/profiles/connection_profiles.dart';
+import '../../core/server/server_features_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/motion.dart';
+import '../../shared/widgets/page_header.dart';
 import '../auth/auth_controller.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -26,15 +31,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    _apiUrlController.dispose();
-    super.dispose();
-  }
-
   Future<void> _saveConnection() async {
     final profiles = context.read<ConnectionProfilesController>();
-    final settings = context.read<ThemeController>();
     final active = profiles.activeProfile;
     final profile = await profiles.saveProfile(
       id: active?.id,
@@ -43,13 +41,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       login: active?.login,
       makeActive: true,
     );
-    await settings.setApiBaseUrl(profile.baseUrl);
+    await context.read<ThemeController>().setApiBaseUrl(profile.baseUrl);
+  }
+
+  @override
+  void dispose() {
+    _apiUrlController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<ThemeController>();
-    final colors = context.colors;
 
     return CustomScrollView(
       slivers: [
@@ -57,18 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Настройки',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Backend, оформление, верхнее меню и плотность Live.',
-                style: TextStyle(color: colors.muted, fontSize: 13),
-              ),
+              const PageHeader(title: 'Настройки', icon: Icons.tune_rounded),
               const SizedBox(height: 16),
             ],
           ),
@@ -80,28 +72,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionTitle(
-                    title: 'Подключение',
-                    subtitle: 'Адрес backend для нативного клиента.',
-                  ),
+                  const _SectionTitle(title: 'Подключение'),
                   const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _apiUrlController,
-                          decoration: const InputDecoration(
-                            labelText: 'Backend URL',
-                            hintText: 'http://127.0.0.1:8001',
-                          ),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final compact = constraints.maxWidth < 560;
+                      final field = TextField(
+                        controller: _apiUrlController,
+                        decoration: const InputDecoration(
+                          labelText: 'Адрес сервера',
+                          hintText: 'http://127.0.0.1:8001',
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      ElevatedButton(
+                      );
+                      final button = ElevatedButton(
                         onPressed: _saveConnection,
                         child: const Text('Сохранить'),
-                      ),
-                    ],
+                      );
+                      if (compact) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            field,
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: button,
+                            ),
+                          ],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(child: field),
+                          const SizedBox(width: 10),
+                          button,
+                        ],
+                      );
+                    },
                   ),
                 ],
               ),
@@ -112,11 +119,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionTitle(
-                    title: 'Оформление',
-                    subtitle:
-                        'Акцентные цвета интерфейса. Тема переключается кнопкой рядом с меню.',
-                  ),
+                  const _SectionTitle(title: 'Оформление'),
                   const SizedBox(height: 14),
                   _PalettePresets(
                     onSelect: settings.setAccentPreset,
@@ -174,11 +177,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionTitle(
-                    title: 'Live',
-                    subtitle:
-                        'Плотность и сетка камер. Порядок карточек меняется на вкладке Live перетаскиванием.',
-                  ),
+                  const _SectionTitle(title: 'Эфир'),
                   const SizedBox(height: 14),
                   Wrap(
                     spacing: 10,
@@ -246,15 +245,20 @@ class _NavigationSettings extends StatelessWidget {
   const _NavigationSettings();
 
   static const _allOptions = [
-    _NavOption('/live', 'Live'),
+    _NavOption('/live', 'Эфир'),
     _NavOption('/recordings', 'Записи'),
     _NavOption('/reviews', 'Ревью', reviewOnly: true),
     _NavOption('/reports', 'Отчёты', reviewOnly: true),
     _NavOption('/cameras', 'Камеры', adminOnly: true),
     _NavOption('/groups', 'Группы'),
     _NavOption('/persons', 'Персоны', adminOnly: true),
-    _NavOption('/processors', 'Processor', adminOnly: true),
-    _NavOption('/setup', 'Setup', adminOnly: true),
+    _NavOption('/processors', 'Процессор', adminOnly: true),
+    _NavOption(
+      '/setup',
+      'Настройка',
+      adminOnly: true,
+      setupOnly: true,
+    ),
     _NavOption('/users', 'Пользователи', adminOnly: true),
     _NavOption('/api-keys', 'API ключи', adminOnly: true),
     _NavOption('/profile', 'Профиль'),
@@ -266,8 +270,10 @@ class _NavigationSettings extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = context.watch<ThemeController>();
     final user = context.watch<AuthController>().user;
+    final features = context.watch<ServerFeaturesController>();
     final colors = context.colors;
     final allowed = _allOptions.where((option) {
+      if (option.setupOnly && !features.setupAvailable) return false;
       if (option.adminOnly) return user?.isAdmin ?? false;
       if (option.reviewOnly) return user?.canReview ?? false;
       return true;
@@ -294,11 +300,7 @@ class _NavigationSettings extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionTitle(
-            title: 'Верхнее меню',
-            subtitle:
-                'До пяти вкладок в шапке. Остальные разделы остаются в меню.',
-          ),
+          const _SectionTitle(title: 'Верхнее меню'),
           const SizedBox(height: 14),
           ReorderableListView.builder(
             shrinkWrap: true,
@@ -477,19 +479,20 @@ class _NavOption {
     this.label, {
     this.adminOnly = false,
     this.reviewOnly = false,
+    this.setupOnly = false,
   });
 
   final String route;
   final String label;
   final bool adminOnly;
   final bool reviewOnly;
+  final bool setupOnly;
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title, required this.subtitle});
+  const _SectionTitle({required this.title});
 
   final String title;
-  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -504,8 +507,6 @@ class _SectionTitle extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        const SizedBox(height: 3),
-        Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
       ],
     );
   }
@@ -525,33 +526,36 @@ class _ChoiceChipButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        gradient: selected
-            ? LinearGradient(
-                colors: [colors.primaryAccent, colors.secondaryAccent],
-              )
-            : null,
-        color: selected ? null : colors.surfaceMuted,
-        border: Border.all(
-          color: selected ? Colors.transparent : colors.border,
-        ),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
+    return PressScale(
+      child: AnimatedContainer(
+        duration: CctvMotion.fast,
+        curve: CctvMotion.curve,
+        decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(999),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Text(
-              label,
-              style: TextStyle(
-                color: selected ? const Color(0xFF07111F) : colors.muted,
-                fontWeight: FontWeight.w800,
-                fontSize: 13,
+          gradient: selected
+              ? LinearGradient(
+                  colors: [colors.primaryAccent, colors.secondaryAccent],
+                )
+              : null,
+          color: selected ? null : colors.surfaceMuted,
+          border: Border.all(
+            color: selected ? Colors.transparent : colors.border,
+          ),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: selected ? const Color(0xFF07111F) : colors.muted,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                ),
               ),
             ),
           ),
@@ -600,19 +604,39 @@ class _PalettePresets extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            for (final preset in _presets)
-              _PalettePresetButton(
-                preset: preset,
-                selected:
-                    preset.primary.toARGB32() == selectedPrimary.toARGB32() &&
-                    preset.secondary.toARGB32() == selectedSecondary.toARGB32(),
-                onTap: () => onSelect(preset.primary, preset.secondary),
-              ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const spacing = 10.0;
+            final maxWidth = constraints.maxWidth;
+            final columns = maxWidth < 520
+                ? 1
+                : maxWidth < 820
+                ? 2
+                : maxWidth < 1160
+                ? 3
+                : 4;
+            final itemWidth =
+                ((maxWidth - spacing * (columns - 1)) / columns)
+                    .clamp(174.0, double.infinity)
+                    .toDouble();
+            return Wrap(
+              spacing: spacing,
+              runSpacing: spacing,
+              children: [
+                for (final preset in _presets)
+                  _PalettePresetButton(
+                    width: itemWidth,
+                    preset: preset,
+                    selected:
+                        preset.primary.toARGB32() ==
+                            selectedPrimary.toARGB32() &&
+                        preset.secondary.toARGB32() ==
+                            selectedSecondary.toARGB32(),
+                    onTap: () => onSelect(preset.primary, preset.secondary),
+                  ),
+              ],
+            );
+          },
         ),
       ],
     );
@@ -621,11 +645,13 @@ class _PalettePresets extends StatelessWidget {
 
 class _PalettePresetButton extends StatelessWidget {
   const _PalettePresetButton({
+    required this.width,
     required this.preset,
     required this.selected,
     required this.onTap,
   });
 
+  final double width;
   final _PalettePreset preset;
   final bool selected;
   final VoidCallback onTap;
@@ -633,59 +659,62 @@ class _PalettePresetButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        width: 174,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          color: colors.surfaceMuted,
-          border: Border.all(
-            color: selected ? colors.primaryAccent : colors.border,
+    return PressScale(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: CctvMotion.fast,
+          curve: CctvMotion.curve,
+          width: width,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            color: colors.surfaceMuted,
+            border: Border.all(
+              color: selected ? colors.primaryAccent : colors.border,
+            ),
           ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _ColorDot(color: preset.primary),
-                Transform.translate(
-                  offset: const Offset(-5, 0),
-                  child: _ColorDot(color: preset.secondary),
-                ),
-                const Spacer(),
-                if (selected)
-                  Icon(
-                    Icons.check_circle_rounded,
-                    color: colors.primaryAccent,
-                    size: 18,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  _ColorDot(color: preset.primary),
+                  Transform.translate(
+                    offset: const Offset(-5, 0),
+                    child: _ColorDot(color: preset.secondary),
                   ),
-              ],
-            ),
-            const SizedBox(height: 9),
-            Text(
-              preset.label,
-              style: TextStyle(
-                color: colors.textStrong,
-                fontSize: 13,
-                fontWeight: FontWeight.w900,
+                  const Spacer(),
+                  if (selected)
+                    Icon(
+                      Icons.check_circle_rounded,
+                      color: colors.primaryAccent,
+                      size: 18,
+                    ),
+                ],
               ),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              height: 26,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(999),
-                gradient: LinearGradient(
-                  colors: [preset.primary, preset.secondary],
+              const SizedBox(height: 9),
+              Text(
+                preset.label,
+                style: TextStyle(
+                  color: colors.textStrong,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Container(
+                height: 26,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  gradient: LinearGradient(
+                    colors: [preset.primary, preset.secondary],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

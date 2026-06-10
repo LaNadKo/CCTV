@@ -13,6 +13,7 @@ class MjpegStreamView extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.placeholder,
     this.errorBuilder,
+    this.onError,
   });
 
   final Uri uri;
@@ -20,6 +21,7 @@ class MjpegStreamView extends StatefulWidget {
   final BoxFit fit;
   final Widget? placeholder;
   final Widget Function(BuildContext context, Object error)? errorBuilder;
+  final ValueChanged<Object>? onError;
 
   @override
   State<MjpegStreamView> createState() => _MjpegStreamViewState();
@@ -32,6 +34,7 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
   Uint8List? _frame;
   Object? _error;
   var _generation = 0;
+  var _retryCount = 0;
 
   @override
   void initState() {
@@ -64,6 +67,7 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
     _client?.close();
     _frame = null;
     _error = null;
+    _retryCount = 0;
     _start();
   }
 
@@ -81,15 +85,13 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
     unawaited(
       client
           .send(request)
+          .timeout(const Duration(seconds: 8))
           .then<void>((response) async {
             if (!mounted || generation != _generation) return;
             if (response.statusCode < 200 || response.statusCode >= 300) {
               final body = await response.stream.bytesToString();
-              throw http.ClientException(
-                body.trim().isEmpty
-                    ? 'HTTP ${response.statusCode}'
-                    : 'HTTP ${response.statusCode}: ${_compactErrorBody(body)}',
-                widget.uri,
+              throw MjpegStreamException(
+                _friendlyHttpError(response.statusCode, body),
               );
             }
             final buffer = <int>[];
@@ -107,6 +109,7 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
                   setState(() {
                     _frame = latestFrame;
                     _error = null;
+                    _retryCount = 0;
                   });
                 }
                 if (buffer.length > 8 * 1024 * 1024) {
@@ -124,9 +127,19 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
 
   void _scheduleRetry(Object error, int generation) {
     if (!mounted || generation != _generation) return;
-    setState(() => _error = error);
+    final visibleError = error is TimeoutException
+        ? const MjpegStreamException(
+            'Поток не ответил за 8 секунд. Проверьте камеру или Процессор.',
+          )
+        : error;
+    setState(() => _error = visibleError);
+    widget.onError?.call(visibleError);
     _retryTimer?.cancel();
-    _retryTimer = Timer(const Duration(seconds: 2), () {
+    _retryCount += 1;
+    final delaySeconds = _retryCount <= 1
+        ? 3
+        : (_retryCount <= 3 ? 10 : 30);
+    _retryTimer = Timer(Duration(seconds: delaySeconds), () {
       if (!mounted || generation != _generation) return;
       unawaited(_subscription?.cancel());
       _client?.close();
@@ -156,6 +169,15 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
     return widget.placeholder ??
         const Center(child: CircularProgressIndicator(strokeWidth: 2));
   }
+}
+
+class MjpegStreamException implements Exception {
+  const MjpegStreamException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 Uint8List? _takeNextJpeg(List<int> buffer) {
@@ -201,4 +223,18 @@ String _compactErrorBody(String body) {
   }
   final compact = body.replaceAll(RegExp(r'\s+'), ' ').trim();
   return compact.length > 240 ? '${compact.substring(0, 240)}...' : compact;
+}
+
+String _friendlyHttpError(int statusCode, String body) {
+  final compact = _compactErrorBody(body);
+  if (statusCode == 503) {
+    return 'Поток сейчас недоступен. Проверьте камеру, назначение Процессора и URL потока.';
+  }
+  if (statusCode == 401 || statusCode == 403) {
+    return 'Нет доступа к потоку. Войдите заново или проверьте права роли.';
+  }
+  if (compact.isEmpty) {
+    return 'Поток вернул HTTP $statusCode.';
+  }
+  return 'Поток вернул HTTP $statusCode: $compact';
 }

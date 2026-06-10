@@ -1,10 +1,14 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/refresh/refresh_bus.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/glass_panel.dart';
+import '../../shared/widgets/page_header.dart';
 import '../auth/auth_controller.dart';
 import '../modules/module_screens.dart'
     show DialogField, cleanBody, confirmAction, textFormDialog;
@@ -27,6 +31,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
   final _password = TextEditingController();
   final _name = TextEditingController();
   final _location = TextEditingController();
+  final _search = TextEditingController();
 
   bool _useHttps = false;
   bool _busy = false;
@@ -38,6 +43,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
   @override
   void initState() {
     super.initState();
+    _search.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
@@ -58,6 +64,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
     _password.dispose();
     _name.dispose();
     _location.dispose();
+    _search.dispose();
     super.dispose();
   }
 
@@ -83,7 +90,16 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
   Future<void> _probeCamera() async {
     final host = _host.text.trim();
     if (host.isEmpty) {
-      _toast('Укажите Host / IP камеры');
+      _toast('Укажите IP-адрес камеры');
+      return;
+    }
+    if (!_isValidIpv4(host)) {
+      _toast('Введите IP-адрес в формате 192.168.1.10');
+      return;
+    }
+    final port = _parsePort(_port.text);
+    if (_port.text.trim().isNotEmpty && port == null) {
+      _toast('Порт должен быть числом от 1 до 65535');
       return;
     }
     await _run(() async {
@@ -96,7 +112,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
           'host': host,
           'username': _emptyToNull(_username.text),
           'password': _emptyToNull(_password.text),
-          'port': int.tryParse(_port.text.trim()),
+          'port': port,
           'use_https': _useHttps,
           'timeout': 6,
         },
@@ -114,21 +130,29 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
       _toast('Сначала выполните определение протоколов');
       return;
     }
+    final endpoints = _mapList(probe['endpoints']);
+    if (endpoints.isEmpty) {
+      _toast(
+        'Endpoint не найден. Если это RTSP-камера без ONVIF, добавьте её вручную с полным RTSP-адресом.',
+      );
+      return;
+    }
     await _run(() async {
       final (api, token) = _deps();
-      final endpoints = _mapList(probe['endpoints']);
       final rtsp = endpoints.cast<Map<String, dynamic>?>().firstWhere(
         (endpoint) => endpoint?['endpoint_kind'] == 'rtsp',
         orElse: () => null,
       );
+      final cameraName =
+          _limitCameraText(_emptyToNull(_name.text) ?? probe['name'] ?? _host.text.trim());
+      final location = _emptyToNull(_location.text);
       await api.postJson(
         '/admin/cameras',
         token: token,
         timeout: _cameraWriteTimeout,
         body: {
-          'name':
-              _emptyToNull(_name.text) ?? probe['name'] ?? _host.text.trim(),
-          'location': _emptyToNull(_location.text),
+          'name': cameraName,
+          'location': location == null ? null : _limitCameraText(location),
           'ip_address': probe['ip_address'] ?? _host.text.trim(),
           'stream_url': rtsp?['endpoint_url'],
           'detection_enabled': true,
@@ -271,7 +295,7 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
       builder: (context) => AlertDialog(
         title: const Text('Удалить камеру?'),
         content: const Text(
-          'Камера будет скрыта из системы и отвязана от Processor.',
+          'Камера будет скрыта из системы и отвязана от Процессора.',
         ),
         actions: [
           TextButton(
@@ -354,7 +378,8 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
     final ptzCount = _cameras
         .where((item) => item['supports_ptz'] == true)
         .length;
-    final cameraSections = _cameraLocationSections(_cameras);
+    final filteredCameras = _filterCameras(_cameras, _search.text);
+    final cameraSections = _cameraLocationSections(filteredCameras);
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -367,8 +392,6 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
               children: [
                 _Header(
                   title: 'Камеры',
-                  subtitle:
-                      'Автоопределение протоколов управления и видеопотока: ONVIF, RTSP, HTTP.',
                   busy: _busy,
                   onRefresh: _load,
                   onManualCreate: _manualCreateCamera,
@@ -382,6 +405,20 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
                     _Metric(label: 'ONVIF', value: '$onvifCount'),
                     _Metric(label: 'PTZ', value: '$ptzCount'),
                   ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _search,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    labelText: 'Поиск по названию, IP или локации',
+                    suffixIcon: _search.text.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: _search.clear,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                  ),
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
@@ -416,6 +453,16 @@ class _CameraManagementScreenState extends State<CameraManagementScreen>
                 padding: const EdgeInsets.all(18),
                 child: Text(
                   'Камеры пока не добавлены.',
+                  style: TextStyle(color: colors.muted),
+                ),
+              ),
+            )
+          else if (filteredCameras.isEmpty)
+            SliverToBoxAdapter(
+              child: GlassPanel(
+                padding: const EdgeInsets.all(18),
+                child: Text(
+                  'Под фильтр камер нет.',
                   style: TextStyle(color: colors.muted),
                 ),
               ),
@@ -460,6 +507,67 @@ class _CameraLocationSection {
   final String label;
   final bool isFallback;
   final List<Map<String, dynamic>> cameras;
+}
+
+List<Map<String, dynamic>> _filterCameras(
+  List<Map<String, dynamic>> cameras,
+  String rawQuery,
+) {
+  final query = rawQuery.trim().toLowerCase();
+  if (query.isEmpty) return cameras;
+  final ipLike = RegExp(r'^[0-9.]+$').hasMatch(query);
+  return cameras.where((camera) {
+    final ip = '${camera['ip_address'] ?? ''}'.toLowerCase();
+    final streamUrl = '${camera['stream_url'] ?? ''}'.toLowerCase();
+    if (ipLike) {
+      return ip.contains(query) || streamUrl.contains(query);
+    }
+    final text =
+        '${camera['name'] ?? ''} ${camera['location'] ?? ''} ${camera['connection_kind'] ?? ''}'
+            .toLowerCase();
+    return _looseCameraContains(text, query);
+  }).toList(growable: false);
+}
+
+bool _looseCameraContains(String text, String query) {
+  if (text.contains(query)) return true;
+  final parts = query
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  if (parts.isEmpty) return true;
+  final words = text.split(RegExp(r'\s+')).where((word) => word.isNotEmpty);
+  return parts.every((part) {
+    if (text.contains(part)) return true;
+    return words.any((word) => _cameraEditDistance(word, part) <= 1);
+  });
+}
+
+int _cameraEditDistance(String a, String b) {
+  if ((a.length - b.length).abs() > 1) return 2;
+  if (a == b) return 0;
+  var i = 0;
+  var j = 0;
+  var edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a.codeUnitAt(i) == b.codeUnitAt(j)) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return edits;
+    if (a.length > b.length) {
+      i++;
+    } else if (b.length > a.length) {
+      j++;
+    } else {
+      i++;
+      j++;
+    }
+  }
+  if (i < a.length || j < b.length) edits++;
+  return edits;
 }
 
 List<_CameraLocationSection> _cameraLocationSections(
@@ -599,11 +707,7 @@ class _DiscoveryPanel extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: _SectionTitle(
-                  title: 'Мастер подключения камеры',
-                  subtitle:
-                      'Поиск ONVIF в сети и probe по IP: определяем управление, поток и PTZ. Проверка некоторых камер может занимать до минуты.',
-                ),
+                child: _SectionTitle(title: 'Мастер подключения камеры'),
               ),
               OutlinedButton.icon(
                 onPressed: busy ? null : onScan,
@@ -621,7 +725,17 @@ class _DiscoveryPanel extends StatelessWidget {
                 width: 210,
                 child: TextField(
                   controller: host,
-                  decoration: const InputDecoration(labelText: 'Host / IP'),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  inputFormatters: [
+                    _Ipv4InputFormatter(),
+                    LengthLimitingTextInputFormatter(15),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'IP адрес камеры',
+                    hintText: '192.168.1.10',
+                  ),
                 ),
               ),
               _SizedField(
@@ -629,7 +743,32 @@ class _DiscoveryPanel extends StatelessWidget {
                 child: TextField(
                   controller: port,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Порт'),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(5),
+                  ],
+                  decoration: InputDecoration(
+                    labelText: 'Порт',
+                    suffixIcon: PopupMenuButton<int>(
+                      tooltip: 'Выбрать стандартный порт',
+                      icon: const Icon(Icons.arrow_drop_down_rounded),
+                      onSelected: (value) => port.text = '$value',
+                      itemBuilder: (context) => [
+                        PopupMenuItem(value: 80, child: Text('ONVIF / HTTP 80')),
+                        PopupMenuItem(value: 2020, child: Text('ONVIF 2020')),
+                        PopupMenuItem(value: 8080, child: Text('HTTP 8080')),
+                        PopupMenuItem(value: 554, child: Text('RTSP 554')),
+                        PopupMenuItem(value: 8554, child: Text('RTSP 8554')),
+                        PopupMenuItem(value: 443, child: Text('HTTPS 443')),
+                        PopupMenuItem(value: 8443, child: Text('HTTPS 8443')),
+                        PopupMenuDivider(),
+                        PopupMenuItem(
+                          enabled: false,
+                          child: Text('Свой порт: введите число'),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
               _SizedField(
@@ -651,14 +790,28 @@ class _DiscoveryPanel extends StatelessWidget {
                 width: 210,
                 child: TextField(
                   controller: name,
-                  decoration: const InputDecoration(labelText: 'Название'),
+                  inputFormatters: [
+                    LengthLimitingTextInputFormatter(64),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Название',
+                    counterText: '',
+                  ),
+                  maxLength: 64,
                 ),
               ),
               _SizedField(
                 width: 210,
                 child: TextField(
                   controller: location,
-                  decoration: const InputDecoration(labelText: 'Локация'),
+                  inputFormatters: [
+                    LengthLimitingTextInputFormatter(64),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Локация',
+                    counterText: '',
+                  ),
+                  maxLength: 64,
                 ),
               ),
               FilterChip(
@@ -887,60 +1040,40 @@ class _CameraCard extends StatelessWidget {
 class _Header extends StatelessWidget {
   const _Header({
     required this.title,
-    required this.subtitle,
     required this.busy,
     required this.onRefresh,
     required this.onManualCreate,
   });
 
   final String title;
-  final String subtitle;
   final bool busy;
   final VoidCallback onRefresh;
   final VoidCallback onManualCreate;
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: colors.textStrong,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: TextStyle(color: colors.muted, fontSize: 13),
-              ),
-            ],
+    return PageHeader(
+      title: title,
+      icon: Icons.videocam_rounded,
+      trailing: PageActions(
+        children: [
+          IconButton.filledTonal(
+            onPressed: busy ? null : onRefresh,
+            icon: busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
           ),
-        ),
-        IconButton.filledTonal(
-          onPressed: busy ? null : onRefresh,
-          icon: busy
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.refresh_rounded),
-        ),
-        const SizedBox(width: 8),
-        ElevatedButton.icon(
-          onPressed: busy ? null : onManualCreate,
-          icon: const Icon(Icons.add_rounded, size: 18),
-          label: const Text('Ручное добавление'),
-        ),
-      ],
+          ElevatedButton.icon(
+            onPressed: busy ? null : onManualCreate,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text('Ручное добавление'),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -982,10 +1115,9 @@ class _Metric extends StatelessWidget {
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title, required this.subtitle});
+  const _SectionTitle({required this.title});
 
   final String title;
-  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -1001,8 +1133,6 @@ class _SectionTitle extends StatelessWidget {
             fontSize: 16,
           ),
         ),
-        const SizedBox(height: 3),
-        Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
       ],
     );
   }
@@ -1518,4 +1648,52 @@ List<Map<String, dynamic>> _parseEndpoints(String value) {
 String? _emptyToNull(String value) {
   final text = value.trim();
   return text.isEmpty ? null : text;
+}
+
+String _limitCameraText(Object? value) {
+  final text = '$value'.trim();
+  return text.length <= 64 ? text : text.substring(0, 64);
+}
+
+int? _parsePort(String value) {
+  final text = value.trim();
+  if (text.isEmpty) return null;
+  final port = int.tryParse(text);
+  if (port == null || port < 1 || port > 65535) return null;
+  return port;
+}
+
+bool _isValidIpv4(String value) {
+  final parts = value.trim().split('.');
+  if (parts.length != 4) return false;
+  for (final part in parts) {
+    if (part.isEmpty || part.length > 3) return false;
+    final number = int.tryParse(part);
+    if (number == null || number < 0 || number > 255) return false;
+  }
+  return true;
+}
+
+class _Ipv4InputFormatter extends TextInputFormatter {
+  const _Ipv4InputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final text = newValue.text;
+    if (text.isEmpty) return newValue;
+    if (!RegExp(r'^[0-9.]*$').hasMatch(text)) return oldValue;
+    if (text.length > 15 || text.contains('..')) return oldValue;
+    final parts = text.split('.');
+    if (parts.length > 4) return oldValue;
+    for (final part in parts) {
+      if (part.length > 3) return oldValue;
+      if (part.isEmpty) continue;
+      final number = int.tryParse(part);
+      if (number == null || number > 255) return oldValue;
+    }
+    return newValue;
+  }
 }

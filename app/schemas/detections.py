@@ -22,6 +22,13 @@ class EventReviewUpdate(BaseModel):
     note: Optional[str] = None
 
 
+class ReviewCandidate(BaseModel):
+    person_id: int
+    person_label: str
+    similarity: float
+    probability: float
+
+
 class PendingEvent(BaseModel):
     event_id: int
     camera_id: int
@@ -34,3 +41,4 @@ class PendingEvent(BaseModel):
     recording_file_id: Optional[int] = None
     confidence: Optional[float] = None
     snapshot_url: Optional[str] = None
+    candidate_persons: List[ReviewCandidate] = Field(default_factory=list)

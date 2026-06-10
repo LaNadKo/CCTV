@@ -33,6 +33,7 @@ LOG_FILE = base_dir() / "processor.log"
 _PROCESSING_BASE_FPS = 24.0
 _MAX_FRAME_INTERVAL_SECONDS = 5.0
 _FRAME_DIVISOR_CHOICES = (1, 2, 4, 8, 16, 32, 64, 120)
+_MIN_FACE_SCAN_DIVISOR = 2
 
 
 def _sanitize_frame_divisor(value: Any, default: int) -> int:
@@ -46,6 +47,11 @@ def _sanitize_frame_divisor(value: Any, default: int) -> int:
         if raw <= candidate:
             return candidate
     return _FRAME_DIVISOR_CHOICES[-1]
+
+
+def _sanitize_face_scan_divisor(value: Any, default: int) -> int:
+    divisor = _sanitize_frame_divisor(value, default)
+    return max(_MIN_FACE_SCAN_DIVISOR, divisor)
 
 
 def _frame_divisor_to_interval(divisor: int) -> float:
@@ -65,15 +71,22 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     if divisor in (None, ""):
         legacy_interval = normalized.get("face_scan_interval", 0.35)
         try:
-            divisor = max(1, int(round(float(legacy_interval) * _PROCESSING_BASE_FPS)))
+            divisor = max(_MIN_FACE_SCAN_DIVISOR, int(round(float(legacy_interval) * _PROCESSING_BASE_FPS)))
         except (TypeError, ValueError):
-            divisor = 8
-    normalized["face_scan_divisor"] = _sanitize_frame_divisor(divisor, 8)
+            divisor = 4
+    normalized["face_scan_divisor"] = _sanitize_face_scan_divisor(divisor, 4)
     normalized["overlay_frame_divisor"] = _sanitize_frame_divisor(
         normalized.get("overlay_frame_divisor", 1),
         1,
     )
     normalized["face_scan_interval"] = _frame_divisor_to_interval(normalized["face_scan_divisor"])
+    try:
+        normalized["antispoof_pending_timeout_seconds"] = min(
+            8.0,
+            max(0.8, float(normalized.get("antispoof_pending_timeout_seconds", 2.8))),
+        )
+    except (TypeError, ValueError):
+        normalized["antispoof_pending_timeout_seconds"] = 2.8
     return normalized
 
 
@@ -91,9 +104,14 @@ def default_config() -> dict[str, Any]:
         "max_workers": 4,
         "processor_accel": "auto",
         "motion_threshold": 25.0,
-        "face_scan_divisor": 8,
+        "face_scan_divisor": 4,
         "overlay_frame_divisor": 1,
         "face_scan_interval": 0.35,
+        "antispoof_model_enabled": True,
+        "antispoof_model_path": "",
+        "antispoof_model_real_threshold": 0.72,
+        "antispoof_model_fake_threshold": 0.72,
+        "antispoof_pending_timeout_seconds": 2.8,
         "theme_primary_color": "#49C8E8",
         "theme_secondary_color": "#4C6FFF",
         "recording_segment_seconds": 60,
@@ -148,6 +166,11 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "FACE_SCAN_DIVISOR": ("face_scan_divisor", "int"),
         "OVERLAY_FRAME_DIVISOR": ("overlay_frame_divisor", "int"),
         "FACE_SCAN_INTERVAL": ("face_scan_interval", "float"),
+        "ANTISPOOF_MODEL_ENABLED": ("antispoof_model_enabled", "bool"),
+        "ANTISPOOF_MODEL_PATH": ("antispoof_model_path", "str"),
+        "ANTISPOOF_MODEL_REAL_THRESHOLD": ("antispoof_model_real_threshold", "float"),
+        "ANTISPOOF_MODEL_FAKE_THRESHOLD": ("antispoof_model_fake_threshold", "float"),
+        "ANTISPOOF_PENDING_TIMEOUT_SECONDS": ("antispoof_pending_timeout_seconds", "float"),
         "RECORDING_SEGMENT_SECONDS": ("recording_segment_seconds", "int"),
         "RECORDINGS_DIR": ("recordings_dir", "str"),
         "SNAPSHOTS_DIR": ("snapshots_dir", "str"),
@@ -180,9 +203,14 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["MAX_WORKERS"] = str(config.get("max_workers", 4))
     os.environ["PROCESSOR_ACCEL"] = str(config.get("processor_accel") or "auto")
     os.environ["MOTION_THRESHOLD"] = str(config.get("motion_threshold", 25.0))
-    os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 8))
+    os.environ["FACE_SCAN_DIVISOR"] = str(normalized.get("face_scan_divisor", 4))
     os.environ["OVERLAY_FRAME_DIVISOR"] = str(normalized.get("overlay_frame_divisor", 1))
     os.environ["FACE_SCAN_INTERVAL"] = str(normalized.get("face_scan_interval", 0.35))
+    os.environ["ANTISPOOF_MODEL_ENABLED"] = "1" if normalized.get("antispoof_model_enabled", True) else "0"
+    os.environ["ANTISPOOF_MODEL_PATH"] = str(config.get("antispoof_model_path") or "")
+    os.environ["ANTISPOOF_MODEL_REAL_THRESHOLD"] = str(normalized.get("antispoof_model_real_threshold", 0.72))
+    os.environ["ANTISPOOF_MODEL_FAKE_THRESHOLD"] = str(normalized.get("antispoof_model_fake_threshold", 0.72))
+    os.environ["ANTISPOOF_PENDING_TIMEOUT_SECONDS"] = str(normalized.get("antispoof_pending_timeout_seconds", 2.8))
     os.environ["RECORDING_SEGMENT_SECONDS"] = str(normalized.get("recording_segment_seconds", 60))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))
@@ -226,7 +254,7 @@ def connect_with_code(config: dict[str, Any], code: str) -> dict[str, Any]:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=15) as response:  # nosec B310
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.reason

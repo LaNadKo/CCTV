@@ -1,9 +1,11 @@
 """FTP storage backend."""
 from __future__ import annotations
 import asyncio
-import ftplib
+# FTPS is default; plain FTP requires explicit operator opt-in.
+import ftplib  # nosec B402
 import io
 import logging
+import ssl
 from pathlib import Path, PurePosixPath
 from app.storage.base import StorageBackend
 
@@ -17,15 +19,35 @@ class FTPStorageBackend(StorageBackend):
         self.username = config.get("username", "anonymous")
         self.password = config.get("password", "")
         self.base_path = config.get("base_path", "/").rstrip("/")
+        self.use_tls = bool(config.get("use_tls", True))
+        self.allow_insecure_ftp = bool(config.get("allow_insecure_ftp", False))
 
     def _connect(self) -> ftplib.FTP:
-        ftp = ftplib.FTP()
+        if self.use_tls:
+            ftp = ftplib.FTP_TLS(context=ssl.create_default_context())
+            ftp.connect(self.host, self.port, timeout=10)
+            ftp.login(self.username, self.password)
+            ftp.prot_p()
+            return ftp
+        if not self.allow_insecure_ftp:
+            raise ValueError("Plain FTP is disabled. Use FTPS or set allow_insecure_ftp=true for a trusted legacy server.")
+        # Only used after explicit allow_insecure_ftp=true.
+        ftp = ftplib.FTP()  # nosec B321
         ftp.connect(self.host, self.port, timeout=10)
         ftp.login(self.username, self.password)
         return ftp
 
     def _remote(self, path: str) -> str:
-        return f"{self.base_path}/{path}" if self.base_path else path
+        raw = str(path or "").replace("\\", "/")
+        parts = [
+            part
+            for part in PurePosixPath(raw).parts
+            if part not in {"", ".", "..", "/"}
+        ]
+        if not parts:
+            raise ValueError("Remote path is empty")
+        clean = "/".join(parts)
+        return f"{self.base_path}/{clean}" if self.base_path else clean
 
     def _ensure_dirs(self, ftp: ftplib.FTP, remote: str):
         parts = PurePosixPath(remote).parent.parts
@@ -110,4 +132,5 @@ class FTPStorageBackend(StorageBackend):
         return await asyncio.to_thread(_do)
 
     async def get_url(self, remote_path: str) -> str | None:
-        return f"ftp://{self.host}:{self.port}{self._remote(remote_path)}"
+        scheme = "ftps" if self.use_tls else "ftp"
+        return f"{scheme}://{self.host}:{self.port}{self._remote(remote_path)}"

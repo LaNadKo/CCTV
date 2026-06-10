@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox
@@ -56,6 +57,11 @@ _THEME_PRESETS: list[tuple[str, str, str]] = [
     ("Signal", "#22C55E", "#14B8A6"),
     ("Ember", "#F97316", "#EF4444"),
 ]
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urllib.parse.urlsplit(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -920,12 +926,15 @@ class ProcessorApp(ctk.CTk):
         if not url:
             self._set_connect_status("Введите адрес сервера.", _THEME["danger"])
             return
+        if not _is_http_url(url):
+            self._set_connect_status("Backend URL must use http:// or https://.", _THEME["danger"])
+            return
         self.conn_test_btn.configure(state="disabled")
         self._set_connect_status("Проверка backend...", _THEME["muted"])
 
         def worker() -> None:
             try:
-                response = urllib.request.urlopen(f"{url}/health", timeout=5)
+                response = urllib.request.urlopen(f"{url}/health", timeout=5)  # nosec B310
                 if response.status == 200:
                     self.after(0, lambda: self._set_connect_status("Сервер доступен и отвечает на /health.", _THEME["success"]))
                 else:
@@ -943,6 +952,9 @@ class ProcessorApp(ctk.CTk):
         name = self.conn_name.get().strip() or socket.gethostname()
         if not url:
             self._set_connect_status("Введите адрес backend.", _THEME["danger"])
+            return
+        if not _is_http_url(url):
+            self._set_connect_status("Backend URL must use http:// or https://.", _THEME["danger"])
             return
         if not code:
             self._set_connect_status("Введите код подключения.", _THEME["danger"])

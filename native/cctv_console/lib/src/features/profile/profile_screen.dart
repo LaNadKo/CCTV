@@ -22,11 +22,6 @@ class ProfileScreen extends StatelessWidget {
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Личные данные, пароль и двухфакторная аутентификация.',
-                style: TextStyle(color: colors.muted, fontSize: 13),
-              ),
               const SizedBox(height: 16),
               const ProfileSecurityPanel(),
               const SizedBox(height: 24),

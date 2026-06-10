@@ -11,12 +11,15 @@ from onvif import ONVIFClient
 logger = logging.getLogger(__name__)
 
 
-def _clamp_unit(value: float | None) -> float:
-    return max(-1.0, min(1.0, float(value or 0.0)))
+PTZ_AUTO_MAX_SPEED = 0.28
+
+
+def _clamp_unit(value: float | None, *, max_abs: float = 1.0) -> float:
+    return max(-max_abs, min(max_abs, float(value or 0.0)))
 
 
 class PIDController:
-    def __init__(self, kp: float = 0.28, kd: float = 0.0, deadzone: float = 0.16):
+    def __init__(self, kp: float = 0.24, kd: float = 0.0, deadzone: float = 0.18):
         self.kp = kp
         self.kd = kd
         self.deadzone = deadzone
@@ -36,9 +39,9 @@ class PIDController:
         output = self.kp * error + self.kd * derivative
         self._prev_error = error
         self._prev_time = now
-        if abs(output) < 0.10:
+        if abs(output) < 0.12:
             return 0.0
-        return max(-0.45, min(0.45, output))
+        return _clamp_unit(output, max_abs=PTZ_AUTO_MAX_SPEED)
 
 
 def _preferred_onvif_endpoint(assignment: dict) -> dict | None:
@@ -101,11 +104,11 @@ class OnvifController:
                 self._client_key = key
         return self._client, profile_token
 
-    def continuous_move(self, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0, timeout_seconds: float = 0.35) -> bool:
+    def continuous_move(self, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0, timeout_seconds: float = 0.25) -> bool:
         client, profile_token = self._get_client()
-        pan = _clamp_unit(pan)
-        tilt = _clamp_unit(tilt)
-        zoom = _clamp_unit(zoom)
+        pan = _clamp_unit(pan, max_abs=PTZ_AUTO_MAX_SPEED)
+        tilt = _clamp_unit(tilt, max_abs=PTZ_AUTO_MAX_SPEED)
+        zoom = _clamp_unit(zoom, max_abs=PTZ_AUTO_MAX_SPEED)
         velocity = {}
         if pan or tilt:
             velocity["PanTilt"] = {"x": pan, "y": tilt}
@@ -113,7 +116,7 @@ class OnvifController:
             velocity["Zoom"] = {"x": zoom}
         if not velocity:
             return self.stop()
-        duration = max(min(float(timeout_seconds or 0.45), 1.0), 0.1)
+        duration = max(min(float(timeout_seconds or 0.25), 0.8), 0.1)
         try:
             client.ptz().ContinuousMove(ProfileToken=profile_token, Velocity=velocity, Timeout=f"PT{duration:.1f}S")
         except Exception:
@@ -137,7 +140,7 @@ class OnvifController:
 
 
 class AutoTracker:
-    def __init__(self, controller: OnvifController, command_interval: float = 0.9, idle_stop_after: float = 0.8):
+    def __init__(self, controller: OnvifController, command_interval: float = 0.75, idle_stop_after: float = 0.8):
         self.controller = controller
         self.command_interval = max(command_interval, 0.1)
         self.idle_stop_after = max(idle_stop_after, 0.5)

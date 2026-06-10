@@ -5,9 +5,9 @@ from datetime import datetime
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import String, case, cast, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -233,11 +233,52 @@ async def create_user(
 
 @router.get("/users", response_model=List[UserOut])
 async def list_users(
+    q: str | None = Query(default=None, max_length=160),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
     current_user: models.User = Depends(get_current_user),
 ) -> List[UserOut]:
     _ensure_admin(current_user)
-    result = await session.execute(select(models.User).order_by(models.User.user_id))
+    stmt = select(models.User).join(models.Role, models.Role.role_id == models.User.role_id)
+    normalized = (q or "").strip().lower()
+    if normalized:
+        identity_text = func.lower(
+            func.coalesce(models.User.login, "")
+            + " "
+            + func.coalesce(models.User.last_name, "")
+            + " "
+            + func.coalesce(models.User.first_name, "")
+            + " "
+            + func.coalesce(models.User.middle_name, "")
+        )
+        role_status_text = func.lower(
+            func.coalesce(models.Role.name, "")
+            + " "
+            + cast(models.User.user_id, String)
+            + " "
+            + case(
+                (models.User.role_id == 1, "администратор"),
+                (models.User.role_id == 2, "оператор пользователь"),
+                else_="смотрящий наблюдатель",
+            )
+            + " "
+            + case(
+                (models.User.must_change_password.is_(True), "требуется смена пароля"),
+                else_="активен",
+            )
+        )
+        stmt = stmt.where(
+            or_(
+                identity_text.contains(normalized),
+                identity_text.op("%")(normalized),
+                func.similarity(identity_text, normalized) >= 0.16,
+                role_status_text.contains(normalized),
+            )
+        ).order_by(func.similarity(identity_text, normalized).desc(), models.User.user_id)
+    else:
+        stmt = stmt.order_by(models.User.user_id)
+    result = await session.execute(stmt.offset(offset).limit(limit))
     return [UserOut.model_validate(user) for user in result.scalars().all()]
 
 

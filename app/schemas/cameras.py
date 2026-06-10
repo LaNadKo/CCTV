@@ -41,6 +41,17 @@ class CameraOut(BaseModel):
         from_attributes = True
 
 
+class CameraStreamSourceOut(BaseModel):
+    kind: str
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class CameraStreamInfoOut(BaseModel):
+    camera_id: int
+    sources: list[CameraStreamSourceOut] = Field(default_factory=list)
+
+
 class CameraPermissionOut(BaseModel):
     camera_id: int
     permission: Optional[str]

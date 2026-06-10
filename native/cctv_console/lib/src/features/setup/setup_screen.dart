@@ -58,16 +58,11 @@ class _SetupScreenState extends State<SetupScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'CCTV Setup',
+                'CCTV Настройка',
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                   color: colors.textStrong,
                   fontWeight: FontWeight.w900,
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Домен, nginx, сертификат и профиль подключения.',
-                style: TextStyle(color: colors.muted, fontSize: 13),
               ),
               const SizedBox(height: 16),
             ],
@@ -80,10 +75,7 @@ class _SetupScreenState extends State<SetupScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionTitle(
-                    title: 'HTTPS',
-                    subtitle: 'Проверьте домен и запустите выпуск сертификата.',
-                  ),
+                  const _SectionTitle(title: 'HTTPS'),
                   const SizedBox(height: 14),
                   compact
                       ? Column(children: _fields(spacing: 10))
@@ -434,10 +426,9 @@ class _SetupScreenState extends State<SetupScreen> {
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title, required this.subtitle});
+  const _SectionTitle({required this.title});
 
   final String title;
-  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -452,8 +443,6 @@ class _SectionTitle extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        const SizedBox(height: 3),
-        Text(subtitle, style: TextStyle(color: colors.muted, fontSize: 13)),
       ],
     );
   }

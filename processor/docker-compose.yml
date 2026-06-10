@@ -37,6 +37,14 @@ x-processor-common: &processor-common
     - ${PROCESSOR_RUNTIME_VOLUME:-processor_runtime}:/app/processor-runtime
   ports:
     - "${MEDIA_BIND:-0.0.0.0}:${MEDIA_PORT:-8777}:${MEDIA_PORT:-8777}"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - SETUID
+    - SETGID
   restart: unless-stopped
   healthcheck:
     test:
