@@ -2143,7 +2143,7 @@ class _ResolvedCameraStreamViewState extends State<_ResolvedCameraStreamView> {
       uri: source.uri,
       headers: {
         ...source.headers,
-        'Authorization': 'Bearer ${widget.token}',
+        ...widget.api.authorizationHeadersFor(source.uri, widget.token),
       },
       fit: widget.fit,
       errorBuilder: widget.errorBuilder,

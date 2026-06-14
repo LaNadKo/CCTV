@@ -14,6 +14,7 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
+from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user
 from app.permissions import is_at_least_user
@@ -831,72 +832,238 @@ async def reports_dashboard(
                 continue
         visible_processors.append(processor)
 
-    event_type_rows = (await session.execute(select(models.EventType))).scalars().all()
-    event_type_map = {event_type.event_type_id: event_type.name for event_type in event_type_rows}
-
+    event_count_by_camera: Counter[int] = Counter()
+    event_count_by_processor: Counter[Optional[int]] = Counter()
+    event_type_counter: Counter[str] = Counter()
+    camera_event_type_counts: dict[int, Counter[str]] = defaultdict(Counter)
+    last_event_by_camera: dict[int, datetime] = {}
     if visible_camera_ids:
-        event_stmt = select(models.Event).where(models.Event.camera_id.in_(visible_camera_ids))
+        event_stats_stmt = (
+            select(
+                models.Event.camera_id,
+                models.Event.processor_id,
+                models.Event.event_type_id,
+                models.EventType.name,
+                func.count(models.Event.event_id),
+                func.max(models.Event.event_ts),
+            )
+            .join(models.EventType, models.Event.event_type_id == models.EventType.event_type_id)
+            .where(models.Event.camera_id.in_(visible_camera_ids))
+            .group_by(
+                models.Event.camera_id,
+                models.Event.processor_id,
+                models.Event.event_type_id,
+                models.EventType.name,
+            )
+        )
     else:
-        event_stmt = select(models.Event).where(models.Event.event_id == -1)
-    event_stmt = event_stmt.order_by(models.Event.event_ts.desc())
-    if date_from_dt:
-        event_stmt = event_stmt.where(models.Event.event_ts >= date_from_dt)
-    if date_to_dt:
-        event_stmt = event_stmt.where(models.Event.event_ts <= date_to_dt)
-    if processor_filter_ids is not None:
-        event_stmt = event_stmt.where(models.Event.processor_id.in_(processor_filter_ids))
-    if person_filter_ids is not None:
-        event_stmt = event_stmt.where(models.Event.person_id.in_(person_filter_ids))
-    events = (await session.execute(event_stmt)).scalars().all()
-    event_ids = [event.event_id for event in events]
+        event_stats_stmt = None
+    if event_stats_stmt is not None:
+        if date_from_dt:
+            event_stats_stmt = event_stats_stmt.where(models.Event.event_ts >= date_from_dt)
+        if date_to_dt:
+            event_stats_stmt = event_stats_stmt.where(models.Event.event_ts <= date_to_dt)
+        if processor_filter_ids is not None:
+            event_stats_stmt = event_stats_stmt.where(models.Event.processor_id.in_(processor_filter_ids))
+        if person_filter_ids is not None:
+            event_stats_stmt = event_stats_stmt.where(models.Event.person_id.in_(person_filter_ids))
+        for camera_id, processor_id_value, event_type_id, event_type_name, row_count, last_event_ts in (await session.execute(event_stats_stmt)).all():
+            count = int(row_count or 0)
+            event_name = event_type_name or f"type:{event_type_id}"
+            camera_id_value = int(camera_id)
+            event_count_by_camera[camera_id_value] += count
+            event_count_by_processor[processor_id_value] += count
+            event_type_counter[event_name] += count
+            camera_event_type_counts[camera_id_value][event_name] += count
+            current_last = last_event_by_camera.get(camera_id_value)
+            if last_event_ts is not None and (current_last is None or last_event_ts > current_last):
+                last_event_by_camera[camera_id_value] = last_event_ts
 
-    review_rows: list[models.EventReview] = []
-    if event_ids:
-        review_rows = (
+    review_rows_recent: list[models.EventReview] = []
+    pending_reviews_by_camera: Counter[int] = Counter()
+    review_status_counter: Counter[str] = Counter()
+    reviewer_counter: dict[Optional[int], Counter[str]] = defaultdict(Counter)
+    review_duration_sum = 0.0
+    review_duration_count = 0
+    if visible_camera_ids:
+        review_filters = [models.Event.camera_id.in_(visible_camera_ids)]
+        if date_from_dt:
+            review_filters.append(models.Event.event_ts >= date_from_dt)
+        if date_to_dt:
+            review_filters.append(models.Event.event_ts <= date_to_dt)
+        if processor_filter_ids is not None:
+            review_filters.append(models.Event.processor_id.in_(processor_filter_ids))
+        if person_filter_ids is not None:
+            review_filters.append(models.Event.person_id.in_(person_filter_ids))
+        review_status_rows = (
+            await session.execute(
+                select(
+                    models.EventReview.status,
+                    func.count(models.EventReview.event_review_id),
+                    func.avg(
+                        func.extract(
+                            "epoch",
+                            models.EventReview.updated_at - models.EventReview.created_at,
+                        )
+                    ),
+                )
+                .join(models.Event, models.EventReview.event_id == models.Event.event_id)
+                .where(*review_filters)
+                .group_by(models.EventReview.status)
+            )
+        ).all()
+        for review_status, row_count, avg_duration in review_status_rows:
+            count = int(row_count or 0)
+            review_status_counter[review_status] += count
+            if review_status != "pending" and avg_duration is not None:
+                review_duration_sum += float(avg_duration) * count
+                review_duration_count += count
+        reviewer_rows = (
+            await session.execute(
+                select(
+                    models.EventReview.reviewer_user_id,
+                    models.EventReview.status,
+                    func.count(models.EventReview.event_review_id),
+                )
+                .join(models.Event, models.EventReview.event_id == models.Event.event_id)
+                .where(*review_filters)
+                .group_by(models.EventReview.reviewer_user_id, models.EventReview.status)
+            )
+        ).all()
+        for reviewer_user_id, review_status, row_count in reviewer_rows:
+            reviewer_counter[reviewer_user_id][review_status] += int(row_count or 0)
+        pending_camera_rows = (
+            await session.execute(
+                select(models.Event.camera_id, func.count(models.EventReview.event_review_id))
+                .join(models.Event, models.EventReview.event_id == models.Event.event_id)
+                .where(*review_filters, models.EventReview.status == "pending")
+                .group_by(models.Event.camera_id)
+            )
+        ).all()
+        for review_camera_id, row_count in pending_camera_rows:
+            pending_reviews_by_camera[int(review_camera_id)] += int(row_count or 0)
+        review_rows_recent = (
             await session.execute(
                 select(models.EventReview)
-                .where(models.EventReview.event_id.in_(event_ids))
+                .join(models.Event, models.EventReview.event_id == models.Event.event_id)
+                .where(*review_filters)
                 .order_by(models.EventReview.updated_at.desc())
+                .limit(10)
             )
         ).scalars().all()
-    reviews_by_event_id = {review.event_id: review for review in review_rows}
-
-    auth_stmt = select(models.AuthEvent).order_by(models.AuthEvent.occurred_at.desc())
+    auth_filters = []
     if date_from_dt:
-        auth_stmt = auth_stmt.where(models.AuthEvent.occurred_at >= date_from_dt)
+        auth_filters.append(models.AuthEvent.occurred_at >= date_from_dt)
     if date_to_dt:
-        auth_stmt = auth_stmt.where(models.AuthEvent.occurred_at <= date_to_dt)
+        auth_filters.append(models.AuthEvent.occurred_at <= date_to_dt)
     if user_filter_ids is not None:
-        auth_stmt = auth_stmt.where(models.AuthEvent.user_id.in_(user_filter_ids))
-    auth_events = (await session.execute(auth_stmt)).scalars().all()
-
-    audit_stmt = select(models.AuditLog).order_by(models.AuditLog.changed_at.desc())
-    if date_from_dt:
-        audit_stmt = audit_stmt.where(models.AuditLog.changed_at >= date_from_dt)
-    if date_to_dt:
-        audit_stmt = audit_stmt.where(models.AuditLog.changed_at <= date_to_dt)
-    if user_filter_ids is not None:
-        audit_stmt = audit_stmt.where(models.AuditLog.changed_by.in_(user_filter_ids))
-    audit_logs = (await session.execute(audit_stmt)).scalars().all()
-
-    recording_rows = (
+        auth_filters.append(models.AuthEvent.user_id.in_(user_filter_ids))
+    auth_recent_stmt = select(models.AuthEvent).where(*auth_filters).order_by(models.AuthEvent.occurred_at.desc()).limit(10)
+    auth_events_recent = (await session.execute(auth_recent_stmt)).scalars().all()
+    auth_failure_recent_stmt = (
+        select(models.AuthEvent)
+        .where(*auth_filters, models.AuthEvent.success.is_(False))
+        .order_by(models.AuthEvent.occurred_at.desc())
+        .limit(10)
+    )
+    auth_failures_recent = (await session.execute(auth_failure_recent_stmt)).scalars().all()
+    auth_count_rows = (
         await session.execute(
-            select(models.RecordingFile, models.VideoStream, models.StorageTarget)
-            .join(models.VideoStream, models.RecordingFile.video_stream_id == models.VideoStream.video_stream_id)
-            .join(models.StorageTarget, models.RecordingFile.storage_target_id == models.StorageTarget.storage_target_id)
-            .order_by(models.RecordingFile.started_at.desc())
+            select(models.AuthEvent.user_id, models.AuthEvent.success, func.count(models.AuthEvent.auth_event_id))
+            .where(*auth_filters)
+            .group_by(models.AuthEvent.user_id, models.AuthEvent.success)
         )
     ).all()
 
-    visible_recordings = []
-    for recording, stream, storage_target in recording_rows:
-        if stream.camera_id not in visible_camera_ids:
-            continue
-        if date_from_dt and recording.started_at < date_from_dt:
-            continue
-        if date_to_dt and recording.started_at > date_to_dt:
-            continue
-        visible_recordings.append((recording, stream, storage_target))
+    audit_filters = []
+    if date_from_dt:
+        audit_filters.append(models.AuditLog.changed_at >= date_from_dt)
+    if date_to_dt:
+        audit_filters.append(models.AuditLog.changed_at <= date_to_dt)
+    if user_filter_ids is not None:
+        audit_filters.append(models.AuditLog.changed_by.in_(user_filter_ids))
+    audit_recent_stmt = select(models.AuditLog).where(*audit_filters).order_by(models.AuditLog.changed_at.desc()).limit(10)
+    audit_logs_recent = (await session.execute(audit_recent_stmt)).scalars().all()
+    audit_count_rows = (
+        await session.execute(
+            select(models.AuditLog.changed_by, func.count(models.AuditLog.audit_id))
+            .where(*audit_filters)
+            .group_by(models.AuditLog.changed_by)
+        )
+    ).all()
+
+    recordings_by_camera: dict[int, dict[str, object]] = defaultdict(lambda: {"count": 0, "bytes": 0, "last": None})
+    recordings_by_storage: dict[int, dict[str, object]] = defaultdict(lambda: {"count": 0, "bytes": 0, "name": ""})
+    total_recording_files = 0
+    total_recording_bytes = 0
+    video_files = 0
+    snapshot_files = 0
+    if visible_camera_ids:
+        recording_filters = [models.VideoStream.camera_id.in_(visible_camera_ids)]
+        if date_from_dt:
+            recording_filters.append(models.RecordingFile.started_at >= date_from_dt)
+        if date_to_dt:
+            recording_filters.append(models.RecordingFile.started_at <= date_to_dt)
+
+        recording_camera_rows = (
+            await session.execute(
+                select(
+                    models.VideoStream.camera_id,
+                    func.count(models.RecordingFile.recording_file_id),
+                    func.coalesce(func.sum(models.RecordingFile.file_size_bytes), 0),
+                    func.max(models.RecordingFile.started_at),
+                )
+                .join(models.VideoStream, models.RecordingFile.video_stream_id == models.VideoStream.video_stream_id)
+                .where(*recording_filters)
+                .group_by(models.VideoStream.camera_id)
+            )
+        ).all()
+        for camera_id, row_count, row_bytes, last_recording_at in recording_camera_rows:
+            bucket = recordings_by_camera[int(camera_id)]
+            bucket["count"] = int(row_count or 0)
+            bucket["bytes"] = _safe_int(row_bytes)
+            bucket["last"] = last_recording_at
+
+        recording_storage_rows = (
+            await session.execute(
+                select(
+                    models.StorageTarget.storage_target_id,
+                    models.StorageTarget.name,
+                    func.count(models.RecordingFile.recording_file_id),
+                    func.coalesce(func.sum(models.RecordingFile.file_size_bytes), 0),
+                )
+                .join(models.VideoStream, models.RecordingFile.video_stream_id == models.VideoStream.video_stream_id)
+                .join(models.StorageTarget, models.RecordingFile.storage_target_id == models.StorageTarget.storage_target_id)
+                .where(*recording_filters)
+                .group_by(models.StorageTarget.storage_target_id, models.StorageTarget.name)
+            )
+        ).all()
+        for storage_id, storage_name, row_count, row_bytes in recording_storage_rows:
+            bucket = recordings_by_storage[int(storage_id)]
+            bucket["count"] = int(row_count or 0)
+            bucket["bytes"] = _safe_int(row_bytes)
+            bucket["name"] = storage_name
+
+        recording_kind_rows = (
+            await session.execute(
+                select(
+                    models.RecordingFile.file_kind,
+                    func.count(models.RecordingFile.recording_file_id),
+                    func.coalesce(func.sum(models.RecordingFile.file_size_bytes), 0),
+                )
+                .join(models.VideoStream, models.RecordingFile.video_stream_id == models.VideoStream.video_stream_id)
+                .where(*recording_filters)
+                .group_by(models.RecordingFile.file_kind)
+            )
+        ).all()
+        for file_kind, row_count, row_bytes in recording_kind_rows:
+            count = int(row_count or 0)
+            total_recording_files += count
+            total_recording_bytes += _safe_int(row_bytes)
+            if file_kind == "video":
+                video_files += count
+            elif file_kind == "snapshot":
+                snapshot_files += count
 
     mfa_rows = (
         await session.execute(
@@ -910,19 +1077,34 @@ async def reports_dashboard(
     api_keys = (await session.execute(select(models.ApiKey))).scalars().all()
 
     user_stat_map: dict[Optional[int], dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for item in audit_logs:
-        user_stat_map[item.changed_by]["audit_actions"] += 1
-        user_stat_map[item.changed_by]["total_actions"] += 1
-    for item in auth_events:
-        if item.success:
-            user_stat_map[item.user_id]["auth_success"] += 1
+    active_user_ids: set[int] = set()
+    total_audit_actions = 0
+    for changed_by, row_count in audit_count_rows:
+        count = int(row_count or 0)
+        user_stat_map[changed_by]["audit_actions"] += count
+        user_stat_map[changed_by]["total_actions"] += count
+        total_audit_actions += count
+        if changed_by is not None:
+            active_user_ids.add(int(changed_by))
+    successful_logins = 0
+    failed_logins = 0
+    for auth_user_id, auth_success, row_count in auth_count_rows:
+        count = int(row_count or 0)
+        if auth_success:
+            user_stat_map[auth_user_id]["auth_success"] += count
+            successful_logins += count
         else:
-            user_stat_map[item.user_id]["auth_failures"] += 1
-        user_stat_map[item.user_id]["total_actions"] += 1
-    for review in review_rows:
-        if review.reviewer_user_id is not None:
-            user_stat_map[review.reviewer_user_id]["review_actions"] += 1
-            user_stat_map[review.reviewer_user_id]["total_actions"] += 1
+            user_stat_map[auth_user_id]["auth_failures"] += count
+            failed_logins += count
+        user_stat_map[auth_user_id]["total_actions"] += count
+        if auth_user_id is not None:
+            active_user_ids.add(int(auth_user_id))
+    for reviewer_user_id, stats in reviewer_counter.items():
+        if reviewer_user_id is not None:
+            review_count = sum(stats.values())
+            user_stat_map[reviewer_user_id]["review_actions"] += review_count
+            user_stat_map[reviewer_user_id]["total_actions"] += review_count
+            active_user_ids.add(int(reviewer_user_id))
 
     top_users = sorted(
         [
@@ -942,7 +1124,7 @@ async def reports_dashboard(
     )[:10]
 
     recent_actions: list[RecentUserAction] = []
-    for item in audit_logs[:10]:
+    for item in audit_logs_recent:
         recent_actions.append(
             RecentUserAction(
                 action_kind="audit",
@@ -954,7 +1136,7 @@ async def reports_dashboard(
                 source_ip=item.source_ip,
             )
         )
-    for item in auth_events[:10]:
+    for item in auth_events_recent:
         recent_actions.append(
             RecentUserAction(
                 action_kind="auth",
@@ -967,7 +1149,7 @@ async def reports_dashboard(
                 source_ip=item.source_ip,
             )
         )
-    for item in review_rows[:10]:
+    for item in review_rows_recent:
         recent_actions.append(
             RecentUserAction(
                 action_kind="review",
@@ -981,70 +1163,21 @@ async def reports_dashboard(
     recent_actions.sort(key=lambda item: item.occurred_at, reverse=True)
     recent_actions = recent_actions[:15]
 
-    events_by_camera: dict[int, list[models.Event]] = defaultdict(list)
-    events_by_processor: dict[Optional[int], list[models.Event]] = defaultdict(list)
-    event_type_counter: Counter[str] = Counter()
-    recognized_events = 0
-    unknown_events = 0
-    motion_events = 0
-    person_events = 0
-    for event in events:
-        events_by_camera[event.camera_id].append(event)
-        events_by_processor[event.processor_id].append(event)
-        event_name = event_type_map.get(event.event_type_id, f"type:{event.event_type_id}")
-        event_type_counter[event_name] += 1
-        if event_name == "face_recognized":
-            recognized_events += 1
-        elif event_name == "face_unknown":
-            unknown_events += 1
-        elif "motion" in event_name:
-            motion_events += 1
-        elif "person" in event_name:
-            person_events += 1
+    recognized_events = event_type_counter.get("face_recognized", 0)
+    unknown_events = event_type_counter.get("face_unknown", 0)
+    motion_events = sum(count for event_name, count in event_type_counter.items() if "motion" in event_name)
+    person_events = sum(count for event_name, count in event_type_counter.items() if "person" in event_name)
 
-    pending_reviews = sum(1 for review in review_rows if review.status == "pending")
-    approved_reviews = sum(1 for review in review_rows if review.status == "approved")
-    rejected_reviews = sum(1 for review in review_rows if review.status == "rejected")
-
-    reviewer_counter: dict[Optional[int], Counter[str]] = defaultdict(Counter)
-    review_durations: list[float] = []
-    for review in review_rows:
-        reviewer_counter[review.reviewer_user_id][review.status] += 1
-        if review.status != "pending":
-            review_durations.append(max((review.updated_at - review.created_at).total_seconds(), 0))
-
-    recordings_by_camera: dict[int, dict[str, object]] = defaultdict(lambda: {"count": 0, "bytes": 0, "last": None})
-    recordings_by_storage: dict[int, dict[str, object]] = defaultdict(lambda: {"count": 0, "bytes": 0, "name": ""})
-    video_files = 0
-    snapshot_files = 0
-    for recording, stream, storage_target in visible_recordings:
-        camera_bucket = recordings_by_camera[stream.camera_id]
-        camera_bucket["count"] = int(camera_bucket["count"]) + 1
-        camera_bucket["bytes"] = int(camera_bucket["bytes"]) + _safe_int(recording.file_size_bytes)
-        last_seen = camera_bucket["last"]
-        if last_seen is None or (recording.started_at and recording.started_at > last_seen):
-            camera_bucket["last"] = recording.started_at
-
-        storage_bucket = recordings_by_storage[storage_target.storage_target_id]
-        storage_bucket["count"] = int(storage_bucket["count"]) + 1
-        storage_bucket["bytes"] = int(storage_bucket["bytes"]) + _safe_int(recording.file_size_bytes)
-        storage_bucket["name"] = storage_target.name
-
-        if recording.file_kind == "video":
-            video_files += 1
-        elif recording.file_kind == "snapshot":
-            snapshot_files += 1
+    pending_reviews = review_status_counter.get("pending", 0)
+    approved_reviews = review_status_counter.get("approved", 0)
+    rejected_reviews = review_status_counter.get("rejected", 0)
 
     user_actions_report = UserActionsReport(
-        active_users=len(
-            {item.user_id for item in auth_events if item.user_id is not None}
-            | {item.changed_by for item in audit_logs if item.changed_by is not None}
-            | {item.reviewer_user_id for item in review_rows if item.reviewer_user_id is not None}
-        ),
-        total_audit_actions=len(audit_logs),
-        total_auth_events=len(auth_events),
-        failed_auth_events=sum(1 for item in auth_events if not item.success),
-        review_actions=sum(1 for item in review_rows if item.reviewer_user_id is not None),
+        active_users=len(active_user_ids),
+        total_audit_actions=total_audit_actions,
+        total_auth_events=successful_logins + failed_logins,
+        failed_auth_events=failed_logins,
+        review_actions=sum(sum(stats.values()) for reviewer_id, stats in reviewer_counter.items() if reviewer_id is not None),
         totp_enabled_users=sum(1 for user in filtered_users if user.user_id in totp_user_ids),
         top_users=top_users,
         recent_actions=recent_actions,
@@ -1065,19 +1198,9 @@ async def reports_dashboard(
                 camera_count=len(group_camera_ids),
                 online_cameras=online_camera_ids,
                 offline_cameras=max(len(group_camera_ids) - online_camera_ids, 0),
-                event_count=sum(len(events_by_camera.get(cid, [])) for cid in group_camera_ids),
-                recognized_count=sum(
-                    1
-                    for cid in group_camera_ids
-                    for event in events_by_camera.get(cid, [])
-                    if event_type_map.get(event.event_type_id) == "face_recognized"
-                ),
-                pending_reviews=sum(
-                    1
-                    for cid in group_camera_ids
-                    for event in events_by_camera.get(cid, [])
-                    if reviews_by_event_id.get(event.event_id) and reviews_by_event_id[event.event_id].status == "pending"
-                ),
+                event_count=sum(event_count_by_camera.get(cid, 0) for cid in group_camera_ids),
+                recognized_count=sum(camera_event_type_counts[cid].get("face_recognized", 0) for cid in group_camera_ids),
+                pending_reviews=sum(pending_reviews_by_camera.get(cid, 0) for cid in group_camera_ids),
                 recordings_count=sum(int(recordings_by_camera[cid]["count"]) for cid in group_camera_ids),
                 recordings_size_bytes=sum(int(recordings_by_camera[cid]["bytes"]) for cid in group_camera_ids),
             )
@@ -1090,8 +1213,8 @@ async def reports_dashboard(
             for pid in camera_to_processor_ids.get(camera.camera_id, [])
             if pid in processors_by_id
         ]
-        camera_events = events_by_camera.get(camera.camera_id, [])
-        last_event = max((event.event_ts for event in camera_events), default=None)
+        camera_event_counts = camera_event_type_counts[camera.camera_id]
+        last_event = last_event_by_camera.get(camera.camera_id)
         camera_items.append(
             CameraReportItem(
                 camera_id=camera.camera_id,
@@ -1107,15 +1230,11 @@ async def reports_dashboard(
                     for pid in camera_to_processor_ids.get(camera.camera_id, [])
                     if pid in processors_by_id
                 ),
-                event_count=len(camera_events),
-                recognized_count=sum(1 for event in camera_events if event_type_map.get(event.event_type_id) == "face_recognized"),
-                unknown_count=sum(1 for event in camera_events if event_type_map.get(event.event_type_id) == "face_unknown"),
-                motion_count=sum(1 for event in camera_events if "motion" in event_type_map.get(event.event_type_id, "")),
-                pending_reviews=sum(
-                    1
-                    for event in camera_events
-                    if reviews_by_event_id.get(event.event_id) and reviews_by_event_id[event.event_id].status == "pending"
-                ),
+                event_count=event_count_by_camera.get(camera.camera_id, 0),
+                recognized_count=camera_event_counts.get("face_recognized", 0),
+                unknown_count=camera_event_counts.get("face_unknown", 0),
+                motion_count=sum(count for event_name, count in camera_event_counts.items() if "motion" in event_name),
+                pending_reviews=pending_reviews_by_camera.get(camera.camera_id, 0),
                 recordings_count=int(recordings_by_camera[camera.camera_id]["count"]),
                 recordings_size_bytes=int(recordings_by_camera[camera.camera_id]["bytes"]),
                 last_event_ts=_format_iso(last_event),
@@ -1136,7 +1255,7 @@ async def reports_dashboard(
                 version=processor.version,
                 last_heartbeat=_format_iso(processor.last_heartbeat),
                 assigned_cameras=len(assigned_camera_ids),
-                event_count=len(events_by_processor.get(processor.processor_id, [])),
+                event_count=event_count_by_processor.get(processor.processor_id, 0),
                 recordings_count=sum(int(recordings_by_camera[cid]["count"]) for cid in assigned_camera_ids),
                 cpu_percent=metrics.get("cpu_percent"),
                 ram_percent=metrics.get("ram_percent"),
@@ -1198,12 +1317,8 @@ async def reports_dashboard(
             reason=item.reason,
             source_ip=item.source_ip,
         )
-        for item in auth_events
-        if not item.success
-    ][:10]
-
-    successful_logins = sum(1 for item in auth_events if item.success)
-    failed_logins = sum(1 for item in auth_events if not item.success)
+        for item in auth_failures_recent
+    ]
     totp_enabled_filtered = sum(1 for user in filtered_users if user.user_id in totp_user_ids)
 
     return ReportsDashboard(
@@ -1225,7 +1340,7 @@ async def reports_dashboard(
         cameras=sorted(camera_items, key=lambda item: (-item.event_count, item.name)),
         processors=sorted(processor_items, key=lambda item: (-item.assigned_cameras, item.name)),
         events=EventReviewReport(
-            total_events=len(events),
+            total_events=sum(event_type_counter.values()),
             recognized_events=recognized_events,
             unknown_events=unknown_events,
             motion_events=motion_events,
@@ -1233,13 +1348,13 @@ async def reports_dashboard(
             pending_reviews=pending_reviews,
             approved_reviews=approved_reviews,
             rejected_reviews=rejected_reviews,
-            average_review_seconds=round(sum(review_durations) / len(review_durations), 2) if review_durations else None,
+            average_review_seconds=round(review_duration_sum / review_duration_count, 2) if review_duration_count else None,
             events_by_type=[ReportValueLabel(label=label, value=value) for label, value in event_type_counter.most_common()],
             top_reviewers=top_reviewers,
         ),
         archive=ArchiveReport(
-            total_files=len(visible_recordings),
-            total_bytes=sum(_safe_int(recording.file_size_bytes) for recording, _, _ in visible_recordings),
+            total_files=total_recording_files,
+            total_bytes=total_recording_bytes,
             video_files=video_files,
             snapshot_files=snapshot_files,
             by_camera=archive_by_camera,
@@ -1373,10 +1488,18 @@ async def appearances_report_export(
         person_id=person_id,
         person_ids=person_ids,
         query=None,
-        limit=None,
+        limit=settings.report_export_max_rows + 1,
         offset=0,
         session=session,
     )
+    if len(items) > settings.report_export_max_rows:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Report export is limited to {settings.report_export_max_rows} rows. "
+                "Narrow the period or filters."
+            ),
+        )
 
     period = _format_period(date_from_value, date_to_value)
     subject = person_label or "Все персоны"

@@ -44,9 +44,31 @@ class ApiClient {
     : _client = client ?? http.Client();
 
   static const _requestTimeout = Duration(seconds: 20);
+  static const _maxDownloadErrorBytes = 64 * 1024;
 
   final String Function() baseUrlProvider;
   final http.Client _client;
+
+  bool isBackendOrigin(Uri candidate) {
+    final base = Uri.tryParse(baseUrlProvider().trim());
+    if (base == null || !base.hasScheme || base.host.isEmpty) return false;
+    if (candidate.scheme != 'http' && candidate.scheme != 'https') return false;
+    return candidate.scheme == base.scheme &&
+        candidate.host.toLowerCase() == base.host.toLowerCase() &&
+        candidate.port == base.port;
+  }
+
+  Map<String, String> authorizationHeadersFor(Uri candidate, String? token) {
+    if (token == null || token.isEmpty || !isBackendOrigin(candidate)) {
+      return const {};
+    }
+    return {'Authorization': 'Bearer $token'};
+  }
+
+  Map<String, String> mediaAuthorizationHeaders(String? mediaToken) {
+    if (mediaToken == null || mediaToken.isEmpty) return const {};
+    return {'Authorization': 'Bearer $mediaToken'};
+  }
 
   Uri uri(String path, [Map<String, String?> query = const {}]) {
     final cleanBase = baseUrlProvider().replaceAll(RegExp(r'/+$'), '');
@@ -168,31 +190,39 @@ class ApiClient {
     Map<String, String?> query = const {},
     required String filename,
   }) async {
-    late http.Response response;
+    late http.StreamedResponse response;
     try {
-      response = await _client
-          .get(
-            uri(path, query),
-            headers: {
-              'Accept': 'application/octet-stream',
-              'Authorization': 'Bearer $token',
-            },
-          )
-          .timeout(const Duration(seconds: 120));
+      final request = http.Request('GET', uri(path, query))
+        ..headers.addAll({
+          'Accept': 'application/octet-stream',
+          'Authorization': 'Bearer $token',
+        });
+      response = await _client.send(request).timeout(const Duration(seconds: 120));
     } catch (_) {
       throw ApiException(
         'Не удалось скачать файл с backend (${baseUrlProvider()})',
       );
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(_readError(response), statusCode: response.statusCode);
+      throw ApiException(
+        await _readStreamedError(response),
+        statusCode: response.statusCode,
+      );
     }
     final directory = await _downloadDirectory();
     await directory.create(recursive: true);
     final safeName = filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final file = File('${directory.path}${Platform.pathSeparator}$safeName');
-    await file.writeAsBytes(response.bodyBytes, flush: true);
-    return file;
+    final tempFile = File('${file.path}.part');
+    try {
+      await response.stream.timeout(const Duration(seconds: 120)).pipe(tempFile.openWrite());
+      return await _replaceWithDownloadedFile(tempFile, file);
+    } catch (_) {
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+      throw ApiException('Download failed (${baseUrlProvider()})');
+    }
   }
 
   Future<File> downloadFileWithQuery(
@@ -201,31 +231,84 @@ class ApiClient {
     Iterable<MapEntry<String, String?>> query = const [],
     required String filename,
   }) async {
-    late http.Response response;
+    late http.StreamedResponse response;
     try {
-      response = await _client
-          .get(
-            uriWithQuery(path, query),
-            headers: {
-              'Accept': 'application/octet-stream',
-              'Authorization': 'Bearer $token',
-            },
-          )
-          .timeout(const Duration(seconds: 120));
+      final request = http.Request('GET', uriWithQuery(path, query))
+        ..headers.addAll({
+          'Accept': 'application/octet-stream',
+          'Authorization': 'Bearer $token',
+        });
+      response = await _client.send(request).timeout(const Duration(seconds: 120));
     } catch (_) {
       throw ApiException(
         'Не удалось скачать файл с backend (${baseUrlProvider()})',
       );
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(_readError(response), statusCode: response.statusCode);
+      throw ApiException(
+        await _readStreamedError(response),
+        statusCode: response.statusCode,
+      );
     }
     final directory = await _downloadDirectory();
     await directory.create(recursive: true);
     final safeName = filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final file = File('${directory.path}${Platform.pathSeparator}$safeName');
-    await file.writeAsBytes(response.bodyBytes, flush: true);
-    return file;
+    final tempFile = File('${file.path}.part');
+    try {
+      await response.stream.timeout(const Duration(seconds: 120)).pipe(tempFile.openWrite());
+      return await _replaceWithDownloadedFile(tempFile, file);
+    } catch (_) {
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+      throw ApiException('Download failed (${baseUrlProvider()})');
+    }
+  }
+
+  Future<String> _readStreamedError(http.StreamedResponse response) async {
+    final builder = BytesBuilder(copy: false);
+    var total = 0;
+    await for (final chunk in response.stream) {
+      if (chunk.isEmpty) continue;
+      final remaining = _maxDownloadErrorBytes - total;
+      if (remaining <= 0) break;
+      if (chunk.length <= remaining) {
+        builder.add(chunk);
+        total += chunk.length;
+      } else {
+        builder.add(chunk.sublist(0, remaining));
+        total += remaining;
+        break;
+      }
+    }
+    final buffered = http.Response.bytes(
+      builder.takeBytes(),
+      response.statusCode,
+      headers: response.headers,
+      reasonPhrase: response.reasonPhrase,
+    );
+    return _readError(buffered);
+  }
+
+  Future<File> _replaceWithDownloadedFile(File tempFile, File file) async {
+    File? backupFile;
+    try {
+      if (await file.exists()) {
+        backupFile = File('${file.path}.${DateTime.now().microsecondsSinceEpoch}.bak');
+        await file.rename(backupFile.path);
+      }
+      final result = await tempFile.rename(file.path);
+      if (backupFile != null && await backupFile.exists()) {
+        await backupFile.delete();
+      }
+      return result;
+    } catch (_) {
+      if (!await file.exists() && backupFile != null && await backupFile.exists()) {
+        await backupFile.rename(file.path);
+      }
+      rethrow;
+    }
   }
 
   Future<Object?> getJson(
@@ -451,15 +534,17 @@ class ApiClient {
     );
   }
 
-  Future<void> changePassword(
+  Future<LoginResponse> changePassword(
     String token, {
     required String currentPassword,
     required String newPassword,
   }) {
-    return postVoid(
+    return post(
       '/auth/change-password',
       token: token,
       body: {'current_password': currentPassword, 'new_password': newPassword},
+      decoder: (json) =>
+          LoginResponse.fromJson(json as Map<String, dynamic>),
     );
   }
 
@@ -469,15 +554,26 @@ class ApiClient {
     return map['enabled'] == true;
   }
 
-  Future<Map<String, dynamic>> setupTotp(String token) {
-    return postJson('/auth/totp/setup', token: token);
+  Future<Map<String, dynamic>> setupTotp(
+    String token, {
+    required String currentPassword,
+  }) {
+    return postJson(
+      '/auth/totp/setup',
+      token: token,
+      body: {'current_password': currentPassword},
+    );
   }
 
-  Future<bool> activateTotp(String token, String code) async {
+  Future<bool> activateTotp(
+    String token,
+    String code, {
+    required String currentPassword,
+  }) async {
     final status = await postJson(
       '/auth/totp/activate',
       token: token,
-      body: {'code': code},
+      body: {'code': code, 'current_password': currentPassword},
     );
     return status['enabled'] == true;
   }
@@ -713,18 +809,28 @@ class ApiClient {
         final parsed = Uri.tryParse(rawUrl);
         final sourceUri =
             parsed != null && parsed.hasScheme ? parsed : uri(rawUrl);
+        if (sourceUri.scheme != 'http' && sourceUri.scheme != 'https') {
+          continue;
+        }
+        final kind = '${source['kind'] ?? 'backend_proxy'}';
+        if (kind != 'processor_direct' && !isBackendOrigin(sourceUri)) {
+          continue;
+        }
         final headers = <String, String>{};
         final rawHeaders = source['headers'];
-        if (rawHeaders is Map) {
+        if (kind == 'processor_direct' && rawHeaders is Map) {
           for (final entry in rawHeaders.entries) {
-            headers['${entry.key}'] = '${entry.value}';
+            final name = '${entry.key}';
+            if (name.toLowerCase() == 'x-processor-media-token') {
+              headers[name] = '${entry.value}';
+            }
           }
         }
         sources.add(
           CameraStreamSource(
             uri: sourceUri,
             headers: headers,
-            kind: '${source['kind'] ?? 'backend_proxy'}',
+            kind: kind,
           ),
         );
       }
@@ -745,21 +851,20 @@ class ApiClient {
     });
   }
 
-  Uri recordingFileUri(int recordingId, String mediaToken) {
-    return uri('/recordings/file/$recordingId', {'token': mediaToken});
+  Uri recordingFileUri(int recordingId, [String? mediaToken]) {
+    return uri('/recordings/file/$recordingId');
   }
 
-  Uri recordingMjpegUri(int recordingId, String mediaToken) {
+  Uri recordingMjpegUri(int recordingId, [String? mediaToken]) {
     return uri('/recordings/file/$recordingId/mjpeg', {
-      'token': mediaToken,
       'fps': '8',
       'max_width': '960',
       'quality': '72',
     });
   }
 
-  Uri eventSnapshotUri(int eventId, String mediaToken) {
-    return uri('/detections/events/$eventId/snapshot', {'token': mediaToken});
+  Uri eventSnapshotUri(int eventId, [String? mediaToken]) {
+    return uri('/detections/events/$eventId/snapshot');
   }
 
   Future<Uint8List> captureCameraJpegFrame(
@@ -869,6 +974,18 @@ class ApiClient {
     }
     if (response.bodyBytes.isEmpty) return <String, dynamic>{};
     return _asMap(jsonDecode(utf8.decode(response.bodyBytes)));
+  }
+
+  Future<Map<String, dynamic>> addPersonLiveEmbedding(
+    String token,
+    int personId,
+    int cameraId,
+  ) {
+    return postJson(
+      '/persons/$personId/embeddings/live',
+      token: token,
+      body: {'camera_id': cameraId},
+    );
   }
 
   Future<Map<String, dynamic>> enrollPersonPhotoStream(

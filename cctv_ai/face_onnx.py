@@ -3,13 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import urllib.request
-import zipfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from cctv_ai.model_artifacts import download_verified_https, file_matches_sha256, safe_extract_zip
 from cctv_ai.runtime_env import prepare_acceleration_env, select_onnx_execution_providers
 
 prepare_acceleration_env()
@@ -19,6 +18,9 @@ import onnxruntime as ort
 logger = logging.getLogger(__name__)
 
 _BUFFALO_L_URL = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+_BUFFALO_L_SHA256 = "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f"
+_DET_10G_SHA256 = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+_W600K_R50_SHA256 = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
 _FACE_TEMPLATE = np.array(
     [
         [38.2946, 51.6963],
@@ -107,20 +109,37 @@ def _candidate_model_dirs() -> list[Path]:
     return candidates
 
 
+def _model_pack_valid(candidate: Path) -> bool:
+    return file_matches_sha256(candidate / "det_10g.onnx", _DET_10G_SHA256) and file_matches_sha256(
+        candidate / "w600k_r50.onnx",
+        _W600K_R50_SHA256,
+    )
+
+
 def _ensure_model_pack() -> Path:
     for candidate in _candidate_model_dirs():
-        if (candidate / "det_10g.onnx").exists() and (candidate / "w600k_r50.onnx").exists():
+        if _model_pack_valid(candidate):
             return candidate
 
     target_dir = _runtime_model_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     zip_path = target_dir.parent / "buffalo_l.zip"
-    if not zip_path.exists():
-        logger.info("Downloading InsightFace model pack to %s", zip_path)
-        urllib.request.urlretrieve(_BUFFALO_L_URL, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as archive:
-        archive.extractall(target_dir)
+    if not file_matches_sha256(zip_path, _BUFFALO_L_SHA256):
+        logger.info("Downloading verified InsightFace model pack to %s", zip_path)
+    download_verified_https(
+        _BUFFALO_L_URL,
+        zip_path,
+        expected_sha256=_BUFFALO_L_SHA256,
+        max_bytes=320 * 1024 * 1024,
+    )
+    safe_extract_zip(
+        zip_path,
+        target_dir,
+        max_members=16,
+        max_uncompressed_bytes=380 * 1024 * 1024,
+    )
+    if not _model_pack_valid(target_dir):
+        raise RuntimeError("InsightFace model pack failed integrity validation after extraction")
     return target_dir
 
 

@@ -6,13 +6,13 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 import cv2
+
+from cctv_ai.opencv_capture import open_video_capture
+import httpx
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -63,17 +63,23 @@ def _json_request(
     if json_body is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(json_body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read()
-            if not raw:
-                return None
-            return json.loads(raw.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.reason
+        response = httpx.request(
+            method.upper(),
+            url,
+            headers=headers,
+            content=data,
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return None
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.reason_phrase
         try:
-            payload = json.loads(exc.read().decode("utf-8", "replace"))
+            payload = exc.response.json()
             detail = payload.get("detail", detail)
         except Exception:
             pass
@@ -118,6 +124,56 @@ def _print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+_SENSITIVE_CONFIG_KEYS = {"api_key", "media_token"}
+_SENSITIVE_PAYLOAD_KEYS = {
+    "api_key",
+    "authorization",
+    "media_token",
+    "password",
+    "password_secret",
+    "secret",
+    "token",
+    "username",
+    "x_api_key",
+}
+_URL_PAYLOAD_KEYS = {"endpoint_url", "source", "stream_url", "url"}
+
+
+def _redact_config(config: dict[str, Any], *, show_secrets: bool = False) -> dict[str, Any]:
+    if show_secrets:
+        return dict(config)
+    redacted = dict(config)
+    for key in _SENSITIVE_CONFIG_KEYS:
+        value = redacted.get(key)
+        if isinstance(value, str) and value:
+            redacted[key] = f"{value[:4]}...{value[-4:]}" if len(value) > 12 else "***"
+    return redacted
+
+
+def _redact_payload(payload: Any, *, show_secrets: bool = False) -> Any:
+    if show_secrets:
+        return payload
+    if isinstance(payload, list):
+        return [_redact_payload(item) for item in payload]
+    if isinstance(payload, tuple):
+        return tuple(_redact_payload(item) for item in payload)
+    if isinstance(payload, dict):
+        redacted: dict[str, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered in _SENSITIVE_PAYLOAD_KEYS:
+                redacted[key_text] = "***" if value not in (None, "") else value
+            elif lowered in _URL_PAYLOAD_KEYS:
+                from processor.camera_utils import redact_source
+
+                redacted[key_text] = redact_source(value)
+            else:
+                redacted[key_text] = _redact_payload(value)
+        return redacted
+    return payload
+
+
 def _pick_source(
     config: dict[str, Any],
     *,
@@ -151,27 +207,12 @@ def _pick_source(
 
 
 def _open_capture(source: str | int) -> cv2.VideoCapture:
-    if isinstance(source, str) and source.lower().startswith("rtsp://"):
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
-            "|analyzeduration;0|probesize;32768|flush_packets;1"
-        )
-        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-    else:
-        cap = cv2.VideoCapture(source)
-
-    for prop, value in (
-        (getattr(cv2, "CAP_PROP_BUFFERSIZE", None), 1),
-        (getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None), 5000),
-        (getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None), 5000),
-    ):
-        if prop is None:
-            continue
-        try:
-            cap.set(prop, value)
-        except Exception:
-            pass
-    return cap
+    return open_video_capture(
+        source,
+        open_timeout_ms=5000,
+        read_timeout_ms=5000,
+        buffer_size=1,
+    )
 
 
 def _tail_lines(path: Path, lines: int) -> list[str]:
@@ -183,7 +224,7 @@ def _tail_lines(path: Path, lines: int) -> list[str]:
 
 
 def cmd_config_show(args: argparse.Namespace) -> int:
-    config = _read_config()
+    config = _redact_config(_read_config(), show_secrets=args.show_secrets)
     if args.json:
         _print_json(config)
     else:
@@ -322,12 +363,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_assignments(args: argparse.Namespace) -> int:
     assignments = _get_assignments(_read_config())
     if args.json:
-        _print_json(assignments)
+        _print_json(_redact_payload(assignments, show_secrets=args.show_secrets))
         return 0
     if not assignments:
         print("No assignments.")
         return 0
-    for item in assignments:
+    for item in _redact_payload(assignments, show_secrets=args.show_secrets):
         print(f"[{item['camera_id']}] {item['name']}")
         print(f"  source: {item.get('stream_url') or item.get('ip_address') or '-'}")
         print(f"  detection_enabled: {item.get('detection_enabled')}")
@@ -396,7 +437,8 @@ def cmd_test_stream(args: argparse.Namespace) -> int:
     source, assignment = _pick_source(config, source=args.source, camera_id=args.camera_id)
     cap = _open_capture(source)
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open source: {source}")
+        safe_source = _redact_payload({"source": str(source)})["source"]
+        raise RuntimeError(f"Could not open source: {safe_source}")
     frames = []
     try:
         for _ in range(max(args.warmup, 0)):
@@ -426,7 +468,7 @@ def cmd_test_stream(args: argparse.Namespace) -> int:
     width = int(last_frame.shape[1]) if last_frame is not None else None
     height = int(last_frame.shape[0]) if last_frame is not None else None
     payload = {
-        "source": str(source),
+        "source": _redact_payload({"source": str(source)})["source"],
         "camera_id": assignment.get("camera_id") if assignment else None,
         "camera_name": assignment.get("name") if assignment else None,
         "frames_read": len(frames),
@@ -451,7 +493,8 @@ def cmd_detect_once(args: argparse.Namespace) -> int:
     source, assignment = _pick_source(config, source=args.source, camera_id=args.camera_id)
     cap = _open_capture(source)
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open source: {source}")
+        safe_source = _redact_payload({"source": str(source)})["source"]
+        raise RuntimeError(f"Could not open source: {safe_source}")
     try:
         for _ in range(max(args.warmup, 0)):
             cap.grab()
@@ -506,7 +549,7 @@ def cmd_detect_once(args: argparse.Namespace) -> int:
         cv2.imwrite(str(target), annotated)
 
     payload = {
-        "source": str(source),
+        "source": _redact_payload({"source": str(source)})["source"],
         "camera_id": assignment.get("camera_id") if assignment else None,
         "camera_name": assignment.get("name") if assignment else None,
         "faces_detected": len(results),
@@ -558,6 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
     config_show = config_sub.add_parser("show", help="Show local config")
     config_show.add_argument("--json", action="store_true")
+    config_show.add_argument("--show-secrets", action="store_true", help="Print api_key and media_token without redaction")
     config_show.set_defaults(func=cmd_config_show)
 
     config_set = config_sub.add_parser("set", help="Update local config values")
@@ -602,6 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     assignments = subparsers.add_parser("assignments", help="List current camera assignments")
     assignments.add_argument("--json", action="store_true")
+    assignments.add_argument("--show-secrets", action="store_true", help="Print camera endpoints without redaction")
     assignments.set_defaults(func=cmd_assignments)
 
     gallery = subparsers.add_parser("gallery", help="List active person gallery entries")

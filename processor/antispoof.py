@@ -6,11 +6,13 @@ import logging
 import os
 import sys
 import threading
-import urllib.request
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from cctv_ai.model_artifacts import download_verified_https
 
 logger = logging.getLogger(__name__)
 
@@ -143,17 +145,12 @@ def _asset_model_candidates(model_name: str, env_name: str) -> list[Path]:
 
 def _download_primary_model(target: Path) -> Path | None:
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".download")
-        urllib.request.urlretrieve(
+        download_verified_https(
             _PRIMARY_MODEL_URL,
-            tmp,
+            target,
+            expected_sha256=_PRIMARY_MODEL_SHA256,
+            max_bytes=8 * 1024 * 1024,
         )
-        if not _valid_model(tmp, _PRIMARY_MODEL_SHA256):
-            tmp.unlink(missing_ok=True)
-            logger.warning("Downloaded anti-spoof model failed checksum validation")
-            return None
-        tmp.replace(target)
         return target
     except Exception:
         logger.warning("Failed to download anti-spoof model", exc_info=True)
@@ -189,17 +186,20 @@ class _OnnxAntiSpoofModel:
         self._input_size = (80, 80)
         self._provider = "unavailable"
         self._failed = False
+        self._failed_at = 0.0
+        self._retry_seconds = 60.0
 
     def _ensure_session(self) -> bool:
         if self._session is not None:
             return True
-        if self._failed:
+        if self._failed and (time.monotonic() - self._failed_at) < self._retry_seconds:
             return False
         with self._lock:
             if self._session is not None:
                 return True
-            if self._failed:
+            if self._failed and (time.monotonic() - self._failed_at) < self._retry_seconds:
                 return False
+            self._failed = False
             try:
                 from cctv_ai.runtime_env import select_onnx_execution_providers
                 from processor.config import settings
@@ -208,6 +208,7 @@ class _OnnxAntiSpoofModel:
                 model_path = self._find_model_path()
                 if model_path is None:
                     self._failed = True
+                    self._failed_at = time.monotonic()
                     return False
                 providers, _device, provider = select_onnx_execution_providers(
                     prefer_gpu=settings.processor_accel != "cpu",
@@ -215,11 +216,24 @@ class _OnnxAntiSpoofModel:
                 )
                 session_options = ort.SessionOptions()
                 session_options.log_severity_level = 3
-                session = ort.InferenceSession(
-                    str(model_path),
-                    sess_options=session_options,
-                    providers=providers,
-                )
+                try:
+                    session = ort.InferenceSession(
+                        str(model_path),
+                        sess_options=session_options,
+                        providers=providers,
+                    )
+                except Exception:
+                    if providers == ["CPUExecutionProvider"]:
+                        raise
+                    logger.exception(
+                        "Anti-spoof session failed with providers=%s; retrying on CPU",
+                        providers,
+                    )
+                    session = ort.InferenceSession(
+                        str(model_path),
+                        sess_options=session_options,
+                        providers=["CPUExecutionProvider"],
+                    )
                 input_cfg = session.get_inputs()[0]
                 output_cfg = session.get_outputs()[0]
                 shape = input_cfg.shape
@@ -235,6 +249,7 @@ class _OnnxAntiSpoofModel:
                 return True
             except Exception:
                 self._failed = True
+                self._failed_at = time.monotonic()
                 logger.exception("Failed to load anti-spoof ONNX model")
                 return False
 

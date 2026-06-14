@@ -4,6 +4,8 @@ ARG CCTV_UID=999
 ARG CCTV_GID=999
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PROCESSOR_ACCEL=nvidia \
     PROCESSOR_BODY_ACCEL=cpu \
@@ -18,13 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY processor/requirements-nvidia.txt ./requirements.txt
-RUN python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade \
+    pip==26.1.1 setuptools==82.0.1 wheel==0.47.0 && \
+    python -m pip install --no-cache-dir -r requirements.txt
 COPY --chown=cctv:cctv processor/ ./processor/
 COPY --chown=cctv:cctv cctv_ai/ ./cctv_ai/
 COPY processor/docker-entrypoint.sh /usr/local/bin/cctv-processor-entrypoint.sh
 RUN mkdir -p /app/processor-runtime /app/media/recordings /app/media/snapshots && \
     chmod +x /usr/local/bin/cctv-processor-entrypoint.sh && \
     chown -R cctv:cctv /app
+
+USER cctv
 
 ENTRYPOINT ["cctv-processor-entrypoint.sh"]
 CMD ["python", "-m", "processor.runtime"]

@@ -2,9 +2,14 @@
 
 
 class LoginRequest(BaseModel):
-    login: str
-    password: str
-    totp_code: str | None = Field(default=None, description="One-time code if TOTP enabled")
+    login: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=1, max_length=256)
+    totp_code: str | None = Field(
+        default=None,
+        min_length=6,
+        max_length=12,
+        description="One-time code if TOTP enabled",
+    )
 
 
 class TokenResponse(BaseModel):
@@ -22,7 +27,7 @@ class MediaTokenResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
+    current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=8, max_length=100)
 
 
@@ -48,8 +53,13 @@ class TotpSetupResponse(BaseModel):
     provisioning_uri: str
 
 
+class TotpSetupRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+
+
 class TotpCodeRequest(BaseModel):
     code: str
+    current_password: str = Field(min_length=1, max_length=256)
 
 
 class TotpDisableRequest(BaseModel):

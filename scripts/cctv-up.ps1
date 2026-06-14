@@ -710,6 +710,7 @@ if ($Profile -eq "public" -or $Profile -eq "with-nginx") {
     if ([string]::IsNullOrWhiteSpace($updates["NGINX_HTTPS_ENABLED"])) {
         $updates["NGINX_HTTPS_ENABLED"] = "false"
     }
+    $updates["NGINX_HTTP_PROXY_ENABLED"] = if ($Profile -eq "with-nginx") { "true" } else { "false" }
 }
 
 $postgresPasswordUpdated = $false

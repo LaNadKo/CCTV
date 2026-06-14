@@ -30,7 +30,6 @@ const _activeRefreshInterval = Duration(seconds: 15);
 const _activeAutoRefreshRoutes = <String>{
   '/recordings',
   '/reviews',
-  '/reports',
   '/cameras',
   '/groups',
   '/persons',
@@ -298,13 +297,6 @@ class _AppShellState extends State<AppShell> {
         _ShellTab(
           route: '/setup',
           label: 'Настройка',
-          icon: Icons.settings_applications_rounded,
-          builder: (_) => const SetupScreen(),
-        ),
-      if (isAdmin)
-        _ShellTab(
-          route: '/setup',
-          label: 'Setup',
           icon: Icons.settings_applications_rounded,
           builder: (_) => const SetupScreen(),
         ),

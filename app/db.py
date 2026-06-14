@@ -13,7 +13,14 @@ class Base(DeclarativeBase):
     pass
 
 
-engine: AsyncEngine = create_async_engine(settings.db_url, echo=settings.debug)
+def _require_database_url() -> str:
+    value = settings.db_url.strip()
+    if not value:
+        raise RuntimeError("DATABASE_URL is required. Configure .env or start through scripts/cctv-up.ps1.")
+    return value
+
+
+engine: AsyncEngine = create_async_engine(_require_database_url(), echo=settings.debug)
 SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     engine,
     expire_on_commit=False,

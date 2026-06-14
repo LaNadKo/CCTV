@@ -1,17 +1,49 @@
 """Processor-related Pydantic schemas."""
 from __future__ import annotations
+import json
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+
+_MAX_PROCESSOR_METADATA_JSON_BYTES = 64 * 1024
+_MAX_PROCESSOR_METADATA_DEPTH = 8
+
+
+def _metadata_depth(value, current: int = 0) -> int:
+    if current > _MAX_PROCESSOR_METADATA_DEPTH:
+        return current
+    if isinstance(value, dict):
+        return max(
+            [current] + [_metadata_depth(item, current + 1) for item in value.values()]
+        )
+    if isinstance(value, list):
+        return max(
+            [current] + [_metadata_depth(item, current + 1) for item in value]
+        )
+    return current
+
+
+def _validate_metadata(value):
+    if value is None:
+        return None
+    if _metadata_depth(value) > _MAX_PROCESSOR_METADATA_DEPTH:
+        raise ValueError("Processor metadata is nested too deeply")
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > _MAX_PROCESSOR_METADATA_JSON_BYTES:
+        raise ValueError("Processor metadata is too large")
+    return value
 
 
 class ProcessorRegister(BaseModel):
-    name: str
-    node_uid: str | None = None
-    hostname: str | None = None
-    ip_address: str | None = None
-    os_info: str | None = None
-    version: str | None = None
+    name: str = Field(min_length=1, max_length=150)
+    node_uid: str | None = Field(default=None, max_length=128)
+    hostname: str | None = Field(default=None, max_length=255)
+    ip_address: str | None = Field(default=None, max_length=45)
+    os_info: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     capabilities: dict | None = None
+
+    _validate_capabilities = field_validator("capabilities")(_validate_metadata)
 
 
 class ProcessorRegisterOut(BaseModel):
@@ -26,9 +58,9 @@ class ProcessorCommandCreate(BaseModel):
 
 
 class ProcessorCommandResult(BaseModel):
-    status: str
+    status: str = Field(pattern="^(succeeded|failed)$")
     result: dict | str | None = None
-    error_message: str | None = None
+    error_message: str | None = Field(default=None, max_length=65536)
 
 
 class ProcessorCommandOut(BaseModel):
@@ -53,14 +85,16 @@ class GenerateCodeOut(BaseModel):
 
 
 class ProcessorConnect(BaseModel):
-    code: str
-    name: str
-    node_uid: str | None = None
-    hostname: str | None = None
-    ip_address: str | None = None
-    os_info: str | None = None
-    version: str | None = None
+    code: str = Field(min_length=6, max_length=20)
+    name: str = Field(min_length=1, max_length=150)
+    node_uid: str | None = Field(default=None, max_length=128)
+    hostname: str | None = Field(default=None, max_length=255)
+    ip_address: str | None = Field(default=None, max_length=45)
+    os_info: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     capabilities: dict | None = None
+
+    _validate_capabilities = field_validator("capabilities")(_validate_metadata)
 
 
 class ProcessorConnectOut(BaseModel):
@@ -88,21 +122,26 @@ class SystemMetrics(BaseModel):
     disk_total_gb: float | None = None
     active_cameras: int | None = None
     uptime_seconds: float | None = None
-    bottleneck: str | None = None
+    bottleneck: str | None = Field(default=None, max_length=1000)
     camera_bottlenecks: dict[str, str] | None = None
+
+    _validate_camera_bottlenecks = field_validator("camera_bottlenecks")(_validate_metadata)
 
 
 class ProcessorHeartbeat(BaseModel):
-    status: str = "online"
+    status: str = Field(default="online", max_length=32)
     stats: dict | None = None
     metrics: SystemMetrics | None = None
-    ip_address: str | None = None
-    hostname: str | None = None
-    os_info: str | None = None
-    version: str | None = None
+    ip_address: str | None = Field(default=None, max_length=45)
+    hostname: str | None = Field(default=None, max_length=255)
+    os_info: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     capabilities: dict | None = None
-    media_port: int | None = None
-    media_token: str | None = None
+    media_port: int | None = Field(default=None, ge=1, le=65535)
+    media_token: str | None = Field(default=None, max_length=256)
+
+    _validate_stats = field_validator("stats")(_validate_metadata)
+    _validate_capabilities = field_validator("capabilities")(_validate_metadata)
 
 
 # ── Camera assignments ──
@@ -160,8 +199,8 @@ class ProcessorEventOut(BaseModel):
 
 class ProcessorRecordingIn(BaseModel):
     camera_id: int
-    file_path: str
-    file_kind: str = "video"
+    file_path: str = Field(min_length=1, max_length=1024)
+    file_kind: str = Field(default="video", pattern="^(video|snapshot)$")
     started_at: datetime | None = None
     ended_at: datetime | None = None
     duration_seconds: float | None = None

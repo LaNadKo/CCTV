@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import queue
+import socket
+import tempfile
 import threading
 import time
 import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
+from cctv_ai.model_artifacts import file_matches_sha256, safe_extract_zip
 from processor.detection import CameraWorker
 from processor.embedding_service import EmbeddingService
 from processor.inference_scheduler import PriorityInferenceGate
 from processor.latest_queue import put_latest
+from processor.media_server import _parse_float, _parse_int, _resize_for_max_width
+from processor.network_policy import validate_camera_endpoint_url, validate_camera_host, validate_camera_stream_source
 from processor.performance import PerformanceMetrics
 
 
@@ -407,6 +415,112 @@ class PerformanceMetricsTests(unittest.TestCase):
         metrics.observe("overlay", 0.020)
 
         self.assertIn("overlay", metrics.bottleneck_text())
+
+
+class MediaServerHelperTests(unittest.TestCase):
+    def test_query_parsing_clamps_recording_preview_values(self) -> None:
+        self.assertEqual(_parse_int("9999", default=960, minimum=320, maximum=1920), 1920)
+        self.assertEqual(_parse_int("10", default=960, minimum=320, maximum=1920), 320)
+        self.assertEqual(_parse_int("bad", default=72, minimum=40, maximum=95), 72)
+        self.assertEqual(_parse_float("12.5", default=8.0), 12.5)
+        self.assertEqual(_parse_float("bad", default=8.0), 8.0)
+
+    def test_resize_for_max_width_preserves_aspect_ratio(self) -> None:
+        frame = np.zeros((480, 1280, 3), dtype=np.uint8)
+        resized = _resize_for_max_width(frame, 640)
+        self.assertEqual(resized.shape[:2], (240, 640))
+
+        small = np.zeros((240, 320, 3), dtype=np.uint8)
+        self.assertIs(_resize_for_max_width(small, 640), small)
+
+
+class NetworkPolicyTests(unittest.TestCase):
+    def test_lan_camera_sources_are_allowed(self) -> None:
+        self.assertEqual(validate_camera_host("192.168.88.242"), "192.168.88.242")
+        resolved = [(None, None, None, "", ("192.168.88.242", 0))]
+        with patch("processor.network_policy.socket.getaddrinfo", return_value=resolved):
+            self.assertEqual(validate_camera_host("C200"), "C200")
+        self.assertEqual(
+            validate_camera_stream_source("rtsp://192.168.88.242:554/stream1"),
+            "rtsp://192.168.88.242:554/stream1",
+        )
+        self.assertEqual(
+            validate_camera_endpoint_url("onvif", "http://192.168.88.242:2020/onvif/device_service"),
+            "http://192.168.88.242:2020/onvif/device_service",
+        )
+
+    def test_local_and_link_local_sources_are_blocked(self) -> None:
+        for host in ("localhost", "127.0.0.1", "::1", "169.254.169.254"):
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    validate_camera_host(host)
+        for url in ("file:///C:/Windows/win.ini", "http:///missing-host", "http://127.0.0.1:8001/health"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    validate_camera_stream_source(url)
+
+    def test_hostname_resolving_to_blocked_address_is_rejected(self) -> None:
+        resolved = [(None, None, None, "", ("127.0.0.1", 0))]
+        with patch("processor.network_policy.socket.getaddrinfo", return_value=resolved):
+            with self.assertRaises(ValueError):
+                validate_camera_stream_source("rtsp://camera.local:554/stream1")
+
+    def test_hostname_source_is_pinned_to_resolved_safe_ip(self) -> None:
+        resolved = [(None, None, None, "", ("192.168.88.242", 0))]
+        with patch("processor.network_policy.socket.getaddrinfo", return_value=resolved):
+            self.assertEqual(
+                validate_camera_stream_source("rtsp://user:pass@camera.lan:554/stream1"),
+                "rtsp://user:pass@192.168.88.242:554/stream1",
+            )
+
+    def test_unresolved_hostname_is_rejected(self) -> None:
+        with patch("processor.network_policy.socket.getaddrinfo", side_effect=socket.gaierror()):
+            with self.assertRaises(ValueError):
+                validate_camera_stream_source("rtsp://missing-camera.lan:554/stream1")
+
+
+class ModelArtifactTests(unittest.TestCase):
+    def test_file_checksum_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            path = Path(raw_dir) / "model.bin"
+            path.write_bytes(b"verified-model")
+            self.assertTrue(
+                file_matches_sha256(
+                    path,
+                    "3326723577b96bc7d05ecdb8a32ac917ce7eb053152f145b609635ebdbaf8d46",
+                )
+            )
+            self.assertFalse(file_matches_sha256(path, "0" * 64))
+
+    def test_safe_extract_rejects_parent_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            archive_path = root / "unsafe.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../escape.txt", b"blocked")
+            destination = root / "models"
+            with self.assertRaises(ValueError):
+                safe_extract_zip(
+                    archive_path,
+                    destination,
+                    max_members=4,
+                    max_uncompressed_bytes=1024,
+                )
+            self.assertFalse((root / "escape.txt").exists())
+
+    def test_safe_extract_enforces_uncompressed_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            archive_path = root / "large.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("model.bin", b"x" * 64)
+            with self.assertRaises(ValueError):
+                safe_extract_zip(
+                    archive_path,
+                    root / "models",
+                    max_members=4,
+                    max_uncompressed_bytes=32,
+                )
 
 
 class EmbeddingServiceTests(unittest.TestCase):

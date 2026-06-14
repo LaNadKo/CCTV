@@ -21,6 +21,7 @@ derive_compose_project_name() {
 
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(derive_compose_project_name)}"
 export COMPOSE_PROJECT_NAME
+GENERATED_ADMIN_PASSWORD=""
 
 compose_cmd() {
     docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
@@ -32,6 +33,7 @@ echo "=== CCTV Server ==="
 
 # Проверяем наличие .env
 if [ ! -f ".env" ]; then
+    umask 077
     echo "Файл .env не найден. Создаю из .env.example..."
     if [ -f ".env.example" ]; then
         cp .env.example .env
@@ -39,9 +41,16 @@ if [ ! -f ".env" ]; then
         JWT=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p | tr -d '\n' | head -c 64)
         PKEY=$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p | tr -d '\n' | head -c 48)
         DBPW=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n' | head -c 32)
-        sed -i "s/POSTGRES_PASSWORD=changeme/POSTGRES_PASSWORD=$DBPW/" .env
-        sed -i "s/JWT_SECRET=changeme-generate-with-openssl-rand-hex-32/JWT_SECRET=$JWT/" .env
-        sed -i "s/PROCESSOR_API_KEY=changeme-generate-with-openssl-rand-hex-24/PROCESSOR_API_KEY=$PKEY/" .env
+        ADMINPW=$(openssl rand -base64 24 2>/dev/null | tr -d '\n' | tr '/+' '_-' | head -c 24)
+        GENERATED_ADMIN_PASSWORD="$ADMINPW"
+        TOTPKEY=$(openssl rand -base64 32 2>/dev/null | tr -d '\n' | tr '/+' '_-')
+        sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$DBPW|" .env
+        sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$JWT|" .env
+        sed -i "s|^PROCESSOR_API_KEY=.*|PROCESSOR_API_KEY=$PKEY|" .env
+        sed -i "s|^BOOTSTRAP_ADMIN_PASSWORD=.*|BOOTSTRAP_ADMIN_PASSWORD=$ADMINPW|" .env
+        sed -i "s|^ALLOW_DEFAULT_ADMIN=.*|ALLOW_DEFAULT_ADMIN=false|" .env
+        sed -i "s|^TOTP_ENCRYPTION_KEY=.*|TOTP_ENCRYPTION_KEY=$TOTPKEY|" .env
+        chmod 600 .env
         echo "  .env создан с автоматически сгенерированными ключами"
     else
         echo "ОШИБКА: .env.example не найден!"
@@ -84,5 +93,9 @@ echo "API:      http://$LOCAL_IP:8000"
 echo "RTSP:     rtsp://$LOCAL_IP:8554"
 echo "Swagger:  http://$LOCAL_IP:8000/docs"
 echo ""
-echo "Логин по умолчанию: admin / admin"
+if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
+    echo "Bootstrap admin: admin / $GENERATED_ADMIN_PASSWORD"
+else
+    echo "Bootstrap admin password: see BOOTSTRAP_ADMIN_PASSWORD in .env"
+fi
 echo "Processor подключать с ключом из .env (PROCESSOR_API_KEY)"

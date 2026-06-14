@@ -84,10 +84,7 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
     }
     await _run(() async {
       final auth = context.read<AuthController>();
-      final token = auth.accessToken;
-      if (token == null) return;
-      await auth.apiClient.changePassword(
-        token,
+      await auth.changePassword(
         currentPassword: _currentPassword.text,
         newPassword: _newPassword.text,
       );
@@ -99,11 +96,20 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
   }
 
   Future<void> _setupTotp() async {
+    final currentPassword = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _TotpPasswordDialog(),
+    );
+    if (currentPassword == null) return;
     await _run(() async {
       final auth = context.read<AuthController>();
       final token = auth.accessToken;
       if (token == null) return;
-      final payload = await auth.apiClient.setupTotp(token);
+      final payload = await auth.apiClient.setupTotp(
+        token,
+        currentPassword: currentPassword,
+      );
       if (!mounted) return;
       final activated = await showDialog<bool>(
         context: context,
@@ -112,7 +118,11 @@ class _ProfileSecurityPanelState extends State<ProfileSecurityPanel> {
           secret: '${payload['secret'] ?? ''}',
           provisioningUri: '${payload['provisioning_uri'] ?? ''}',
           onActivate: (code) async {
-            await auth.apiClient.activateTotp(token, code);
+            await auth.apiClient.activateTotp(
+              token,
+              code,
+              currentPassword: currentPassword,
+            );
             await auth.reloadUser();
           },
         ),
@@ -381,6 +391,70 @@ class _PasswordAndTotpForm extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TotpPasswordDialog extends StatefulWidget {
+  const _TotpPasswordDialog();
+
+  @override
+  State<_TotpPasswordDialog> createState() => _TotpPasswordDialogState();
+}
+
+class _TotpPasswordDialogState extends State<_TotpPasswordDialog> {
+  final _password = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _password.addListener(_refresh);
+  }
+
+  @override
+  void dispose() {
+    _password.removeListener(_refresh);
+    _password.dispose();
+    super.dispose();
+  }
+
+  bool get _canSubmit => _password.text.trim().isNotEmpty;
+
+  void _refresh() => setState(() {});
+
+  void _submit() {
+    if (!_canSubmit) return;
+    Navigator.of(context).pop(_password.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AlertDialog(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      title: const Text('Подтверждение 2FA'),
+      content: SizedBox(
+        width: 420,
+        child: TextField(
+          controller: _password,
+          obscureText: true,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _submit(),
+          decoration: const InputDecoration(labelText: 'Текущий пароль'),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: _canSubmit ? _submit : null,
+          child: const Text('Продолжить'),
+        ),
+      ],
     );
   }
 }

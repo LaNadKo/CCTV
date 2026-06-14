@@ -1,5 +1,7 @@
 // ignore_for_file: use_build_context_synchronously
 
+import 'dart:async';
+
 import 'package:flex_color_picker/flex_color_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -748,7 +750,7 @@ class _PalettePreset {
   final Color secondary;
 }
 
-class _ColorEditor extends StatelessWidget {
+class _ColorEditor extends StatefulWidget {
   const _ColorEditor({
     required this.title,
     required this.color,
@@ -758,6 +760,53 @@ class _ColorEditor extends StatelessWidget {
   final String title;
   final Color color;
   final ValueChanged<Color> onChanged;
+
+  @override
+  State<_ColorEditor> createState() => _ColorEditorState();
+}
+
+class _ColorEditorState extends State<_ColorEditor> {
+  static const _commitDelay = Duration(milliseconds: 120);
+
+  late Color _draftColor;
+  Timer? _commitTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _draftColor = widget.color;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ColorEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.color != oldWidget.color && widget.color != _draftColor) {
+      _draftColor = widget.color;
+    }
+  }
+
+  @override
+  void dispose() {
+    _commitTimer?.cancel();
+    if (_draftColor != widget.color) {
+      widget.onChanged(_draftColor);
+    }
+    super.dispose();
+  }
+
+  void _commitDraft(Color value) {
+    _commitTimer?.cancel();
+    _commitTimer = Timer(_commitDelay, () {
+      if (!mounted) return;
+      widget.onChanged(value);
+    });
+  }
+
+  void _handleColorChanged(Color value) {
+    if (value == _draftColor) return;
+    setState(() => _draftColor = value);
+    _commitDraft(value);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -778,7 +827,7 @@ class _ColorEditor extends StatelessWidget {
                 width: 28,
                 height: 28,
                 decoration: BoxDecoration(
-                  color: color,
+                  color: _draftColor,
                   shape: BoxShape.circle,
                   border: Border.all(color: colors.borderStrong),
                 ),
@@ -786,7 +835,7 @@ class _ColorEditor extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  title,
+                  widget.title,
                   style: TextStyle(
                     color: colors.textStrong,
                     fontSize: 14,
@@ -795,7 +844,7 @@ class _ColorEditor extends StatelessWidget {
                 ),
               ),
               Text(
-                ThemeController.colorToHex(color),
+                ThemeController.colorToHex(_draftColor),
                 style: TextStyle(
                   color: colors.muted,
                   fontSize: 12,
@@ -806,8 +855,8 @@ class _ColorEditor extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ColorPicker(
-            color: color,
-            onColorChanged: onChanged,
+            color: _draftColor,
+            onColorChanged: _handleColorChanged,
             pickersEnabled: const {
               ColorPickerType.primary: true,
               ColorPickerType.accent: true,

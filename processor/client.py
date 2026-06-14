@@ -115,7 +115,7 @@ class BackendClient:
         path: Path,
     ) -> dict:
         with path.open("rb") as handle, httpx.Client(
-            timeout=None,
+            timeout=httpx.Timeout(connect=15.0, read=1800.0, write=1800.0, pool=30.0),
             headers={"X-Api-Key": self.api_key},
         ) as client:
             files = {"file": (path.name, handle, "video/mp4")}

@@ -7,23 +7,31 @@ import json
 import logging
 import secrets
 import os
-import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app import models
+from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user, get_service_identity, get_service_scopes
 from app.ffmpeg_tools import ffmpeg_bin, ffprobe_bin
 from app.permissions import is_admin
-from app.processor_media import effective_processor_status, is_processor_effectively_online
+from app.rate_limit import check_rate_limit
+from app.processor_media import (
+    build_processor_file_path,
+    effective_processor_status,
+    is_processor_effectively_online,
+    parse_processor_file_path,
+    safe_processor_relative_path,
+)
 from app.recording_storage import (
     backend_recording_path,
     ensure_backend_storage_target,
@@ -62,13 +70,33 @@ log = logging.getLogger("app.processors")
 _gallery_cache: list[GalleryEntry] | None = None
 _gallery_cache_ts = 0.0
 _GALLERY_CACHE_TTL = 30.0
+_MAX_EVENT_SNAPSHOT_BYTES = 8 * 1024 * 1024
+_MAX_EVENT_SNAPSHOT_B64_CHARS = ((_MAX_EVENT_SNAPSHOT_BYTES + 2) // 3) * 4
+_MAX_PROCESSOR_COMMAND_RESULT_BODY_BYTES = 256 * 1024
+_PROCESSOR_CONNECTION_CODE_BYTES = 12
+_PROCESSOR_CONNECTION_CODE_TTL_MINUTES = 15
+_PROCESSOR_CONNECT_ATTEMPTS_PER_IP = 20
+_PROCESSOR_CONNECT_ATTEMPTS_PER_CODE_AND_IP = 5
+_PROCESSOR_CONNECT_RATE_WINDOW_SECONDS = 5 * 60
 
 
-def _copy_upload_to_path(source, destination: Path) -> int:
+class UploadTooLargeError(Exception):
+    pass
+
+
+def _copy_upload_to_path(source, destination: Path, max_bytes: int) -> int:
     source.seek(0)
+    total = 0
     with destination.open("wb") as target:
-        shutil.copyfileobj(source, target, length=1024 * 1024)
-    return destination.stat().st_size
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise UploadTooLargeError(f"Upload exceeds {max_bytes} bytes")
+            target.write(chunk)
+    return total
 
 
 def _ffmpeg_bin() -> str | None:
@@ -200,6 +228,7 @@ SUPPORTED_COMMANDS = {
     "apply_detection_settings",
 }
 SUPERVISOR_COMMANDS = {"start_runtime", "stop_runtime", "restart_runtime"}
+_MAX_COMMAND_RESULT_CHARS = 64 * 1024
 
 
 # ── Helper: resolve API key scopes ──
@@ -238,11 +267,11 @@ async def _authorize_processor_key(
     proc = await session.get(models.Processor, processor_id)
     if not proc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor not found")
-    if "*" not in scopes and proc.api_key_id is not None and proc.api_key_id != api_key_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not bound to this processor")
-    if "*" not in scopes and proc.api_key_id is None:
-        proc.api_key_id = api_key_id
-        await session.flush()
+    if "*" not in scopes:
+        if proc.api_key_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Processor is not paired to this API key")
+        if proc.api_key_id != api_key_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not bound to this processor")
     return proc, scopes
 
 
@@ -264,6 +293,15 @@ async def _ensure_processor_camera_assignment(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Camera is not assigned to this processor")
 
 
+async def _processor_has_camera_assignments(session: AsyncSession, processor_id: int) -> bool:
+    result = await session.execute(
+        select(models.ProcessorCameraAssignment.camera_id)
+        .where(models.ProcessorCameraAssignment.processor_id == processor_id)
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 def _ensure_admin(user: models.User) -> None:
     if not is_admin(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
@@ -281,10 +319,15 @@ def _decode_snapshot_b64(snapshot_b64: str | None) -> bytes | None:
     raw = snapshot_b64.strip()
     if raw.startswith("data:") and "," in raw:
         raw = raw.split(",", 1)[1]
+    if len(raw) > _MAX_EVENT_SNAPSHOT_B64_CHARS:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Snapshot payload is too large")
     try:
-        return base64.b64decode(raw)
+        decoded = base64.b64decode(raw, validate=True)
     except Exception:
         return None
+    if len(decoded) > _MAX_EVENT_SNAPSHOT_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Snapshot payload is too large")
+    return decoded
 
 
 def _store_snapshot(event_id: int, snapshot_bytes: bytes) -> str:
@@ -368,6 +411,40 @@ def _json_or_none(value: str | None):
         return value
 
 
+def _limited_command_text(value, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value)
+    if len(text) > _MAX_COMMAND_RESULT_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"{field_name} is too large",
+        )
+    return text
+
+
+async def _read_command_result_payload(request: Request) -> ProcessorCommandResult:
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_PROCESSOR_COMMAND_RESULT_BODY_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Processor command result body is too large",
+            )
+    try:
+        raw_payload = json.loads(bytes(body))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body") from exc
+    try:
+        return ProcessorCommandResult.model_validate(raw_payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors()) from exc
+
+
 def _command_to_out(command: models.ProcessorCommand) -> ProcessorCommandOut:
     return ProcessorCommandOut(
         command_id=command.command_id,
@@ -402,6 +479,10 @@ def _queue_processor_command(
 
 # ── Connection code flow (universal: LAN + WAN) ──
 
+def _new_processor_connection_code() -> str:
+    return secrets.token_urlsafe(_PROCESSOR_CONNECTION_CODE_BYTES).upper()
+
+
 @router.post("/generate-code", response_model=GenerateCodeOut)
 async def generate_connection_code(
     session: AsyncSession = Depends(get_session),
@@ -409,8 +490,8 @@ async def generate_connection_code(
 ):
     """Admin generates a short-lived code that a processor app uses to register."""
     _ensure_admin(current_user)
-    code = secrets.token_urlsafe(6)[:8].upper()
-    expires = datetime.utcnow() + timedelta(hours=24)
+    code = _new_processor_connection_code()
+    expires = datetime.utcnow() + timedelta(minutes=_PROCESSOR_CONNECTION_CODE_TTL_MINUTES)
     rec = models.ProcessorConnectionCode(
         code=code,
         created_by_user_id=current_user.user_id,
@@ -428,29 +509,31 @@ async def connect_processor(
     session: AsyncSession = Depends(get_session),
 ):
     """Processor exchanges a connection code for a permanent API key."""
+    check_rate_limit(
+        request,
+        "processor-connect-ip",
+        attempts=_PROCESSOR_CONNECT_ATTEMPTS_PER_IP,
+        window_seconds=_PROCESSOR_CONNECT_RATE_WINDOW_SECONDS,
+        detail="Too many processor connection attempts",
+    )
+    check_rate_limit(
+        request,
+        f"processor-connect-code:{payload.code}",
+        attempts=_PROCESSOR_CONNECT_ATTEMPTS_PER_CODE_AND_IP,
+        window_seconds=_PROCESSOR_CONNECT_RATE_WINDOW_SECONDS,
+        detail="Too many attempts for this processor connection code",
+    )
     result = await session.execute(
         select(models.ProcessorConnectionCode).where(
             models.ProcessorConnectionCode.code == payload.code,
             models.ProcessorConnectionCode.used_at.is_(None),
-        )
+        ).with_for_update()
     )
     code_rec = result.scalar_one_or_none()
     if not code_rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or already used code")
     if code_rec.expires_at < datetime.utcnow():
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Code expired")
-
-    # Generate API key with processor scopes
-    raw_key = secrets.token_urlsafe(32)
-    key_hash = hash_api_key(raw_key)
-    api_key = models.ApiKey(
-        key_hash=key_hash,
-        description=f"Auto: processor {payload.name}",
-        scopes="processor:register,processor:heartbeat,processor:read,processor:write",
-        is_active=True,
-    )
-    session.add(api_key)
-    await session.flush()
 
     # Detect IP from request
     client_ip = payload.ip_address or (request.client.host if request.client else None)
@@ -462,6 +545,25 @@ async def connect_processor(
         name=payload.name,
         hostname=payload.hostname,
     )
+    if proc is not None and proc.api_key_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Processor is already paired; revoke its API key before reconnecting",
+        )
+
+    # Generate API key only after the one-time code and target processor have
+    # been locked and validated.
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hash_api_key(raw_key)
+    api_key = models.ApiKey(
+        key_hash=key_hash,
+        description=f"Auto: processor {payload.name}",
+        scopes="processor:register,processor:heartbeat,processor:read,processor:write",
+        is_active=True,
+    )
+    session.add(api_key)
+    await session.flush()
+
     if proc is None:
         proc = models.Processor(name=payload.name, status="online")
         session.add(proc)
@@ -512,6 +614,16 @@ async def register_processor(
     if proc is None:
         proc = models.Processor(name=payload.name, status="registered")
         session.add(proc)
+    elif proc.api_key_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Processor is unpaired; reconnect it with a connection code",
+        )
+    elif proc.api_key_id != api_key_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Processor is already paired to another API key",
+        )
     _apply_processor_metadata(
         proc,
         name=payload.name,
@@ -598,7 +710,9 @@ async def get_assignments(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    if "*" not in scopes and not await _processor_has_camera_assignments(session, processor_id):
+        return []
     stmt = (
         select(models.ProcessorCameraAssignment)
         .join(models.Camera, models.Camera.camera_id == models.ProcessorCameraAssignment.camera_id)
@@ -758,11 +872,27 @@ async def push_recording(
         )
         session.add(st)
         await session.flush()
+    parsed_path = parse_processor_file_path(payload.file_path)
+    if parsed_path is not None:
+        source_processor_id, relative_path = parsed_path
+        if source_processor_id != processor_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Recording path belongs to another processor",
+            )
+    else:
+        try:
+            relative_path = safe_processor_relative_path(payload.file_path)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid processor recording path",
+            ) from exc
     rf = models.RecordingFile(
         video_stream_id=vs.video_stream_id,
         storage_target_id=st.storage_target_id,
         file_kind=payload.file_kind,
-        file_path=payload.file_path,
+        file_path=build_processor_file_path(processor_id, relative_path),
         started_at=payload.started_at or datetime.utcnow(),
         ended_at=payload.ended_at,
         duration_seconds=payload.duration_seconds,
@@ -804,15 +934,24 @@ async def upload_recording(
     )
     destination = backend_recording_path(relative_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_name(f".{destination.name}.{int(time.time() * 1000)}.upload")
+    temp_path = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(12)}.upload"
+    )
 
     actual_size = 0
     try:
-        actual_size = await asyncio.to_thread(
-            _copy_upload_to_path,
-            file.file,
-            temp_path,
-        )
+        try:
+            actual_size = await asyncio.to_thread(
+                _copy_upload_to_path,
+                file.file,
+                temp_path,
+                settings.processor_recording_upload_max_bytes,
+            )
+        except UploadTooLargeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Recording upload is too large; limit is {settings.processor_recording_upload_max_bytes} bytes",
+            ) from exc
         if actual_size <= 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty recording upload")
 
@@ -821,12 +960,10 @@ async def upload_recording(
             actual_size = temp_path.stat().st_size
 
         checksum = await asyncio.to_thread(sha256_file, temp_path)
-        final_path = destination
-        if final_path.exists():
-            existing_checksum = await asyncio.to_thread(sha256_file, final_path)
-            if existing_checksum != checksum:
-                suffix = f"_p{processor_id}_{int(started.timestamp())}"
-                final_path = destination.with_name(f"{destination.stem}{suffix}{destination.suffix}")
+        suffix = f"_p{processor_id}_{int(started.timestamp())}_{checksum[:12]}"
+        final_path = destination.with_name(
+            f"{destination.stem}{suffix}{destination.suffix}"
+        )
         temp_path.replace(final_path)
 
         existing_result = await session.execute(
@@ -874,7 +1011,9 @@ async def get_gallery(
     x_api_key: str = Header(...),
 ):
     global _gallery_cache, _gallery_cache_ts
-    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    if "*" not in scopes and not await _processor_has_camera_assignments(session, processor_id):
+        return []
     now = time.monotonic()
     if _gallery_cache is not None and (now - _gallery_cache_ts) < _GALLERY_CACHE_TTL:
         return _gallery_cache
@@ -904,7 +1043,13 @@ async def get_storage_config(
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
-    _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    _proc, scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:read")
+    if "*" not in scopes and not await _processor_has_camera_assignments(session, processor_id):
+        return StorageConfigOut(
+            storage_type="local",
+            root_path="processor://local",
+            connection_config={"mode": "processor_local"},
+        )
     st_result = await session.execute(
         select(models.StorageTarget).where(models.StorageTarget.is_primary_recording.is_(True)).limit(1)
     )
@@ -949,6 +1094,7 @@ async def claim_pending_commands(
         )
         .order_by(models.ProcessorCommand.created_at.asc(), models.ProcessorCommand.command_id.asc())
         .limit(safe_limit)
+        .with_for_update(skip_locked=True)
     )
     commands = result.scalars().all()
     now = datetime.utcnow()
@@ -965,10 +1111,11 @@ async def claim_pending_commands(
 async def complete_processor_command(
     processor_id: int,
     command_id: int,
-    payload: ProcessorCommandResult,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     x_api_key: str = Header(...),
 ):
+    payload = await _read_command_result_payload(request)
     _proc, _scopes = await _authorize_processor_key(session, processor_id, x_api_key, "processor:write")
     if payload.status not in {"succeeded", "failed"}:
         raise HTTPException(status_code=400, detail="Command result status must be succeeded or failed")
@@ -977,9 +1124,11 @@ async def complete_processor_command(
         raise HTTPException(status_code=404, detail="Command not found")
     if command.status == "cancelled":
         raise HTTPException(status_code=409, detail="Command is cancelled")
+    if command.status != "running":
+        raise HTTPException(status_code=409, detail="Command is not running")
     command.status = payload.status
-    command.result = json.dumps(payload.result) if isinstance(payload.result, (dict, list)) else payload.result
-    command.error_message = payload.error_message
+    command.result = _limited_command_text(payload.result, field_name="Command result")
+    command.error_message = _limited_command_text(payload.error_message, field_name="Command error")
     command.completed_at = datetime.utcnow()
     await session.commit()
     await session.refresh(command)

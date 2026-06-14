@@ -232,7 +232,7 @@ class _ReviewEventCard extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 760;
-          final image = _SnapshotPreview(url: snapshotUrl, token: token);
+          final image = _SnapshotPreview(api: api, url: snapshotUrl, token: token);
           final info = Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -308,8 +308,13 @@ class _ReviewEventCard extends StatelessWidget {
 }
 
 class _SnapshotPreview extends StatelessWidget {
-  const _SnapshotPreview({required this.url, required this.token});
+  const _SnapshotPreview({
+    required this.api,
+    required this.url,
+    required this.token,
+  });
 
+  final ApiClient api;
   final String? url;
   final String? token;
 
@@ -327,9 +332,10 @@ class _SnapshotPreview extends StatelessWidget {
               : Image.network(
                   url!,
                   fit: BoxFit.cover,
-                  headers: token == null
-                      ? null
-                      : {'Authorization': 'Bearer $token'},
+                  headers: api.authorizationHeadersFor(
+                    Uri.parse(url!),
+                    token,
+                  ),
                   errorBuilder: (context, error, stackTrace) {
                     return const _SnapshotFallback(
                       text: 'Не удалось открыть фото',

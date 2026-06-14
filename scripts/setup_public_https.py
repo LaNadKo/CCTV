@@ -21,6 +21,14 @@ ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 
 
+def _write_env_secure(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def _read_env(path: Path, *, create: bool = True) -> list[str]:
     if not path.exists():
         if not create:
@@ -28,9 +36,9 @@ def _read_env(path: Path, *, create: bool = True) -> list[str]:
                 return ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines()
             return []
         if ENV_EXAMPLE_PATH.exists():
-            path.write_text(ENV_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            _write_env_secure(path, ENV_EXAMPLE_PATH.read_text(encoding="utf-8"))
         else:
-            path.write_text("", encoding="utf-8")
+            _write_env_secure(path, "")
     return path.read_text(encoding="utf-8").splitlines()
 
 
@@ -135,6 +143,7 @@ def configure(args: argparse.Namespace) -> None:
         "ALLOW_LEGACY_QUERY_TOKENS": "false",
         "NGINX_HTTP_PORT": current.get("NGINX_HTTP_PORT") or "80",
         "NGINX_HTTPS_PORT": current.get("NGINX_HTTPS_PORT") or "443",
+        "NGINX_HTTP_PROXY_ENABLED": "false",
         "NGINX_CLIENT_MAX_BODY_SIZE": current.get("NGINX_CLIENT_MAX_BODY_SIZE") or "100m",
         "ALLOWED_HOSTS": _json_list([domain, "127.0.0.1", "localhost"]),
         "CORS_ORIGINS": _json_list([f"https://{domain}"]),
@@ -180,7 +189,7 @@ def configure(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(f"DRY-RUN: {ENV_PATH} would be updated.")
     else:
-        ENV_PATH.write_text(rendered_env, encoding="utf-8")
+        _write_env_secure(ENV_PATH, rendered_env)
         print(f"Обновлен {ENV_PATH}")
 
     _run(
@@ -227,7 +236,7 @@ def configure(args: argparse.Namespace) -> None:
 
     if not args.dry_run:
         final_lines = _set_env(_read_env(ENV_PATH), {"NGINX_HTTPS_ENABLED": "true"})
-        ENV_PATH.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
+        _write_env_secure(ENV_PATH, "\n".join(final_lines) + "\n")
     else:
         print(f"DRY-RUN: {ENV_PATH} would set NGINX_HTTPS_ENABLED=true.")
 

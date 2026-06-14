@@ -28,6 +28,9 @@ class MjpegStreamView extends StatefulWidget {
 }
 
 class _MjpegStreamViewState extends State<MjpegStreamView> {
+  static const _responseTimeout = Duration(seconds: 8);
+  static const _idleTimeout = Duration(seconds: 10);
+
   http.Client? _client;
   StreamSubscription<List<int>>? _subscription;
   Timer? _retryTimer;
@@ -85,7 +88,7 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
     unawaited(
       client
           .send(request)
-          .timeout(const Duration(seconds: 8))
+          .timeout(_responseTimeout)
           .then<void>((response) async {
             if (!mounted || generation != _generation) return;
             if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -95,7 +98,17 @@ class _MjpegStreamViewState extends State<MjpegStreamView> {
               );
             }
             final buffer = <int>[];
-            _subscription = response.stream.listen(
+            _subscription = response.stream.timeout(
+              _idleTimeout,
+              onTimeout: (sink) {
+                sink.addError(
+                  const MjpegStreamException(
+                    'Поток перестал отдавать кадры. Выполняется повторное подключение.',
+                  ),
+                );
+                sink.close();
+              },
+            ).listen(
               (chunk) {
                 if (!mounted || generation != _generation) return;
                 buffer.addAll(chunk);

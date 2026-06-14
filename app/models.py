@@ -36,6 +36,7 @@ class User(Base):
     user_id: Mapped[int] = mapped_column(primary_key=True)
     login: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_name: Mapped[Optional[str]] = mapped_column(String(100))
     first_name: Mapped[Optional[str]] = mapped_column(String(100))
     middle_name: Mapped[Optional[str]] = mapped_column(String(100))
@@ -182,6 +183,7 @@ class UserMfaMethod(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))
+    last_totp_counter: Mapped[Optional[int]] = mapped_column(Integer)
 
     user: Mapped[User] = relationship()
 

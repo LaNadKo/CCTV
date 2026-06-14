@@ -3,6 +3,21 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+key.properties
+*.log
+*.dump
+*.backup
+*.bak
+credentials.*
+secrets.*
 venv/
 .venv/
 .venv-backend-clean/
@@ -24,6 +39,7 @@ node_modules/
 *.sln
 *.sw?
 .DS_Store
+.security-scans/
 
 # Storage (runtime data)
 data/
@@ -53,6 +69,7 @@ certbot/
 # Installers / APK (large binaries)
 *.exe
 *.apk
+*.zip
 *.tar.gz
 
 # Mobile build artifacts
@@ -64,6 +81,12 @@ mobile/.expo/
 mobile/react-capacitor/node_modules/
 mobile/react-capacitor/dist/
 mobile/react-capacitor/android/app/build/
+
+# Flutter build artifacts
+native/**/build/
+native/**/.dart_tool/
+native/**/.flutter-plugins
+native/**/.flutter-plugins-dependencies
 
 # Desktop build artifacts
 desktop/node_modules/

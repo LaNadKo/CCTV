@@ -305,7 +305,13 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
       _selectedId = record.id;
     });
     await _ensureMediaToken();
-    await _player.open(Media(_recordingUri(record).toString()), play: play);
+    await _player.open(
+      Media(
+        _recordingUri(record).toString(),
+        httpHeaders: _mediaHeaders(),
+      ),
+      play: play,
+    );
     _openedClipId = record.id;
     if (seekTo != null && seekTo > Duration.zero) {
       await _player.seek(seekTo);
@@ -368,10 +374,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   }
 
   Uri _recordingUri(_RecordingClip record) {
-    final token = context.read<AuthController>().mediaToken ?? '';
-    return context.read<ApiClient>().uri('/recordings/file/${record.id}', {
-      'token': token,
-    });
+    return context.read<ApiClient>().recordingFileUri(record.id);
   }
 
   Uri _snapshotUri(_RecordingClip record) {
@@ -379,13 +382,17 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
   }
 
   Uri _snapshotUriById(int recordingId) {
-    final token = context.read<AuthController>().mediaToken ?? '';
     return context.read<ApiClient>().uri('/recordings/snapshot/$recordingId', {
-      'token': token,
       'ts': '0',
       'max_width': '640',
       'quality': '70',
     });
+  }
+
+  Map<String, String> _mediaHeaders() {
+    return context
+        .read<ApiClient>()
+        .mediaAuthorizationHeaders(context.read<AuthController>().mediaToken);
   }
 
   List<_TimelineEvent> _eventsForClip(_RecordingClip record) {
@@ -420,11 +427,13 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
     if (record == null) return;
     await _ensureMediaToken();
     if (!mounted) return;
-    final token = context.read<AuthController>().mediaToken ?? '';
-    final uri = context.read<ApiClient>().recordingMjpegUri(record.id, token);
+    final uri = context.read<ApiClient>().recordingMjpegUri(record.id);
     await showDialog<void>(
       context: context,
-      builder: (context) => _MjpegFallbackDialog(uri: uri.toString()),
+      builder: (context) => _MjpegFallbackDialog(
+        uri: uri,
+        headers: _mediaHeaders(),
+      ),
     );
   }
 
@@ -510,11 +519,12 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                         : _showMjpegFallback,
                   ),
                 const SizedBox(height: 14),
-                if (_archiveDays.isNotEmpty)
+                  if (_archiveDays.isNotEmpty)
                   _ArchiveBrowser(
                     days: _archiveDays,
                     selectedDay: _selectedDay,
                     selectedHour: _selectedHour,
+                    snapshotHeaders: _mediaHeaders(),
                     snapshotUri: (recordingId) =>
                         _snapshotUriById(recordingId).toString(),
                     onSelectHour: _selectArchiveHour,
@@ -570,6 +580,7 @@ class _ArchiveRecordingsScreenState extends State<ArchiveRecordingsScreen>
                   record: record,
                   active: record.id == _selectedId,
                   snapshotUri: _snapshotUri(record).toString(),
+                  snapshotHeaders: _mediaHeaders(),
                   events: _eventsForClip(record),
                   onTap: () => _openClip(record, play: false),
                   onPlay: () => _playFrom(record),
@@ -820,9 +831,13 @@ class _PlayerPanel extends StatelessWidget {
 }
 
 class _MjpegFallbackDialog extends StatelessWidget {
-  const _MjpegFallbackDialog({required this.uri});
+  const _MjpegFallbackDialog({
+    required this.uri,
+    required this.headers,
+  });
 
-  final String uri;
+  final Uri uri;
+  final Map<String, String> headers;
 
   @override
   Widget build(BuildContext context) {
@@ -841,7 +856,8 @@ class _MjpegFallbackDialog extends StatelessWidget {
                 child: Container(
                   color: Colors.black,
                   child: MjpegStreamView(
-                    uri: Uri.parse(uri),
+                    uri: uri,
+                    headers: headers,
                     fit: BoxFit.contain,
                     errorBuilder: (_, _) => Center(
                       child: Text(
@@ -1168,6 +1184,7 @@ class _ArchiveBrowser extends StatelessWidget {
     required this.selectedDay,
     required this.selectedHour,
     required this.snapshotUri,
+    required this.snapshotHeaders,
     required this.onSelectHour,
   });
 
@@ -1175,6 +1192,7 @@ class _ArchiveBrowser extends StatelessWidget {
   final DateTime? selectedDay;
   final int? selectedHour;
   final String Function(int recordingId) snapshotUri;
+  final Map<String, String> snapshotHeaders;
   final Future<void> Function(DateTime day, int hour) onSelectHour;
 
   @override
@@ -1259,6 +1277,7 @@ class _ArchiveBrowser extends StatelessWidget {
                       children: [
                         Image.network(
                           snapshotUri(hour.previewRecordingId),
+                          headers: snapshotHeaders,
                           fit: BoxFit.cover,
                           errorBuilder: (_, _, _) => ColoredBox(
                             color: colors.surfaceMuted,
@@ -1327,6 +1346,7 @@ class _ArchiveClipCard extends StatelessWidget {
     required this.record,
     required this.active,
     required this.snapshotUri,
+    required this.snapshotHeaders,
     required this.events,
     required this.onTap,
     required this.onPlay,
@@ -1335,6 +1355,7 @@ class _ArchiveClipCard extends StatelessWidget {
   final _RecordingClip record;
   final bool active;
   final String snapshotUri;
+  final Map<String, String> snapshotHeaders;
   final List<_TimelineEvent> events;
   final VoidCallback onTap;
   final VoidCallback onPlay;
@@ -1367,6 +1388,7 @@ class _ArchiveClipCard extends StatelessWidget {
                   children: [
                     Image.network(
                       snapshotUri,
+                      headers: snapshotHeaders,
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) =>
                           _ArchiveSnapshotPlaceholder(record: record),

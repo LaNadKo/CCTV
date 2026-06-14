@@ -1,3 +1,5 @@
+import json
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,7 +11,7 @@ class Settings(BaseSettings):
 
     # Database
     db_url: str = Field(
-        default="postgresql+asyncpg://postgres:0512@localhost:5432/cctv",
+        default="",
         validation_alias="DATABASE_URL",
     )
 
@@ -39,11 +41,20 @@ class Settings(BaseSettings):
     allow_legacy_query_tokens: bool = Field(default=False, validation_alias="ALLOW_LEGACY_QUERY_TOKENS")
     auth_rate_limit_attempts: int = Field(default=8, validation_alias="AUTH_RATE_LIMIT_ATTEMPTS")
     auth_rate_limit_window_seconds: int = Field(default=60, validation_alias="AUTH_RATE_LIMIT_WINDOW_SECONDS")
+    trusted_proxy_networks: list[str] = Field(
+        default_factory=lambda: ["127.0.0.0/8", "::1/128"],
+        validation_alias="TRUSTED_PROXY_NETWORKS",
+    )
 
     # Backend-owned media archive. Processor keeps local edge copies, but the
     # backend stores canonical recordings for archive playback and stitching.
     recordings_path: str = Field(default="recordings", validation_alias="RECORDINGS_PATH")
     snapshots_path: str = Field(default="snapshots", validation_alias="SNAPSHOTS_PATH")
+    processor_recording_upload_max_bytes: int = Field(
+        default=2 * 1024 * 1024 * 1024,
+        validation_alias="PROCESSOR_RECORDING_UPLOAD_MAX_BYTES",
+    )
+    report_export_max_rows: int = Field(default=5000, validation_alias="REPORT_EXPORT_MAX_ROWS")
 
     # Phase 1: embedded detector toggle
     enable_embedded_detector: bool = Field(
@@ -85,14 +96,42 @@ class Settings(BaseSettings):
                 return True
         return value
 
-    @field_validator("cors_origins", "allowed_hosts", mode="before")
+    @field_validator("cors_origins", "allowed_hosts", "trusted_proxy_networks", mode="before")
     @classmethod
-    def _parse_csv_list(cls, value):
+    def _parse_string_list(cls, value):
         if value is None:
             return value
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
+
+    @field_validator("processor_recording_upload_max_bytes", mode="before")
+    @classmethod
+    def _parse_processor_recording_upload_max_bytes(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 2 * 1024 * 1024 * 1024
+        return max(8 * 1024 * 1024, parsed)
+
+    @field_validator("report_export_max_rows", mode="before")
+    @classmethod
+    def _parse_report_export_max_rows(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 5000
+        return min(max(100, parsed), 100_000)
 
     def security_startup_errors(self) -> list[str]:
         if not self.is_production:

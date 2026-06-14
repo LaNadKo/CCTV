@@ -1,0 +1,4 @@
+storeFile=cctv-console-release.p12
+storePassword=change-me
+keyAlias=cctv-console
+keyPassword=change-me

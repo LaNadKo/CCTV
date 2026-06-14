@@ -1,6 +1,7 @@
 """Processor service entry point."""
 from __future__ import annotations
 import asyncio
+import contextlib
 import logging
 import signal
 from typing import Any
@@ -25,6 +26,7 @@ class ProcessorService:
         self.client = BackendClient()
         self.processor_id: int | None = None
         self.workers: dict[int, CameraWorker] = {}
+        self._worker_tasks: dict[int, asyncio.Task] = {}
         self._running = False
         self._prewarm_task: asyncio.Task | None = None
         self._monitor = SystemMonitor()
@@ -52,9 +54,11 @@ class ProcessorService:
         self._gallery_refresh_seconds = 180.0
         self._media_server = ProcessorMediaServer(
             service=self,
-            host="0.0.0.0",  # nosec B104
+            host=settings.media_bind,  # nosec B104 - default is explicit for LAN processor streaming.
             port=settings.media_port,
             media_token=settings.media_token,
+            max_connections=settings.media_max_connections,
+            socket_timeout=settings.media_socket_timeout_seconds,
         )
 
     async def start(self):
@@ -97,8 +101,7 @@ class ProcessorService:
         self._assignment_refresh_event.set()
         if self._prewarm_task and not self._prewarm_task.done():
             self._prewarm_task.cancel()
-        for w in self.workers.values():
-            w.stop()
+        await self._stop_all_workers()
         self._media_server.stop()
         if self.processor_id is not None:
             try:
@@ -170,12 +173,26 @@ class ProcessorService:
     async def _sync_assignments(self):
         async with self._assignment_lock:
             assignments = await self.client.get_assignments(self.processor_id)
-            assigned_ids = {a["camera_id"] for a in assignments}
+            assignments = sorted(
+                assignments,
+                key=lambda item: int(item.get("priority") or 0),
+                reverse=True,
+            )
+            capacity = max(1, int(settings.max_workers))
+            active_assignments = assignments[:capacity]
+            deferred_assignments = assignments[capacity:]
+            assigned_ids = {a["camera_id"] for a in active_assignments}
             for cid in list(self.workers.keys()):
                 if cid not in assigned_ids:
-                    self.workers[cid].stop()
-                    del self.workers[cid]
+                    await self._stop_worker(cid)
                     logger.info("Stopped worker for camera %d", cid)
+            if deferred_assignments:
+                logger.warning(
+                    "Processor capacity reached: active=%d deferred=%d max_workers=%d",
+                    len(active_assignments),
+                    len(deferred_assignments),
+                    capacity,
+                )
             if self._workers_paused:
                 logger.info("Camera workers are paused; assignments synced without starting workers")
                 return
@@ -183,7 +200,7 @@ class ProcessorService:
             if self._gallery_loaded_at <= 0.0 or (now - self._gallery_loaded_at) >= self._gallery_refresh_seconds:
                 self._gallery = await self.client.get_gallery(self.processor_id)
                 self._gallery_loaded_at = now
-            for a in assignments:
+            for a in active_assignments:
                 cid = a["camera_id"]
                 candidates = source_candidates(a)
                 source = candidates[0] if candidates else resolve_source(a)
@@ -195,16 +212,16 @@ class ProcessorService:
                     worker = CameraWorker(a, self.client, source)
                     await worker.set_gallery(self._gallery)
                     self.workers[cid] = worker
-                    asyncio.create_task(worker.start(self.processor_id))
+                    self._start_worker_task(cid, worker)
                     logger.info("Started worker for camera %d", cid)
                     continue
 
                 if worker.source not in candidates:
-                    worker.stop()
+                    await self._stop_worker(cid)
                     replacement = CameraWorker(a, self.client, source)
                     await replacement.set_gallery(self._gallery)
                     self.workers[cid] = replacement
-                    asyncio.create_task(replacement.start(self.processor_id))
+                    self._start_worker_task(cid, replacement)
                     logger.info("Restarted worker for camera %d after source update", cid)
                     continue
 
@@ -283,10 +300,44 @@ class ProcessorService:
             logger.exception("Processor command %s failed", command_type)
             await self.client.complete_command(self.processor_id, command_id, "failed", error_message=str(exc))
 
-    async def _stop_all_workers(self):
-        for worker in self.workers.values():
+    def _start_worker_task(self, camera_id: int, worker: CameraWorker) -> None:
+        task = asyncio.create_task(worker.start(self.processor_id))
+        self._worker_tasks[camera_id] = task
+
+        def _done(done_task: asyncio.Task) -> None:
+            if self._worker_tasks.get(camera_id) is done_task:
+                self._worker_tasks.pop(camera_id, None)
+            if self.workers.get(camera_id) is worker:
+                self.workers.pop(camera_id, None)
+            if not done_task.cancelled():
+                exc = done_task.exception()
+                if exc is not None:
+                    logger.error(
+                        "Camera worker %d terminated with error",
+                        camera_id,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+
+        task.add_done_callback(_done)
+
+    async def _stop_worker(self, camera_id: int) -> None:
+        worker = self.workers.pop(camera_id, None)
+        task = self._worker_tasks.pop(camera_id, None)
+        if worker is not None:
             worker.stop()
-        self.workers.clear()
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=8.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            logger.warning("Camera worker %d did not stop within timeout", camera_id)
+
+    async def _stop_all_workers(self):
+        for camera_id in list(self.workers):
+            await self._stop_worker(camera_id)
 
     async def _restart_workers(self):
         await self._stop_all_workers()

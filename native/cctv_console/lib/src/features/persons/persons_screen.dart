@@ -275,7 +275,10 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
       _liveCaptureStatus = 'Получаю live-кадр...';
     });
     try {
-      final result = await _captureLiveEmbeddingSample(reload: true);
+      final result = await _captureLiveEmbeddingSample(
+        reload: true,
+        allowSnapshotFallback: true,
+      );
       final status = result.status;
       final similarity = result.maxSimilarity;
       final message = switch (status) {
@@ -284,6 +287,7 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
           'Похожий ракурс уже есть${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
         'mismatch' =>
           'Лицо не похоже на выбранную персону${similarity == null ? '' : ': sim=${similarity.toStringAsFixed(3)}'}',
+        'no_face' => 'Свежий live-эмбеддинг ещё не готов: держите лицо в кадре',
         _ => 'Кадр из эфира отправлен: $status',
       };
       if (!mounted) return;
@@ -300,22 +304,34 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
 
   Future<_LiveCaptureResult> _captureLiveEmbeddingSample({
     required bool reload,
+    bool allowSnapshotFallback = false,
   }) async {
     final personId = _selectedPersonId;
     final cameraId = _embeddingCameraId;
     if (personId == null) throw ApiException('Выберите персону');
     if (cameraId == null) throw ApiException('Выберите камеру для live-сбора');
     final (api, token) = _deps();
-    final bytes = await api.captureCameraJpegFrame(token, cameraId);
-    final result = await api.uploadPersonPhotoStream(
-      token,
-      personId,
-      stream: Stream<List<int>>.value(bytes),
-      length: bytes.length,
-      filename:
-          'live-camera-$cameraId-${DateTime.now().millisecondsSinceEpoch}.jpg',
-      cameraId: cameraId,
-    );
+    Map<String, dynamic> result;
+    try {
+      result = await api.addPersonLiveEmbedding(token, personId, cameraId);
+    } on ApiException catch (error) {
+      if (!allowSnapshotFallback ||
+          (error.statusCode != 404 &&
+              error.statusCode != 503 &&
+              error.statusCode != 400)) {
+        rethrow;
+      }
+      final bytes = await api.captureCameraJpegFrame(token, cameraId);
+      result = await api.uploadPersonPhotoStream(
+        token,
+        personId,
+        stream: Stream<List<int>>.value(bytes),
+        length: bytes.length,
+        filename:
+            'live-camera-$cameraId-${DateTime.now().millisecondsSinceEpoch}.jpg',
+        cameraId: cameraId,
+      );
+    }
     if (reload) {
       await _reloadQuietly();
       _markPersonsChanged();
@@ -369,7 +385,10 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
             'Кадр ${attempts + 1}/$_maxLiveCaptureEmbeddings...';
       });
       try {
-        final result = await _captureLiveEmbeddingSample(reload: false);
+        final result = await _captureLiveEmbeddingSample(
+          reload: false,
+          allowSnapshotFallback: false,
+        );
         attempts += 1;
         if (result.status == 'added') {
           added += 1;
@@ -390,8 +409,9 @@ class _PersonsManagementScreenState extends State<PersonsManagementScreen>
             _liveCaptureAdded = added;
             _liveCaptureAttempts = attempts;
             _liveCaptureDuplicates = duplicates;
-            _liveCaptureStatus =
-                'Добавлено $added/$target, дублей $duplicates, попыток $attempts.';
+            _liveCaptureStatus = result.status == 'no_face'
+                ? 'Свежий live-эмбеддинг ещё не готов: попыток $attempts, добавлено $added/$target.'
+                : 'Добавлено $added/$target, дублей $duplicates, попыток $attempts.';
           });
         }
       } catch (error) {

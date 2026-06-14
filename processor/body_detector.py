@@ -6,21 +6,27 @@ import logging
 import os
 import sys
 import threading
-import urllib.request
-import zipfile
+import time
 from pathlib import Path
 
 import numpy as np
 
+from cctv_ai.model_artifacts import download_verified_https, file_matches_sha256, safe_extract_zip
 from cctv_ai.runtime_env import select_mmdeploy_device
 
 logger = logging.getLogger(__name__)
 
 _RTMPOSE_CPU_URL = "https://download.openmmlab.com/mmpose/v1/projects/rtmpose/rtmpose-cpu.zip"
+_RTMPOSE_CPU_SHA256 = "54e1d48a8946c87d66e96f81438344fec6e471cb3e44b71dfa04be6e879f3528"
+_RTMDET_NANO_SHA256 = "b8585adb6d1352796f6e86337e09c3459b830645a7e7192d9381670bea2facbd"
+_RTMPOSE_M_SHA256 = "8ed9cd4724582d00e7978c297472365946277185ecc448d4ad47f4f376ae3208"
 
 _tracker = None
 _states: dict[str, object] = {}
 _device = "cpu"
+_failed_device: str | None = None
+_failed_device_until = 0.0
+_DEVICE_RETRY_SECONDS = 60.0
 _model_lock = threading.RLock()
 
 
@@ -61,22 +67,39 @@ def _runtime_dir() -> Path:
     return Path(".models") / "mmpose" / "rtmpose-cpu" / "rtmpose-ort"
 
 
+def _model_pack_valid(target_dir: Path) -> bool:
+    return file_matches_sha256(
+        target_dir / "rtmdet-nano" / "end2end.onnx",
+        _RTMDET_NANO_SHA256,
+    ) and file_matches_sha256(
+        target_dir / "rtmpose-m" / "end2end.onnx",
+        _RTMPOSE_M_SHA256,
+    )
+
+
 def _ensure_model_pack() -> Path:
     target_dir = _runtime_dir()
-    det_dir = target_dir / "rtmdet-nano"
-    pose_dir = target_dir / "rtmpose-m"
-    if det_dir.exists() and pose_dir.exists():
+    if _model_pack_valid(target_dir):
         return target_dir
 
     archive_path = target_dir.parent / "rtmpose-cpu.zip"
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    if not archive_path.exists():
-        logger.info("Downloading MMDeploy RTMPose SDK to %s", archive_path)
-        urllib.request.urlretrieve(_RTMPOSE_CPU_URL, archive_path)
-
-    extract_root = target_dir.parent
-    with zipfile.ZipFile(archive_path, "r") as archive:
-        archive.extractall(extract_root)
+    if not file_matches_sha256(archive_path, _RTMPOSE_CPU_SHA256):
+        logger.info("Downloading verified MMDeploy RTMPose SDK to %s", archive_path)
+    download_verified_https(
+        _RTMPOSE_CPU_URL,
+        archive_path,
+        expected_sha256=_RTMPOSE_CPU_SHA256,
+        max_bytes=64 * 1024 * 1024,
+    )
+    safe_extract_zip(
+        archive_path,
+        target_dir.parent,
+        max_members=32,
+        max_uncompressed_bytes=80 * 1024 * 1024,
+    )
+    if not _model_pack_valid(target_dir):
+        raise RuntimeError("MMDeploy RTMPose model pack failed integrity validation after extraction")
     return target_dir
 
 
@@ -85,12 +108,23 @@ def _want_device() -> str:
     return device
 
 
+def _effective_device() -> str:
+    preferred_device = _want_device()
+    if (
+        preferred_device != "cpu"
+        and _failed_device == preferred_device
+        and time.monotonic() < _failed_device_until
+    ):
+        return "cpu"
+    return preferred_device
+
+
 def _load_tracker():
-    global _tracker, _device
+    global _failed_device, _failed_device_until, _tracker, _device
     target_dir = _ensure_model_pack()
     det_model = target_dir / "rtmdet-nano"
     pose_model = target_dir / "rtmpose-m"
-    preferred_device = _want_device()
+    preferred_device = _effective_device()
     if _tracker is None or _device != preferred_device:
         with _suppress_native_output():
             import mmdeploy_runtime as mmdeploy
@@ -99,10 +133,18 @@ def _load_tracker():
             with _suppress_native_output():
                 _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), preferred_device)
             _device = preferred_device
-        except Exception:
             if preferred_device != "cpu":
-                logger.exception("MMDeploy PoseTracker failed to start on CUDA")
-            raise
+                _failed_device = None
+                _failed_device_until = 0.0
+        except Exception:
+            if preferred_device == "cpu":
+                raise
+            _failed_device = preferred_device
+            _failed_device_until = time.monotonic() + _DEVICE_RETRY_SECONDS
+            logger.exception("MMDeploy PoseTracker failed to start on %s; retrying on CPU", preferred_device)
+            with _suppress_native_output():
+                _tracker = mmdeploy.PoseTracker(str(det_model), str(pose_model), "cpu")
+            _device = "cpu"
     return _tracker
 
 
@@ -120,6 +162,11 @@ def _get_state(camera_key: object | None):
         state = tracker.create_state(det_interval=1, det_min_bbox_size=32, keypoint_sigmas=[])
         _states[key] = state
     return tracker, state
+
+
+def release_camera_state(camera_key: object | None) -> None:
+    with _model_lock:
+        _states.pop(_state_key(camera_key), None)
 
 
 def prewarm_model() -> str:

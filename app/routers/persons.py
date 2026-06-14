@@ -6,6 +6,7 @@ import cv2
 import httpx
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,9 +20,13 @@ from app.processor_media import (
     is_processor_effectively_online,
 )
 from app.schemas.persons import PersonCreate, PersonOut, PersonUpdate
-from app.routers.face import _extract_best_face_embedding
+from app.routers.face import _decode_face_image, _extract_best_face_embedding
 
 router = APIRouter(prefix="/persons", tags=["persons"])
+
+
+class LiveEmbeddingRequest(BaseModel):
+    camera_id: int
 
 
 async def _ensure_admin(user: models.User, session: AsyncSession) -> None:
@@ -42,6 +47,7 @@ def _invalidate_gallery_cache() -> None:
 
 _EMB_ACCEPT_MIN = 0.6
 _EMB_DUPLICATE_MAX = 0.9
+_MAX_FACE_IMAGE_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _cos_sim(a: np.ndarray, b: np.ndarray) -> float:
@@ -177,6 +183,77 @@ async def _extract_best_face_embedding_via_processor(
             detail="Processor returned invalid face embedding",
         )
     return emb
+
+
+async def _extract_live_face_embedding_via_processor(
+    session: AsyncSession,
+    camera_id: int,
+) -> np.ndarray | None:
+    proc = await _pick_processor_for_embedding(session, camera_id)
+    if proc is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Face recognition unavailable: no online processor assigned to camera",
+        )
+
+    url = f"{get_processor_media_base_url(proc)}/cameras/{camera_id}/embedding.json"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=3.0, write=3.0, pool=3.0)) as client:
+            res = await client.get(url, headers=get_processor_media_headers(proc))
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Processor live embedding endpoint is unreachable ({exc})",
+        ) from exc
+
+    payload = {}
+    if res.content:
+        try:
+            payload = res.json()
+        except ValueError:
+            payload = {}
+
+    if res.status_code == status.HTTP_404_NOT_FOUND:
+        return None
+    if not res.is_success:
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(detail or "Processor failed to return live face embedding"),
+        )
+
+    emb_b64 = payload.get("embedding_b64") if isinstance(payload, dict) else None
+    if not emb_b64:
+        return None
+    emb = np.frombuffer(base64.b64decode(emb_b64), dtype=np.float32)
+    return emb if emb.size else None
+
+
+async def _add_person_embedding(
+    session: AsyncSession,
+    person: models.Person,
+    emb: np.ndarray,
+    *,
+    source: str = "photo",
+) -> dict:
+    existing = await _existing_embeddings(session, person.person_id)
+    ok, status_name, max_sim = _should_add_embedding(emb, existing)
+    if ok:
+        session.add(
+            models.PersonEmbedding(
+                person_id=person.person_id,
+                embedding=emb.astype(np.float32).tobytes(),
+                source=source,
+            )
+        )
+        await session.commit()
+        _invalidate_gallery_cache()
+    return {
+        "person_id": person.person_id,
+        "embedding_len": len(emb),
+        "status": status_name,
+        "max_similarity": max_sim,
+    }
 
 
 @router.get("", response_model=List[PersonOut])
@@ -329,11 +406,10 @@ async def add_embedding_from_photo(
     person = await session.get(models.Person, person_id)
     if person is None or _is_deleted(person):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
-    data = await file.read()
-    image = np.frombuffer(data, np.uint8)
-    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
-    if image is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image")
+    data = await file.read(_MAX_FACE_IMAGE_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_FACE_IMAGE_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Image is too large")
+    image = _decode_face_image(data)
     fallback_exc: HTTPException | None = None
     try:
         emb = _extract_best_face_embedding(image)
@@ -357,16 +433,27 @@ async def add_embedding_from_photo(
         if fallback_exc is not None and fallback_exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
             raise fallback_exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found")
-    existing = await _existing_embeddings(session, person.person_id)
-    ok, status_name, max_sim = _should_add_embedding(emb, existing)
-    if ok:
-        session.add(
-            models.PersonEmbedding(
-                person_id=person.person_id,
-                embedding=emb.astype(np.float32).tobytes(),
-                source="photo",
-            )
-        )
-        await session.commit()
-        _invalidate_gallery_cache()
-    return {"person_id": person.person_id, "embedding_len": len(emb), "status": status_name, "max_similarity": max_sim}
+    return await _add_person_embedding(session, person, emb)
+
+
+@router.post("/{person_id}/embeddings/live")
+async def add_embedding_from_live(
+    person_id: int,
+    payload: LiveEmbeddingRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: models.User = Depends(get_current_user),
+):
+    await _ensure_admin(current_user, session)
+    person = await session.get(models.Person, person_id)
+    if person is None or _is_deleted(person):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+
+    emb = await _extract_live_face_embedding_via_processor(session, payload.camera_id)
+    if emb is None:
+        return {
+            "person_id": person.person_id,
+            "embedding_len": 0,
+            "status": "no_face",
+            "max_similarity": None,
+        }
+    return await _add_person_embedding(session, person, emb, source="live")

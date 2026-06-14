@@ -29,6 +29,8 @@ x-processor-env: &processor-env
   OVERLAY_FRAME_DIVISOR: ${OVERLAY_FRAME_DIVISOR:-1}
   FACE_MATCH_THRESHOLD: ${FACE_MATCH_THRESHOLD:-0.56}
   RECORDING_SEGMENT_SECONDS: ${RECORDING_SEGMENT_SECONDS:-60}
+  RECORDING_MIN_FREE_BYTES: ${RECORDING_MIN_FREE_BYTES:-536870912}
+  MAX_CAPTURE_PIXELS: ${MAX_CAPTURE_PIXELS:-8294400}
   MEDIA_PORT: ${MEDIA_PORT:-8777}
   MEDIA_TOKEN: ${MEDIA_TOKEN:-}
 
@@ -36,15 +38,11 @@ x-processor-common: &processor-common
   volumes:
     - ${PROCESSOR_RUNTIME_VOLUME:-processor_runtime}:/app/processor-runtime
   ports:
-    - "${MEDIA_BIND:-0.0.0.0}:${MEDIA_PORT:-8777}:${MEDIA_PORT:-8777}"
+    - "${MEDIA_BIND:?Set MEDIA_BIND explicitly in .env}:${MEDIA_PORT:-8777}:${MEDIA_PORT:-8777}"
   security_opt:
     - no-new-privileges:true
   cap_drop:
     - ALL
-  cap_add:
-    - CHOWN
-    - SETUID
-    - SETGID
   restart: unless-stopped
   healthcheck:
     test:

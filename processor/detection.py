@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 import queue
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -14,10 +15,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from cctv_ai.opencv_capture import open_video_capture
 from PIL import Image, ImageDraw, ImageFont
 from scipy.optimize import linear_sum_assignment
 
-from processor.camera_utils import source_candidates
+from processor.camera_utils import redact_source, source_candidates
 from processor.config import settings
 from processor.inference_scheduler import gpu_inference_gate
 from processor.latest_queue import drain, put_latest
@@ -50,6 +53,28 @@ _POSE_SKELETON_EDGES = (
     (0, 5),
     (0, 6),
 )
+
+
+def _resize_capture_frame(frame: np.ndarray, max_pixels: int) -> np.ndarray:
+    height, width = frame.shape[:2]
+    pixel_count = max(1, int(height) * int(width))
+    if pixel_count <= max_pixels:
+        return frame
+    scale = (max_pixels / float(pixel_count)) ** 0.5
+    target_width = max(1, int(width * scale))
+    target_height = max(1, int(height * scale))
+    return cv2.resize(
+        frame,
+        (target_width, target_height),
+        interpolation=cv2.INTER_AREA,
+    )
+
+
+def _recording_has_free_space(root: Path, min_free_bytes: int) -> bool:
+    try:
+        return shutil.disk_usage(root).free >= max(0, int(min_free_bytes))
+    except OSError:
+        return False
 
 
 @lru_cache(maxsize=8)
@@ -135,6 +160,8 @@ class CameraWorker:
         self._last_faces_info: list[tuple[tuple[int, int, int, int], str, bool]] = []
         self._last_faces_ts = 0.0
         self._last_faces_flow_ts = 0.0
+        self._last_live_embeddings: list[dict[str, object]] = []
+        self._last_live_embeddings_ts = 0.0
         self._last_body_info: list[dict[str, object]] = []
         self._last_body_ts = 0.0
         self._last_body_flow_ts = 0.0
@@ -166,7 +193,11 @@ class CameraWorker:
         self._capture_frame: np.ndarray | None = None
         self._capture_seq = 0
         self._capture_thread: threading.Thread | None = None
+        self._capture_handle_lock = threading.Lock()
+        self._capture_handle: cv2.VideoCapture | None = None
         self._last_capture_monotonic = 0.0
+        self._max_capture_pixels = int(getattr(settings, "max_capture_pixels", 8_294_400))
+        self._capture_resize_logged = False
         self._analysis_lock = threading.RLock()
         self._flow_max_side = 960
         self._face_flow_reference: tuple[np.ndarray, float, float] | None = None
@@ -178,8 +209,12 @@ class CameraWorker:
         self._antispoof_inference_interval = 0.45
 
         self._frame_lock = threading.Lock()
+        self._frame_ready = threading.Condition(self._frame_lock)
         self._latest_raw_jpeg: bytes | None = None
         self._latest_overlay_jpeg: bytes | None = None
+        self._stream_frame_sequence = 0
+        self._raw_frame_sequence = 0
+        self._overlay_frame_sequence = 0
 
         self._writer: cv2.VideoWriter | None = None
         self._writer_path: Path | None = None
@@ -193,6 +228,18 @@ class CameraWorker:
         self._record_target_fps = 15.0
         self._record_enqueue_interval = 1.0 / self._record_target_fps
         self._last_record_enqueue_monotonic = 0.0
+        self._recording_upload_concurrency = max(
+            1,
+            min(8, int(getattr(settings, "recording_upload_concurrency", 2))),
+        )
+        self._recording_upload_pending: queue.Queue[tuple[dict, Path | None]] = queue.Queue(
+            maxsize=max(8, min(512, int(getattr(settings, "recording_upload_queue_size", 128)))),
+        )
+        self._recording_upload_lock = threading.RLock()
+        self._recording_upload_inflight = 0
+        self._recording_cleanup_last_monotonic = 0.0
+        self._recording_cleanup_interval = 300.0
+        self._last_low_disk_log_monotonic = 0.0
         self._metrics = PerformanceMetrics(f"camera={self.camera_id}", logger=logger)
 
         self._tracking_controller = None
@@ -321,6 +368,10 @@ class CameraWorker:
 
     def stop(self):
         self._running = False
+        with self._capture_handle_lock:
+            capture = self._capture_handle
+        if capture is not None:
+            capture.release()
         if self._auto_tracker:
             self._auto_tracker.stop(force=True)
 
@@ -330,14 +381,67 @@ class CameraWorker:
                 return self._latest_overlay_jpeg
             return self._latest_raw_jpeg
 
+    def wait_for_stream_frame(
+        self,
+        *,
+        overlay: bool,
+        after_sequence: int,
+        timeout: float = 0.5,
+    ) -> tuple[int, bytes | None]:
+        def current() -> tuple[int, bytes | None]:
+            if overlay and self._latest_overlay_jpeg is not None:
+                return self._overlay_frame_sequence, self._latest_overlay_jpeg
+            return self._raw_frame_sequence, self._latest_raw_jpeg
+
+        with self._frame_ready:
+            sequence, frame = current()
+            if sequence <= after_sequence:
+                self._frame_ready.wait_for(
+                    lambda: current()[0] > after_sequence,
+                    timeout=max(0.0, timeout),
+                )
+                sequence, frame = current()
+            return sequence, frame
+
+    def get_live_embedding(self, max_age: float = 2.0) -> dict[str, object] | None:
+        with self._analysis_lock:
+            now = time.time()
+            if (
+                not self._last_live_embeddings
+                or now - self._last_live_embeddings_ts > max(max_age, self._face_overlay_ttl)
+            ):
+                return None
+            best = max(
+                self._last_live_embeddings,
+                key=lambda item: max(
+                    0.0,
+                    float(item["box"][2]) - float(item["box"][0]),
+                )
+                * max(0.0, float(item["box"][3]) - float(item["box"][1])),
+            )
+            embedding = np.asarray(best.get("embedding"), dtype=np.float32)
+            if embedding.size == 0:
+                return None
+            return {
+                "embedding": embedding.copy(),
+                "box": tuple(best["box"]),
+                "person_id": best.get("person_id"),
+                "similarity": best.get("similarity"),
+                "recognized": bool(best.get("recognized")),
+                "label": best.get("label"),
+                "age_seconds": max(0.0, now - self._last_live_embeddings_ts),
+            }
+
     def bottleneck_text(self) -> str:
         return self._metrics.bottleneck_text()
 
     def _run_loop(self):
         cap = self._open_capture()
         if not cap.isOpened():
-            logger.error("Cannot open camera %s source=%s", self.camera_id, self.source)
+            logger.error("Cannot open camera %s source=%s", self.camera_id, redact_source(self.source))
             return
+        with self._capture_handle_lock:
+            self._capture_handle = cap
         last_face_scan = 0.0
         last_body_scan = 0.0
         last_processed_seq = 0
@@ -396,8 +500,17 @@ class CameraWorker:
             self._stop_recording_thread()
             self._stop_publish_thread()
             self._stop_overlay_thread()
+            try:
+                from processor.body_detector import release_camera_state
+
+                release_camera_state(self.camera_id)
+            except Exception:
+                logger.exception("Failed to release body tracker state for camera %s", self.camera_id)
             self._metrics.log_summary()
             cap.release()
+            with self._capture_handle_lock:
+                if self._capture_handle is cap:
+                    self._capture_handle = None
 
     def _capture_loop(self, cap: cv2.VideoCapture) -> None:
         while self._running:
@@ -411,6 +524,18 @@ class CameraWorker:
             if not ok or frame is None:
                 time.sleep(0.01)
                 continue
+            original_height, original_width = frame.shape[:2]
+            frame = _resize_capture_frame(frame, self._max_capture_pixels)
+            if not self._capture_resize_logged and frame.shape[:2] != (original_height, original_width):
+                logger.warning(
+                    "Camera %s: capture frame %sx%s downscaled to %sx%s by MAX_CAPTURE_PIXELS",
+                    self.camera_id,
+                    original_width,
+                    original_height,
+                    frame.shape[1],
+                    frame.shape[0],
+                )
+                self._capture_resize_logged = True
             now = time.monotonic()
             if self._last_capture_monotonic:
                 interval = now - self._last_capture_monotonic
@@ -442,27 +567,12 @@ class CameraWorker:
         return self._publish_frame_counter
 
     def _open_single_capture(self, source: str | int) -> cv2.VideoCapture:
-        if isinstance(source, str) and source.lower().startswith("rtsp://"):
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
-                "|analyzeduration;0|probesize;32768|flush_packets;1"
-            )
-            cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-        else:
-            cap = cv2.VideoCapture(source)
-
-        for prop, value in (
-            (getattr(cv2, "CAP_PROP_BUFFERSIZE", None), 1),
-            (getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None), 5000),
-            (getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None), 5000),
-        ):
-            if prop is None:
-                continue
-            try:
-                cap.set(prop, value)
-            except Exception:
-                pass
-        return cap
+        return open_video_capture(
+            source,
+            open_timeout_ms=5000,
+            read_timeout_ms=5000,
+            buffer_size=1,
+        )
 
     def _open_capture(self) -> cv2.VideoCapture:
         candidates = source_candidates(self.assignment) or [self.source]
@@ -474,13 +584,17 @@ class CameraWorker:
                     logger.warning(
                         "Camera %s: using fallback source %s after primary failed",
                         self.camera_id,
-                        source,
+                        redact_source(source),
                     )
                 self.source = source
                 return cap
             cap.release()
             last_cap = cap
-            logger.warning("Camera %s: cannot open source candidate %s", self.camera_id, source)
+            logger.warning(
+                "Camera %s: cannot open source candidate %s",
+                self.camera_id,
+                redact_source(source),
+            )
         return last_cap or cv2.VideoCapture()
 
     def _detect_motion(self, frame: np.ndarray) -> bool:
@@ -565,6 +679,7 @@ class CameraWorker:
                         faces = self._scan_face_rois(frame, detect_faces)
             now = time.time()
             overlay_items: list[tuple[tuple[int, int, int, int], str, bool]] = []
+            live_embedding_items: list[dict[str, object]] = []
             with self._analysis_lock:
                 bodies = [dict(body) for body in (self._body_support_cache or [])]
                 body_tracks = [dict(state) for state in self._body_tracks.values()]
@@ -613,6 +728,18 @@ class CameraWorker:
                     self._forget_blocked_face(box, now)
                     if track_id is not None:
                         self._remember_track_liveness(track_id, now, box)
+                    embedding = np.asarray(face.get("embedding"), dtype=np.float32)
+                    if embedding.size:
+                        live_embedding_items.append(
+                            {
+                                "embedding": embedding.copy(),
+                                "box": box,
+                                "person_id": person_id,
+                                "similarity": sim,
+                                "recognized": recognized,
+                                "label": label,
+                            }
+                        )
                     if recognized:
                         overlay_items.append((box, label, recognized))
                         self._remember_identity(box, person_id, sim, now)
@@ -681,6 +808,12 @@ class CameraWorker:
                     self._last_faces_info = []
                     self._last_faces_flow_ts = 0.0
                     self._face_flow_reference = None
+                if live_embedding_items:
+                    self._last_live_embeddings = live_embedding_items
+                    self._last_live_embeddings_ts = now
+                elif now - self._last_live_embeddings_ts > self._face_overlay_ttl:
+                    self._last_live_embeddings = []
+                    self._last_live_embeddings_ts = 0.0
         except Exception:
             logger.exception("Face scan error on camera %s", self.camera_id)
 
@@ -3282,16 +3415,22 @@ class CameraWorker:
                     raw_ok, raw_buf = cv2.imencode(".jpg", frame, encode_opts)
                 raw_bytes = raw_buf.tobytes() if raw_ok else None
                 if raw_bytes is not None:
-                    with self._frame_lock:
+                    with self._frame_ready:
                         self._latest_raw_jpeg = raw_bytes
+                        self._stream_frame_sequence += 1
+                        self._raw_frame_sequence = self._stream_frame_sequence
+                        self._frame_ready.notify_all()
 
                 if not overlay_active and raw_bytes is not None:
                     overlay_stale = (
                         time.monotonic() - self._last_overlay_render_ts
                     ) > max(0.22, self._overlay_render_interval * 2.5)
-                    with self._frame_lock:
+                    with self._frame_ready:
                         if overlay_stale or self._latest_overlay_jpeg is None:
                             self._latest_overlay_jpeg = raw_bytes
+                            self._stream_frame_sequence += 1
+                            self._overlay_frame_sequence = self._stream_frame_sequence
+                            self._frame_ready.notify_all()
             finally:
                 self._publish_queue.task_done()
 
@@ -3374,8 +3513,11 @@ class CameraWorker:
                             encode_opts,
                         )
                     if overlay_ok:
-                        with self._frame_lock:
+                        with self._frame_ready:
                             self._latest_overlay_jpeg = overlay_buf.tobytes()
+                            self._stream_frame_sequence += 1
+                            self._overlay_frame_sequence = self._stream_frame_sequence
+                            self._frame_ready.notify_all()
                         self._last_overlay_render_ts = time.monotonic()
                 finally:
                     self._overlay_queue.task_done()
@@ -3487,6 +3629,17 @@ class CameraWorker:
 
         if rotate:
             self._finalize_recording()
+            min_free_bytes = int(getattr(settings, "recording_min_free_bytes", 536_870_912))
+            if not _recording_has_free_space(RECORDINGS_DIR, min_free_bytes):
+                now = time.monotonic()
+                if now - self._last_low_disk_log_monotonic >= 60.0:
+                    logger.error(
+                        "Camera %s: recording paused because free disk space is below %s bytes",
+                        self.camera_id,
+                        min_free_bytes,
+                    )
+                    self._last_low_disk_log_monotonic = now
+                return
             rel_path, abs_path = self._new_recording_path()
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(
@@ -3513,6 +3666,64 @@ class CameraWorker:
         path = folder / name
         relative = path.relative_to(RECORDINGS_DIR).as_posix()
         return relative, path
+
+    def _maybe_cleanup_recordings(self) -> None:
+        retention_days = int(getattr(settings, "recording_retention_days", 0))
+        retention_max_bytes = int(getattr(settings, "recording_retention_max_bytes", 0))
+        if retention_days <= 0 and retention_max_bytes <= 0:
+            return
+        now = time.monotonic()
+        if now - self._recording_cleanup_last_monotonic < self._recording_cleanup_interval:
+            return
+        self._recording_cleanup_last_monotonic = now
+        try:
+            self._cleanup_recordings(retention_days=retention_days, max_bytes=retention_max_bytes)
+        except Exception:
+            logger.exception("Camera %s: recording cleanup failed", self.camera_id)
+
+    def _cleanup_recordings(self, *, retention_days: int, max_bytes: int) -> None:
+        root = RECORDINGS_DIR.resolve()
+        if not root.exists():
+            return
+        now_wall = time.time()
+        cutoff = now_wall - (retention_days * 86400) if retention_days > 0 else None
+        files: list[tuple[Path, float, int]] = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".avi", ".mkv", ".mp4"}:
+                continue
+            try:
+                resolved = path.resolve()
+                if root not in resolved.parents:
+                    continue
+                stat = resolved.stat()
+            except OSError:
+                continue
+            if cutoff is not None and stat.st_mtime < cutoff:
+                self._delete_recording_file(resolved)
+                continue
+            files.append((resolved, stat.st_mtime, int(stat.st_size)))
+
+        if max_bytes <= 0:
+            return
+        total_bytes = sum(size for _path, _mtime, size in files)
+        if total_bytes <= max_bytes:
+            return
+        for path, _mtime, size in sorted(files, key=lambda item: item[1]):
+            if total_bytes <= max_bytes:
+                break
+            if self._delete_recording_file(path):
+                total_bytes -= size
+
+    def _delete_recording_file(self, path: Path) -> bool:
+        try:
+            path.unlink(missing_ok=True)
+            logger.info("Deleted local recording by retention policy path=%s", path)
+            return True
+        except OSError:
+            logger.exception("Failed to delete local recording by retention policy path=%s", path)
+            return False
 
     def _rotate_recording_if_needed(self, width: int, height: int) -> None:
         if self._writer is None:
@@ -3566,6 +3777,7 @@ class CameraWorker:
         }
         self._push_recording(payload, local_path=path)
         logger.info("Recording saved camera=%s path=%s size=%s", self.camera_id, relative_path, size)
+        self._maybe_cleanup_recordings()
 
     def _dispatch_future(self, future: asyncio.Future, action: str, on_success=None) -> None:
         def _done(done_future):
@@ -3658,24 +3870,72 @@ class CameraWorker:
             ),
         )
 
+    async def _send_recording(self, recording: dict, local_path: Path | None = None) -> dict:
+        if self.processor_id is None:
+            raise RuntimeError("processor_id is not initialized")
+        if local_path is not None and local_path.exists():
+            try:
+                return await self.client.upload_recording(self.processor_id, recording, local_path)
+            except Exception:
+                logger.exception(
+                    "Failed to upload recording for camera %s; falling back to metadata registration",
+                    self.camera_id,
+                )
+        return await self.client.push_recording(self.processor_id, recording)
+
+    def _schedule_recording_uploads_locked(self) -> None:
+        if self._event_loop is None or self.processor_id is None:
+            return
+        while self._recording_upload_inflight < self._recording_upload_concurrency:
+            try:
+                recording, local_path = self._recording_upload_pending.get_nowait()
+            except queue.Empty:
+                return
+            self._recording_upload_inflight += 1
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_recording(recording, local_path),
+                self._event_loop,
+            )
+            future.add_done_callback(self._recording_upload_done)
+
+    def _recording_upload_done(self, done_future) -> None:
+        try:
+            done_future.result()
+        except Exception:
+            logger.exception("Failed to push recording for camera %s", self.camera_id)
+        finally:
+            with self._recording_upload_lock:
+                self._recording_upload_inflight = max(0, self._recording_upload_inflight - 1)
+                try:
+                    self._recording_upload_pending.task_done()
+                except ValueError:
+                    pass
+                self._schedule_recording_uploads_locked()
+
     def _push_recording(self, recording: dict, local_path: Path | None = None) -> dict | None:
         if self._event_loop is None or self.processor_id is None:
             return None
 
-        async def _send_recording() -> dict:
-            if local_path is not None and local_path.exists():
+        with self._recording_upload_lock:
+            if self._recording_upload_pending.full():
                 try:
-                    return await self.client.upload_recording(self.processor_id, recording, local_path)
-                except Exception:
-                    logger.exception(
-                        "Failed to upload recording for camera %s; falling back to metadata registration",
+                    dropped, _dropped_path = self._recording_upload_pending.get_nowait()
+                    self._recording_upload_pending.task_done()
+                    logger.warning(
+                        "Camera %s: recording upload queue is full; dropped oldest metadata path=%s",
                         self.camera_id,
+                        dropped.get("file_path"),
                     )
-            return await self.client.push_recording(self.processor_id, recording)
-
-        future = asyncio.run_coroutine_threadsafe(
-            _send_recording(),
-            self._event_loop,
-        )
-        self._dispatch_future(future, "push recording")
+                except queue.Empty:
+                    pass
+            try:
+                self._recording_upload_pending.put_nowait((recording, local_path))
+            except queue.Full:
+                logger.error(
+                    "Camera %s: recording upload queue is still full; skipped metadata path=%s",
+                    self.camera_id,
+                    recording.get("file_path"),
+                )
+                return None
+            self._schedule_recording_uploads_locked()
         return None

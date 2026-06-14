@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models
+from app.config import settings
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
 from app.ffmpeg_tools import ffmpeg_bin, ffprobe_bin
@@ -52,7 +53,46 @@ CACHE_DIR.mkdir(exist_ok=True)
 STITCH_DIR = CACHE_DIR / "stitches"
 STITCH_DIR.mkdir(exist_ok=True)
 FINALIZING_FILE_GRACE_SECONDS = 10.0
+FFMPEG_BATCH_TIMEOUT_SECONDS = 180
 _SNAPSHOT_SEMAPHORE = asyncio.Semaphore(2)
+_FFMPEG_SEMAPHORE = asyncio.Semaphore(2)
+_MJPEG_SEMAPHORE = asyncio.Semaphore(4)
+_MAX_PROXY_SNAPSHOT_BYTES = 8 * 1024 * 1024
+_MAX_STITCH_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_STITCH_DURATION_SECONDS = 24 * 60 * 60
+_MAX_STITCH_FILES = 1440
+
+
+def _enforce_stitch_limits(
+    *,
+    file_count: int,
+    total_bytes: int,
+    total_duration: float,
+) -> None:
+    if file_count > _MAX_STITCH_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Too many recordings requested for one stitch operation",
+        )
+    if total_duration > _MAX_STITCH_DURATION_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Recording stitch duration exceeds 24 hours",
+        )
+    if total_bytes > _MAX_STITCH_TOTAL_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Recording stitch size exceeds 4 GiB",
+        )
+
+
+def _unlink_quietly(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _is_recently_modified(path: Path) -> bool:
@@ -80,6 +120,17 @@ def _ffmpeg_bin() -> str | None:
 
 def _ffprobe_bin() -> str | None:
     return ffprobe_bin(_ffmpeg_bin())
+
+
+async def _run_ffmpeg_command(cmd: list[str], *, timeout: int = FFMPEG_BATCH_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    async with _FFMPEG_SEMAPHORE:
+        return await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
 
 
 def _cache_lock(recording_id: int) -> threading.Lock:
@@ -244,21 +295,46 @@ async def _proxy_processor_stream(url: str, headers: dict[str, str], request: Re
     )
 
 
-async def _proxy_processor_bytes(url: str, headers: dict[str, str]) -> Response:
+async def _proxy_processor_bytes(
+    url: str,
+    headers: dict[str, str],
+    *,
+    max_bytes: int = _MAX_PROXY_SNAPSHOT_BYTES,
+) -> Response:
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            upstream = await client.get(url, headers=headers)
+            async with client.stream("GET", url, headers=headers) as upstream:
+                content_length = upstream.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > max_bytes:
+                            raise HTTPException(
+                                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                                detail="Processor media response is too large",
+                            )
+                    except ValueError:
+                        pass
+                payload = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    if not chunk:
+                        continue
+                    payload.extend(chunk)
+                    if len(payload) > max_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="Processor media response is too large",
+                        )
+                return Response(
+                    content=bytes(payload),
+                    status_code=upstream.status_code,
+                    media_type=upstream.headers.get("content-type"),
+                    headers=_proxy_headers(upstream),
+                )
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Processor media server unavailable",
         ) from exc
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type"),
-        headers=_proxy_headers(upstream),
-    )
 
 
 async def _resolve_processor_media(
@@ -422,6 +498,7 @@ async def _ensure_backend_recording_file(
     temp_path = destination.with_name(f".{destination.name}.{recording.recording_file_id}.download")
     url = _processor_media_url(proc, "/media/recordings", relative_path)
     size = 0
+    max_bytes = settings.processor_recording_upload_max_bytes
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=300, write=120, pool=120)) as client:
             async with client.stream("GET", url, headers=get_processor_media_headers(proc)) as response:
@@ -430,11 +507,26 @@ async def _ensure_backend_recording_file(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"Processor recording unavailable: {response.status_code}",
                     )
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > max_bytes:
+                            raise HTTPException(
+                                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                                detail="Processor recording is too large",
+                            )
+                    except ValueError:
+                        pass
                 with temp_path.open("wb") as handle:
                     async for chunk in response.aiter_bytes():
                         if not chunk:
                             continue
                         size += len(chunk)
+                        if size > max_bytes:
+                            raise HTTPException(
+                                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                                detail="Processor recording is too large",
+                            )
                         handle.write(chunk)
         if size <= 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Processor returned empty recording")
@@ -862,13 +954,37 @@ async def stitch_recordings(
     if requested_ids:
         order = {recording_id: index for index, recording_id in enumerate(requested_ids)}
         rows = sorted(rows, key=lambda row: order.get(row[0].recording_file_id, len(order)))
+    _enforce_stitch_limits(
+        file_count=len(rows),
+        total_bytes=0,
+        total_duration=0.0,
+    )
 
     paths: list[Path] = []
+    total_bytes = 0
+    total_duration = 0.0
     for recording, cam_id in rows:
         perm = await user_camera_permission(session, current_user.user_id, cam_id)
         if not check_permission(perm, "view") and current_user.role_id != 1:
             continue
-        paths.append(await _ensure_backend_recording_file(session, recording, cam_id))
+        if recording.duration_seconds is not None:
+            total_duration += float(recording.duration_seconds)
+        if recording.file_size_bytes is not None:
+            total_bytes += int(recording.file_size_bytes)
+        _enforce_stitch_limits(
+            file_count=len(paths) + 1,
+            total_bytes=total_bytes,
+            total_duration=total_duration,
+        )
+        path = await _ensure_backend_recording_file(session, recording, cam_id)
+        if recording.file_size_bytes is None:
+            total_bytes += path.stat().st_size
+            _enforce_stitch_limits(
+                file_count=len(paths) + 1,
+                total_bytes=total_bytes,
+                total_duration=total_duration,
+            )
+        paths.append(path)
 
     if not paths:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recordings to stitch")
@@ -881,6 +997,7 @@ async def stitch_recordings(
     cache_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:32]
     list_path = STITCH_DIR / f"{cache_key}.txt"
     output_path = STITCH_DIR / f"{cache_key}.mp4"
+    temp_output_path = STITCH_DIR / f".{cache_key}.{int(time.time() * 1000)}.tmp.mp4"
 
     if not output_path.is_file() or output_path.stat().st_size <= 0:
         list_path.write_text("".join(_concat_file_line(path) for path in paths), encoding="utf-8")
@@ -900,10 +1017,20 @@ async def stitch_recordings(
             "copy",
             "-movflags",
             "+faststart",
-            str(output_path),
+            str(temp_output_path),
         ]
-        proc = await asyncio.to_thread(subprocess.run, copy_cmd, capture_output=True, text=True)
-        if proc.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+        try:
+            proc = await _run_ffmpeg_command(copy_cmd)
+        except subprocess.TimeoutExpired as exc:
+            _unlink_quietly(temp_output_path)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Recording stitch timed out",
+            ) from exc
+        if proc.returncode == 0 and temp_output_path.is_file() and temp_output_path.stat().st_size > 0:
+            temp_output_path.replace(output_path)
+        else:
+            _unlink_quietly(temp_output_path)
             transcode_cmd = [
                 ffmpeg_bin,
                 "-hide_banner",
@@ -927,14 +1054,23 @@ async def stitch_recordings(
                 "-an",
                 "-movflags",
                 "+faststart",
-                str(output_path),
+                str(temp_output_path),
             ]
-            proc = await asyncio.to_thread(subprocess.run, transcode_cmd, capture_output=True, text=True)
-            if proc.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+            try:
+                proc = await _run_ffmpeg_command(transcode_cmd)
+            except subprocess.TimeoutExpired as exc:
+                _unlink_quietly(temp_output_path)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Recording stitch timed out",
+                ) from exc
+            if proc.returncode != 0 or not temp_output_path.is_file() or temp_output_path.stat().st_size <= 0:
+                _unlink_quietly(temp_output_path)
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=f"Failed to stitch recordings: {proc.stderr[-500:]}",
                 )
+            temp_output_path.replace(output_path)
 
     return _file_response(output_path, request, media_type="video/mp4", filename=f"recordings_{cache_key}.mp4")
 
@@ -972,12 +1108,13 @@ async def download_recording(
     mime = _media_type(path)
     force_compat = str(request.query_params.get("compat") or "").lower() in {"1", "true", "yes"}
     if force_compat or mime != "video/mp4":
-        compatible = await asyncio.to_thread(
-            _ensure_h264_cache,
-            recording.recording_file_id,
-            path,
-            mime,
-        )
+        async with _FFMPEG_SEMAPHORE:
+            compatible = await asyncio.to_thread(
+                _ensure_h264_cache,
+                recording.recording_file_id,
+                path,
+                mime,
+            )
         if compatible is not None:
             path = compatible
             mime = "video/mp4"
@@ -986,6 +1123,7 @@ async def download_recording(
     ffmpeg_bin = _ffmpeg_bin()
     if mime == "video/avi" and ffmpeg_bin:
         cached = CACHE_DIR / f"{recording.recording_file_id}.mp4"
+        temp_cached = CACHE_DIR / f".{recording.recording_file_id}.{int(time.time() * 1000)}.tmp.mp4"
         need_build = True
         if cached.exists():
             try:
@@ -1015,12 +1153,23 @@ async def download_recording(
                 "-an",
                 "-movflags",
                 "+faststart",
-                str(cached),
+                str(temp_cached),
             ]
-            proc = subprocess.run(cmd, capture_output=True)
-            if proc.returncode != 0 or not cached.exists():
+            try:
+                proc = await _run_ffmpeg_command(cmd)
+            except subprocess.TimeoutExpired:
+                _unlink_quietly(temp_cached)
+                cached = None
+            if cached is not None and (
+                proc.returncode != 0
+                or not temp_cached.exists()
+                or temp_cached.stat().st_size <= 0
+            ):
+                _unlink_quietly(temp_cached)
                 # fall back to MJPEG streaming below
                 cached = None
+            if cached is not None:
+                temp_cached.replace(cached)
         if cached and cached.exists():
             path = cached
             mime = "video/mp4"
@@ -1043,17 +1192,20 @@ async def download_recording(
                 "-f", "mp4",
                 "pipe:1",
             ]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+            await _FFMPEG_SEMAPHORE.acquire()
+            proc = None
             try:
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
                 while True:
                     chunk = await proc.stdout.read(1024 * 64)
                     if not chunk:
                         break
                     yield chunk
             finally:
-                if proc.returncode is None:
+                if proc is not None and proc.returncode is None:
                     proc.kill()
                     await proc.wait()
+                _FFMPEG_SEMAPHORE.release()
 
         return StreamingResponse(_transcode(), media_type="video/mp4")
 
@@ -1099,8 +1251,10 @@ async def stream_recording_mjpeg(
 
     path = local_path or await _ensure_backend_recording_file(session, recording, cam_id)
 
+    await _MJPEG_SEMAPHORE.acquire()
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
+        _MJPEG_SEMAPHORE.release()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Cannot open video")
     try:
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 10.0
@@ -1140,6 +1294,7 @@ async def stream_recording_mjpeg(
                     await asyncio.sleep(delay)
             finally:
                 cap.release()
+                _MJPEG_SEMAPHORE.release()
 
         return StreamingResponse(
             gen(),
@@ -1148,6 +1303,7 @@ async def stream_recording_mjpeg(
         )
     except Exception:
         cap.release()
+        _MJPEG_SEMAPHORE.release()
         raise
 
 

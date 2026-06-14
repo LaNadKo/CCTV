@@ -9,10 +9,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
-from app.permissions import check_permission, is_at_least_user, user_camera_permission
+from app.permissions import check_permission, is_admin, user_camera_permission
+from app.recording_storage import recording_local_path
 from app.vision import extract_best_face_embedding as _extract_best_face_embedding
 
 router = APIRouter(prefix="/persons/face", tags=["persons-face"])
+_MAX_FACE_IMAGE_UPLOAD_BYTES = 8 * 1024 * 1024
+_MAX_FACE_IMAGE_PIXELS = 16_000_000
+
+
+def _ensure_face_enrollment_admin(user: models.User) -> None:
+    if not is_admin(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can create persons",
+        )
+
+
+def _decoded_image_pixel_count(image: np.ndarray) -> int:
+    if image.ndim < 2:
+        return 0
+    return int(image.shape[0]) * int(image.shape[1])
+
+
+def _decode_face_image(data: bytes) -> np.ndarray:
+    image = np.frombuffer(data, np.uint8)
+    decoded = cv2.imdecode(image, cv2.IMREAD_COLOR)
+    if decoded is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image")
+    if _decoded_image_pixel_count(decoded) > _MAX_FACE_IMAGE_PIXELS:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Image dimensions are too large")
+    return decoded
 
 
 def _read_image_file(path: Path) -> np.ndarray | None:
@@ -20,10 +47,9 @@ def _read_image_file(path: Path) -> np.ndarray | None:
         data = path.read_bytes()
     except FileNotFoundError:
         return None
-    arr = np.frombuffer(data, np.uint8)
-    if arr.size == 0:
+    if not data:
         return None
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return _decode_face_image(data)
 
 
 async def _create_person_with_embedding(
@@ -59,13 +85,11 @@ async def enroll_person_photo(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    if not is_at_least_user(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission")
-    data = await file.read()
-    image = np.frombuffer(data, np.uint8)
-    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
-    if image is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image")
+    _ensure_face_enrollment_admin(current_user)
+    data = await file.read(_MAX_FACE_IMAGE_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_FACE_IMAGE_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Image is too large")
+    image = _decode_face_image(data)
     emb = _extract_best_face_embedding(image)
     if emb is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No face found")
@@ -91,6 +115,7 @@ async def enroll_person_from_recording(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    _ensure_face_enrollment_admin(current_user)
     res = await session.execute(
         select(models.RecordingFile, models.VideoStream.camera_id)
         .join(models.VideoStream, models.VideoStream.video_stream_id == models.RecordingFile.video_stream_id)
@@ -104,7 +129,13 @@ async def enroll_person_from_recording(
     if not check_permission(perm, "control") and current_user.role_id != 1:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
-    cap = cv2.VideoCapture(recording.file_path)
+    local_path = recording_local_path(recording.file_path)
+    if local_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording is not available in backend storage",
+        )
+    cap = cv2.VideoCapture(str(local_path))
     if not cap.isOpened():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Cannot open video")
     try:
@@ -145,6 +176,7 @@ async def enroll_person_from_snapshot(
     current_user: models.User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    _ensure_face_enrollment_admin(current_user)
     event = await session.get(models.Event, event_id)
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")

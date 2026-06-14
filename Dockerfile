@@ -1,11 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ffmpeg libgl1 libglib2.0-0 fonts-dejavu-core && \
+    ffmpeg fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system cctv && \
     useradd --system --gid cctv --home-dir /app --shell /usr/sbin/nologin cctv

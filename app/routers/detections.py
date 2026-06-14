@@ -32,6 +32,8 @@ log = logging.getLogger(__name__)
 
 _CANDIDATE_CACHE_TTL_SECONDS = 180.0
 _candidate_cache: dict[int, tuple[float, list[ReviewCandidate]]] = {}
+_MAX_EVENT_SNAPSHOT_PROXY_BYTES = 8 * 1024 * 1024
+_MAX_EVENT_SNAPSHOT_PIXELS = 12_000_000
 
 
 async def _find_event_type_id(session: AsyncSession, name: str) -> int:
@@ -51,11 +53,55 @@ def _cos_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-6))
 
 
+def _decoded_image_pixel_count(image) -> int:
+    if getattr(image, "ndim", 0) < 2:
+        return 0
+    shape = getattr(image, "shape", ())
+    if len(shape) < 2:
+        return 0
+    return int(shape[0]) * int(shape[1])
+
+
 def _decode_image(data: bytes) -> np.ndarray | None:
     arr = np.frombuffer(data, dtype=np.uint8)
     if arr.size == 0:
         return None
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    if _decoded_image_pixel_count(image) > _MAX_EVENT_SNAPSHOT_PIXELS:
+        return None
+    return image
+
+
+async def _fetch_processor_snapshot_bytes(
+    url: str,
+    headers: dict[str, str],
+    *,
+    timeout: float,
+) -> tuple[bytes, str] | None:
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("GET", url, headers=headers) as upstream:
+                if upstream.status_code >= 400:
+                    return None
+                content_length = upstream.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > _MAX_EVENT_SNAPSHOT_PROXY_BYTES:
+                            return None
+                    except ValueError:
+                        pass
+                payload = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    if not chunk:
+                        continue
+                    payload.extend(chunk)
+                    if len(payload) > _MAX_EVENT_SNAPSHOT_PROXY_BYTES:
+                        return None
+                return bytes(payload), upstream.headers.get("content-type", "image/jpeg")
+    except httpx.HTTPError:
+        return None
 
 
 async def _read_event_snapshot_bytes(session: AsyncSession, event: models.Event) -> bytes | None:
@@ -76,14 +122,10 @@ async def _read_event_snapshot_bytes(session: AsyncSession, event: models.Event)
     except RuntimeError:
         return None
     headers = get_processor_media_headers(proc)
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            upstream = await client.get(url, headers=headers)
-        if upstream.status_code < 400:
-            return upstream.content
-    except httpx.HTTPError:
+    fetched = await _fetch_processor_snapshot_bytes(url, headers, timeout=6.0)
+    if fetched is None:
         return None
-    return None
+    return fetched[0]
 
 
 async def _event_candidate_persons(
@@ -214,6 +256,20 @@ async def create_detection(
     camera = await session.get(models.Camera, payload.camera_id)
     if camera is None or camera.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+    if payload.recording_file_id is not None:
+        recording_result = await session.execute(
+            select(models.RecordingFile)
+            .join(models.VideoStream, models.VideoStream.video_stream_id == models.RecordingFile.video_stream_id)
+            .where(
+                models.RecordingFile.recording_file_id == payload.recording_file_id,
+                models.VideoStream.camera_id == payload.camera_id,
+            )
+        )
+        if recording_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Recording does not belong to this camera",
+            )
 
     if payload.person_id:
         et_id = await _find_event_type_id(session, payload.event_type or "face_recognized")
@@ -303,12 +359,12 @@ async def event_snapshot(
             url = f"{get_processor_media_base_url(proc)}/media/snapshots/event_{event_id}.jpg"
             headers = get_processor_media_headers(proc)
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
-                    upstream = await client.get(url, headers=headers)
-                if upstream.status_code < 400:
+                fetched = await _fetch_processor_snapshot_bytes(url, headers, timeout=20.0)
+                if fetched is not None:
+                    payload, media_type = fetched
                     return Response(
-                        content=upstream.content,
-                        media_type=upstream.headers.get("content-type", "image/jpeg"),
+                        content=payload,
+                        media_type=media_type,
                     )
             except Exception:
                 pass

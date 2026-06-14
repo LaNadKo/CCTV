@@ -29,6 +29,10 @@ def recording_local_path(file_path: str | None) -> Path | None:
     if not path.is_absolute():
         path = Path.cwd() / path
     path = path.resolve()
+    try:
+        path.relative_to(recordings_root())
+    except ValueError:
+        return None
     return path if path.is_file() else None
 
 

@@ -137,7 +137,19 @@ install_dependencies() {
         case "$dep" in
             docker)
                 log_step "Установка Docker..."
-                curl -fsSL https://get.docker.com | sh
+                case "$PKG_MANAGER" in
+                    apt)
+                        sudo apt-get update
+                        sudo apt-get install -y docker.io docker-compose-plugin || sudo apt-get install -y docker.io docker-compose
+                        ;;
+                    dnf|yum)
+                        sudo "$PKG_MANAGER" install -y docker docker-compose-plugin || sudo "$PKG_MANAGER" install -y docker docker-compose
+                        ;;
+                esac
+                if ! command -v docker &>/dev/null; then
+                    log_error "Docker РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ. РЈСЃС‚Р°РЅРѕРІРёС‚Рµ Docker Engine Рё Docker Compose plugin РІСЂСѓС‡РЅСѓСЋ."
+                    exit 1
+                fi
                 sudo systemctl enable docker
                 sudo systemctl start docker
                 # Добавляем текущего пользователя в группу docker
@@ -237,6 +249,7 @@ clone_or_update() {
 
 # Генерация .env
 setup_env() {
+    umask 077
     if [ -f "$INSTALL_DIR/.env" ]; then
         log_warn "Файл .env уже существует"
         if [ "$CCTV_FORCE_OVERWRITE_ENV" != "1" ] && [ "$CCTV_NONINTERACTIVE" != "1" ]; then
@@ -251,6 +264,8 @@ setup_env() {
     JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p | tr -d '\n' | head -c 64)
     PROCESSOR_KEY=$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | xxd -p | tr -d '\n' | head -c 48)
     DB_PASSWORD=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n' | head -c 32)
+    ADMIN_PASSWORD=$(openssl rand -base64 24 2>/dev/null | tr -d '\n' | tr '/+' '_-' | head -c 24)
+    TOTP_KEY=$(openssl rand -base64 32 2>/dev/null | tr -d '\n' | tr '/+' '_-')
 
     # Определяем IP
     LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
@@ -282,12 +297,16 @@ POSTGRES_PASSWORD=$DB_PASSWORD
 POSTGRES_DB=cctv
 JWT_SECRET=$JWT_SECRET
 PROCESSOR_API_KEY=$PROCESSOR_KEY
+BOOTSTRAP_ADMIN_LOGIN=admin
+BOOTSTRAP_ADMIN_PASSWORD=$ADMIN_PASSWORD
+ALLOW_DEFAULT_ADMIN=false
 ENABLE_EMBEDDED_DETECTOR=false
 DEBUG=false
-TOTP_ENCRYPTION_KEY=
+TOTP_ENCRYPTION_KEY=$TOTP_KEY
 RECORDINGS_PATH=./data/recordings
 SNAPSHOTS_PATH=./data/snapshots
 ENVEOF
+    chmod 600 "$INSTALL_DIR/.env"
 
     log_info "Конфигурация сохранена в .env"
 }
@@ -298,8 +317,8 @@ start_services() {
 
     cd "$INSTALL_DIR"
 
-    # Останавливаем старое и удаляем volumes для чистого старта
-    compose_cmd down -v 2>/dev/null || true
+    # Останавливаем старые контейнеры, не удаляя данные и volumes.
+    compose_cmd down --remove-orphans 2>/dev/null || true
 
     # Собираем и запускаем
     compose_cmd up -d --build db backend mediamtx

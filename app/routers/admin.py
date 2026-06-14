@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user
+from app.network_policy import validate_camera_endpoint_url, validate_camera_host, validate_camera_stream_source
 from app.permissions import is_admin
 from app.schemas.camera_admin import (
     CameraCreate,
@@ -112,7 +113,10 @@ def _normalize_endpoint_payloads(endpoints: list[CameraEndpointInput]) -> list[C
     seen: set[tuple[str, str]] = set()
     result: list[CameraEndpointInput] = []
     for endpoint in endpoints:
-        url = endpoint.endpoint_url.strip()
+        try:
+            url = validate_camera_endpoint_url(endpoint.endpoint_kind, endpoint.endpoint_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if not url:
             continue
         key = (endpoint.endpoint_kind, url)
@@ -338,9 +342,15 @@ async def probe_camera_connection(
 ):
     _ensure_admin(current_user)
     try:
+        host = validate_camera_host(payload.host)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if not host:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Camera host is required")
+    try:
         result = await asyncio.to_thread(
             probe_camera,
-            payload.host,
+            host,
             payload.username,
             payload.password,
             payload.port,
@@ -373,10 +383,15 @@ async def create_camera(
 ):
     _ensure_admin(current_user)
     endpoints = _normalize_endpoint_payloads(payload.endpoints)
+    try:
+        ip_address = validate_camera_host(payload.ip_address)
+        stream_url = validate_camera_stream_source(payload.stream_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     camera = models.Camera(
         name=payload.name,
-        ip_address=payload.ip_address,
-        stream_url=primary_stream_url(payload.stream_url, endpoints),
+        ip_address=ip_address,
+        stream_url=primary_stream_url(stream_url, endpoints),
         status_id=payload.status_id,
         location=payload.location,
         detection_enabled=payload.detection_enabled,
@@ -406,6 +421,13 @@ async def update_camera(
     data = payload.model_dump(exclude_unset=True)
     endpoints_payload = data.pop("endpoints", None)
     device_metadata = data.pop("device_metadata", None)
+    try:
+        if "ip_address" in data:
+            data["ip_address"] = validate_camera_host(data["ip_address"])
+        if "stream_url" in data:
+            data["stream_url"] = validate_camera_stream_source(data["stream_url"])
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     for field, value in data.items():
         setattr(camera, field, value)
     if device_metadata is not None:

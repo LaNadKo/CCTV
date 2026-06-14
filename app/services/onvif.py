@@ -13,6 +13,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from onvif import ONVIFClient, ONVIFDiscovery
 from onvif.operator import CacheMode
 
+from app.network_policy import validate_camera_host
 from app.security import decrypt_secret
 
 log = logging.getLogger("app.onvif")
@@ -472,6 +473,10 @@ def _candidate_targets(host: str, port: int | None, use_https: bool | None, disc
 
 
 def probe_camera(host: str, username: str | None = None, password: str | None = None, port: int | None = None, use_https: bool | None = None, timeout: int = 5, discovered: list[dict[str, Any]] | None = None) -> ProbeResult:
+    try:
+        host = validate_camera_host(host) or ""
+    except ValueError as exc:
+        raise ONVIFServiceError(str(exc)) from exc
     protocols: list[str] = []
     warnings: list[str] = []
     plain_protocols, plain_warnings = detect_plain_protocols(host, timeout=max(1.0, timeout / 2))
@@ -603,6 +608,10 @@ def _camera_onvif_credentials(camera: Any) -> tuple[str, str, str, str, int, boo
             continue
         endpoint_url = endpoint.endpoint_url
         host = str(metadata.get("host") or camera.ip_address or urlparse(endpoint_url).hostname or "")
+        try:
+            host = validate_camera_host(host) or ""
+        except ValueError as exc:
+            raise ONVIFServiceError(str(exc)) from exc
         port = int(metadata.get("port") or urlparse(endpoint_url).port or 80)
         use_https = bool(metadata.get("use_https") or urlparse(endpoint_url).scheme == "https")
         password = decrypt_secret(endpoint.password_secret) if endpoint.password_secret else ""

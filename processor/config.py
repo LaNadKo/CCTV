@@ -35,8 +35,17 @@ class Settings(BaseSettings):
     antispoof_pending_timeout_seconds: float = Field(default=2.8, validation_alias="ANTISPOOF_PENDING_TIMEOUT_SECONDS")
     unknown_face_requires_motion_seconds: float = Field(default=2.0, validation_alias="UNKNOWN_FACE_REQUIRES_MOTION_SECONDS")
     recording_segment_seconds: int = Field(default=60, validation_alias="RECORDING_SEGMENT_SECONDS")
+    recording_upload_concurrency: int = Field(default=2, validation_alias="RECORDING_UPLOAD_CONCURRENCY")
+    recording_upload_queue_size: int = Field(default=128, validation_alias="RECORDING_UPLOAD_QUEUE_SIZE")
+    recording_retention_days: int = Field(default=0, validation_alias="RECORDING_RETENTION_DAYS")
+    recording_retention_max_bytes: int = Field(default=0, validation_alias="RECORDING_RETENTION_MAX_BYTES")
+    recording_min_free_bytes: int = Field(default=536_870_912, validation_alias="RECORDING_MIN_FREE_BYTES")
+    max_capture_pixels: int = Field(default=8_294_400, validation_alias="MAX_CAPTURE_PIXELS")
+    media_bind: str = Field(default="0.0.0.0", validation_alias="MEDIA_BIND")
     media_port: int = Field(default=8777, validation_alias="MEDIA_PORT")
     media_token: str = Field(default_factory=lambda: secrets.token_urlsafe(24), validation_alias="MEDIA_TOKEN")
+    media_max_connections: int = Field(default=64, validation_alias="MEDIA_MAX_CONNECTIONS")
+    media_socket_timeout_seconds: float = Field(default=15.0, validation_alias="MEDIA_SOCKET_TIMEOUT_SECONDS")
 
     @field_validator("processor_id", mode="before")
     @classmethod
@@ -55,6 +64,69 @@ class Settings(BaseSettings):
         except (TypeError, ValueError):
             seconds = 60
         return min(60, max(10, seconds))
+
+    @field_validator("recording_upload_concurrency", mode="before")
+    @classmethod
+    def _recording_upload_concurrency_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 2
+        return min(8, max(1, parsed))
+
+    @field_validator("recording_upload_queue_size", mode="before")
+    @classmethod
+    def _recording_upload_queue_size_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 128
+        return min(512, max(8, parsed))
+
+    @field_validator("recording_retention_days", mode="before")
+    @classmethod
+    def _recording_retention_days_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 0
+        return min(3650, max(0, parsed))
+
+    @field_validator("recording_retention_max_bytes", mode="before")
+    @classmethod
+    def _recording_retention_max_bytes_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 0
+        return max(0, parsed)
+
+    @field_validator("recording_min_free_bytes", mode="before")
+    @classmethod
+    def _recording_min_free_bytes_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 536_870_912
+        return min(100 * 1024**3, max(64 * 1024**2, parsed))
+
+    @field_validator("max_capture_pixels", mode="before")
+    @classmethod
+    def _max_capture_pixels_bounds(cls, value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 8_294_400
+        return min(33_177_600, max(307_200, parsed))
+
+    @field_validator("media_token", mode="before")
+    @classmethod
+    def _empty_media_token_generates_secret(cls, value):
+        if value is None:
+            return secrets.token_urlsafe(24)
+        if isinstance(value, str) and not value.strip():
+            return secrets.token_urlsafe(24)
+        return value
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

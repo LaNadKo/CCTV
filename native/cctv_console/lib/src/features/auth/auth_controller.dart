@@ -87,7 +87,9 @@ class AuthController extends ChangeNotifier {
       );
       _accessToken = response.accessToken;
       _mediaToken = response.mediaAccessToken;
-      _mediaTokenExpiresAt = _expiresAt(response.mediaTokenExpiresSeconds);
+      _mediaTokenExpiresAt = response.mediaAccessToken == null
+          ? null
+          : _expiresAt(response.mediaTokenExpiresSeconds);
       _user = await apiClient.me(response.accessToken);
       await _secureStorage.write(
         key: _scopedKey(_accessTokenKey),
@@ -134,12 +136,32 @@ class AuthController extends ChangeNotifier {
   }) async {
     final token = _accessToken;
     if (token == null) return;
-    await apiClient.changePassword(
+    final response = await apiClient.changePassword(
       token,
       currentPassword: currentPassword,
       newPassword: newPassword,
     );
-    await reloadUser();
+    _accessToken = response.accessToken;
+    _mediaToken = response.mediaAccessToken;
+    _mediaTokenExpiresAt = response.mediaAccessToken == null
+        ? null
+        : _expiresAt(response.mediaTokenExpiresSeconds);
+    await _secureStorage.write(
+      key: _scopedKey(_accessTokenKey),
+      value: _accessToken,
+    );
+    if (_mediaToken != null) {
+      await _secureStorage.write(
+        key: _scopedKey(_mediaTokenKey),
+        value: _mediaToken,
+      );
+    } else {
+      await _secureStorage.delete(key: _scopedKey(_mediaTokenKey));
+    }
+    await _persistMediaExpiry();
+    _scheduleMediaRefresh();
+    _user = await apiClient.me(response.accessToken);
+    notifyListeners();
   }
 
   Future<void> reloadUser() async {

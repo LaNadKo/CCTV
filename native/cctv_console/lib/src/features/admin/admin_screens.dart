@@ -1442,17 +1442,18 @@ class _ReviewCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final api = context.read<ApiClient>();
-    final snapshotUrl = _snapshotUrl(api, event, mediaToken);
+    final mediaHeaders = api.mediaAuthorizationHeaders(mediaToken);
+    final snapshotUri = _snapshotUri(api, event);
     final recordingId = _asInt(event['recording_file_id']);
-    final recordingUrl = recordingId == null || mediaToken == null
+    final recordingUri = recordingId == null || mediaHeaders.isEmpty
         ? null
-        : api.recordingFileUri(recordingId, mediaToken!).toString();
+        : api.recordingFileUri(recordingId);
     return GlassPanel(
       padding: const EdgeInsets.all(14),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final narrow = constraints.maxWidth < 780;
-          final preview = _SnapshotBox(url: snapshotUrl);
+          final preview = _SnapshotBox(uri: snapshotUri, headers: mediaHeaders);
           final body = Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1535,7 +1536,7 @@ class _ReviewCard extends StatelessWidget {
                     label: const Text('Выбрать персону'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: snapshotUrl == null ? null : onEnrollSnapshot,
+                    onPressed: snapshotUri == null ? null : onEnrollSnapshot,
                     icon: const Icon(Icons.add_a_photo_rounded, size: 18),
                     label: const Text('Создать из снимка'),
                   ),
@@ -1544,11 +1545,14 @@ class _ReviewCard extends StatelessWidget {
                     icon: const Icon(Icons.movie_creation_rounded, size: 18),
                     label: const Text('Создать из записи'),
                   ),
-                  if (recordingUrl != null)
+                  if (recordingUri != null)
                     OutlinedButton.icon(
                       onPressed: () => showDialog<void>(
                         context: context,
-                        builder: (_) => _ReviewVideoDialog(url: recordingUrl),
+                        builder: (_) => _ReviewVideoDialog(
+                          uri: recordingUri,
+                          headers: mediaHeaders,
+                        ),
                       ),
                       icon: const Icon(Icons.play_circle_rounded, size: 18),
                       label: const Text('Видео'),
@@ -1587,9 +1591,13 @@ class _ReviewCard extends StatelessWidget {
 }
 
 class _ReviewVideoDialog extends StatefulWidget {
-  const _ReviewVideoDialog({required this.url});
+  const _ReviewVideoDialog({
+    required this.uri,
+    required this.headers,
+  });
 
-  final String url;
+  final Uri uri;
+  final Map<String, String> headers;
 
   @override
   State<_ReviewVideoDialog> createState() => _ReviewVideoDialogState();
@@ -1604,7 +1612,12 @@ class _ReviewVideoDialogState extends State<_ReviewVideoDialog> {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
-    unawaited(_player.open(Media(widget.url), play: false));
+    unawaited(
+      _player.open(
+        Media(widget.uri.toString(), httpHeaders: widget.headers),
+        play: false,
+      ),
+    );
   }
 
   @override
@@ -2749,9 +2762,13 @@ class _SelectableTile extends StatelessWidget {
 }
 
 class _SnapshotBox extends StatelessWidget {
-  const _SnapshotBox({required this.url});
+  const _SnapshotBox({
+    required this.uri,
+    required this.headers,
+  });
 
-  final String? url;
+  final Uri? uri;
+  final Map<String, String> headers;
 
   @override
   Widget build(BuildContext context) {
@@ -2762,7 +2779,7 @@ class _SnapshotBox extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         child: Container(
           color: Colors.black.withValues(alpha: 0.28),
-          child: url == null
+          child: uri == null
               ? Center(
                   child: Text(
                     'Snapshot недоступен',
@@ -2770,7 +2787,8 @@ class _SnapshotBox extends StatelessWidget {
                   ),
                 )
               : Image.network(
-                  url!,
+                  uri.toString(),
+                  headers: headers,
                   fit: BoxFit.cover,
                   errorBuilder: (_, _, _) => Center(
                     child: Text(
@@ -3250,15 +3268,16 @@ class _PickerItem {
   final String subtitle;
 }
 
-String? _snapshotUrl(ApiClient api, RowMap event, String? mediaToken) {
+Uri? _snapshotUri(ApiClient api, RowMap event) {
   final value = event['snapshot_url'];
   if (value == null || '$value'.isEmpty) return null;
   final text = '$value';
-  if (text.startsWith('http://') || text.startsWith('https://')) return text;
-  if (mediaToken != null && text.startsWith('/detections/events/')) {
-    return api.uri(text, {'token': mediaToken}).toString();
+  if (text.startsWith('http://') || text.startsWith('https://')) {
+    final parsed = Uri.tryParse(text);
+    if (parsed == null || !api.isBackendOrigin(parsed)) return null;
+    return parsed;
   }
-  return api.uri(text).toString();
+  return api.uri(text);
 }
 
 String _personLabel(RowMap person) {

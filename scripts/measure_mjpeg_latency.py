@@ -144,6 +144,9 @@ def measure(url: str, headers: dict[str, str], seconds: float, max_frames: int) 
         "first_frame_ms": round(first_frame_ms, 1) if first_frame_ms is not None else None,
         "interval_ms_p50": round(statistics.median(intervals), 1) if intervals else None,
         "interval_ms_p95": round(percentile(intervals, 0.95), 1) if intervals else None,
+        "interval_ms_max": round(max(intervals), 1) if intervals else None,
+        "gaps_over_250ms": sum(1 for value in intervals if value > 250.0),
+        "gaps_over_300ms": sum(1 for value in intervals if value > 300.0),
         "transit_lag_ms_p50": round(statistics.median(transit_lags), 1) if transit_lags else None,
         "transit_lag_ms_p95": round(percentile(transit_lags, 0.95), 1) if transit_lags else None,
         "avg_frame_kb": round(

@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 import socket
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -87,6 +88,50 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         )
     except (TypeError, ValueError):
         normalized["antispoof_pending_timeout_seconds"] = 2.8
+    media_bind = str(normalized.get("media_bind") or "").strip()
+    normalized["media_bind"] = media_bind or "0.0.0.0"
+    try:
+        normalized["recording_upload_concurrency"] = min(
+            8,
+            max(1, int(normalized.get("recording_upload_concurrency", 2))),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_upload_concurrency"] = 2
+    try:
+        normalized["recording_upload_queue_size"] = min(
+            512,
+            max(8, int(normalized.get("recording_upload_queue_size", 128))),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_upload_queue_size"] = 128
+    try:
+        normalized["recording_retention_days"] = min(
+            3650,
+            max(0, int(normalized.get("recording_retention_days", 0))),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_retention_days"] = 0
+    try:
+        normalized["recording_retention_max_bytes"] = max(
+            0,
+            int(normalized.get("recording_retention_max_bytes", 0)),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_retention_max_bytes"] = 0
+    try:
+        normalized["recording_min_free_bytes"] = min(
+            100 * 1024**3,
+            max(64 * 1024**2, int(normalized.get("recording_min_free_bytes", 536_870_912))),
+        )
+    except (TypeError, ValueError):
+        normalized["recording_min_free_bytes"] = 536_870_912
+    try:
+        normalized["max_capture_pixels"] = min(
+            33_177_600,
+            max(307_200, int(normalized.get("max_capture_pixels", 8_294_400))),
+        )
+    except (TypeError, ValueError):
+        normalized["max_capture_pixels"] = 8_294_400
     return normalized
 
 
@@ -115,8 +160,15 @@ def default_config() -> dict[str, Any]:
         "theme_primary_color": "#49C8E8",
         "theme_secondary_color": "#4C6FFF",
         "recording_segment_seconds": 60,
+        "recording_upload_concurrency": 2,
+        "recording_upload_queue_size": 128,
+        "recording_retention_days": 0,
+        "recording_retention_max_bytes": 0,
+        "recording_min_free_bytes": 536_870_912,
+        "max_capture_pixels": 8_294_400,
         "recordings_dir": str(base_dir() / "media" / "recordings"),
         "snapshots_dir": str(base_dir() / "media" / "snapshots"),
+        "media_bind": "0.0.0.0",
         "media_port": 8777,
         "media_token": secrets.token_urlsafe(24),
         }
@@ -138,6 +190,36 @@ def save_config(config: dict[str, Any]) -> None:
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2, ensure_ascii=False)
+    _restrict_config_permissions(CONFIG_FILE)
+
+
+def _restrict_config_permissions(path: Path) -> None:
+    try:
+        if os.name != "nt":
+            path.chmod(0o600)
+            return
+        user = os.environ.get("USERNAME", "").strip()
+        domain = os.environ.get("USERDOMAIN", "").strip()
+        if not user:
+            return
+        account = f"{domain}\\{user}" if domain else user
+        subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"{account}:(R,W)",
+                "*S-1-5-18:(F)",
+                "*S-1-5-32-544:(F)",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("Failed to restrict processor config permissions", exc_info=True)
 
 
 def _coerce_env_value(raw: str, kind: str) -> Any:
@@ -172,8 +254,15 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "ANTISPOOF_MODEL_FAKE_THRESHOLD": ("antispoof_model_fake_threshold", "float"),
         "ANTISPOOF_PENDING_TIMEOUT_SECONDS": ("antispoof_pending_timeout_seconds", "float"),
         "RECORDING_SEGMENT_SECONDS": ("recording_segment_seconds", "int"),
+        "RECORDING_UPLOAD_CONCURRENCY": ("recording_upload_concurrency", "int"),
+        "RECORDING_UPLOAD_QUEUE_SIZE": ("recording_upload_queue_size", "int"),
+        "RECORDING_RETENTION_DAYS": ("recording_retention_days", "int"),
+        "RECORDING_RETENTION_MAX_BYTES": ("recording_retention_max_bytes", "int"),
+        "RECORDING_MIN_FREE_BYTES": ("recording_min_free_bytes", "int"),
+        "MAX_CAPTURE_PIXELS": ("max_capture_pixels", "int"),
         "RECORDINGS_DIR": ("recordings_dir", "str"),
         "SNAPSHOTS_DIR": ("snapshots_dir", "str"),
+        "MEDIA_BIND": ("media_bind", "str"),
         "MEDIA_PORT": ("media_port", "int"),
         "MEDIA_TOKEN": ("media_token", "str"),
     }
@@ -212,8 +301,15 @@ def export_env(config: dict[str, Any]) -> None:
     os.environ["ANTISPOOF_MODEL_FAKE_THRESHOLD"] = str(normalized.get("antispoof_model_fake_threshold", 0.72))
     os.environ["ANTISPOOF_PENDING_TIMEOUT_SECONDS"] = str(normalized.get("antispoof_pending_timeout_seconds", 2.8))
     os.environ["RECORDING_SEGMENT_SECONDS"] = str(normalized.get("recording_segment_seconds", 60))
+    os.environ["RECORDING_UPLOAD_CONCURRENCY"] = str(normalized.get("recording_upload_concurrency", 2))
+    os.environ["RECORDING_UPLOAD_QUEUE_SIZE"] = str(normalized.get("recording_upload_queue_size", 128))
+    os.environ["RECORDING_RETENTION_DAYS"] = str(normalized.get("recording_retention_days", 0))
+    os.environ["RECORDING_RETENTION_MAX_BYTES"] = str(normalized.get("recording_retention_max_bytes", 0))
+    os.environ["RECORDING_MIN_FREE_BYTES"] = str(normalized.get("recording_min_free_bytes", 536_870_912))
+    os.environ["MAX_CAPTURE_PIXELS"] = str(normalized.get("max_capture_pixels", 8_294_400))
     os.environ["RECORDINGS_DIR"] = str(config.get("recordings_dir", base_dir() / "media" / "recordings"))
     os.environ["SNAPSHOTS_DIR"] = str(config.get("snapshots_dir", base_dir() / "media" / "snapshots"))
+    os.environ["MEDIA_BIND"] = str(config.get("media_bind") or "0.0.0.0")
     os.environ["MEDIA_PORT"] = str(config.get("media_port", 8777))
     os.environ["MEDIA_TOKEN"] = str(config.get("media_token") or secrets.token_urlsafe(24))
 

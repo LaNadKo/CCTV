@@ -7,6 +7,8 @@ import time
 from urllib.parse import quote
 
 import cv2
+
+from cctv_ai.opencv_capture import open_video_capture
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
@@ -17,9 +19,11 @@ from sqlalchemy.orm import selectinload
 from app import models
 from app.db import get_session
 from app.dependencies import get_current_user, get_current_user_allow_query
+from app.network_policy import validate_camera_endpoint_url, validate_camera_host, validate_camera_stream_source
 from app.permissions import check_permission, user_camera_permission_sync
 from app.processor_media import (
     get_processor_media_base_urls,
+    get_processor_direct_media_headers,
     get_processor_media_headers,
     is_processor_effectively_online,
 )
@@ -52,6 +56,16 @@ _LIVE_PROXY_READ_CHUNK_SIZE = 64 * 1024
 _LIVE_PROXY_MAX_BUFFER_SIZE = 4 * 1024 * 1024
 _DIRECT_OPEN_TIMEOUT_SECONDS = 3.0
 _DIRECT_READ_TIMEOUT_SECONDS = 2.0
+_MAX_PROCESSOR_SNAPSHOT_BYTES = 8 * 1024 * 1024
+
+
+def _append_bounded_bytes(payload: bytearray, chunk: bytes, *, max_bytes: int) -> None:
+    payload.extend(chunk)
+    if len(payload) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Processor snapshot is too large",
+        )
 
 
 class _DirectMjpegReader:
@@ -332,14 +346,15 @@ def _processor_direct_stream_sources(
     overlay: bool,
     max_fps: float,
 ) -> list[CameraStreamSourceOut]:
-    headers = get_processor_media_headers(proc)
+    path = f"/cameras/{camera_id}/stream.mjpeg"
+    headers = get_processor_direct_media_headers(proc, path=path)
     sources: list[CameraStreamSourceOut] = []
     for base_url in get_processor_media_base_urls(proc):
         sources.append(
             CameraStreamSourceOut(
                 kind="processor_direct",
                 url=(
-                    f"{base_url}/cameras/{camera_id}/stream.mjpeg"
+                    f"{base_url}{path}"
                     f"?overlay={'1' if overlay else '0'}&max_fps={max_fps:.2f}"
                 ),
                 headers=headers,
@@ -362,6 +377,8 @@ async def _proxy_processor_camera_snapshot(
                 camera_id,
                 overlay,
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             errors.append(f"{base_url}: {exc!r}")
     raise RuntimeError("; ".join(errors) or "processor media endpoint is unknown")
@@ -374,21 +391,48 @@ async def _proxy_processor_camera_snapshot_url(
     overlay: bool,
 ) -> Response:
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=4, write=4, pool=4)) as client:
-        upstream = await client.get(
+        async with client.stream(
+            "GET",
             f"{base_url}/cameras/{camera_id}/snapshot.jpg",
             headers=get_processor_media_headers(proc),
             params={"overlay": "1" if overlay else "0"},
-        )
-    if upstream.status_code >= 400:
-        raise RuntimeError(
-            upstream.text or f"processor media status {upstream.status_code}"
-        )
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type", "image/jpeg"),
-        headers={"Cache-Control": "no-store"},
-    )
+        ) as upstream:
+            if upstream.status_code >= 400:
+                error_body = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    if chunk:
+                        error_body.extend(chunk)
+                    if len(error_body) >= 4096:
+                        break
+                detail = bytes(error_body[:4096]).decode("utf-8", errors="replace").strip()
+                raise RuntimeError(detail or f"processor media status {upstream.status_code}")
+
+            content_length = upstream.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > _MAX_PROCESSOR_SNAPSHOT_BYTES:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="Processor snapshot is too large",
+                        )
+                except ValueError:
+                    pass
+
+            payload = bytearray()
+            async for chunk in upstream.aiter_bytes():
+                if not chunk:
+                    continue
+                _append_bounded_bytes(
+                    payload,
+                    chunk,
+                    max_bytes=_MAX_PROCESSOR_SNAPSHOT_BYTES,
+                )
+            return Response(
+                content=bytes(payload),
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type", "image/jpeg"),
+                headers={"Cache-Control": "no-store"},
+            )
 
 
 def _inject_credentials(url: str, username: str | None, password: str | None) -> str:
@@ -442,6 +486,12 @@ def _direct_camera_source_candidates(camera: models.Camera) -> list[str | int]:
             weight += 50
         else:
             continue
+        try:
+            url = validate_camera_endpoint_url(kind, url)
+        except ValueError:
+            continue
+        if not url:
+            continue
         resolved_url = _inject_credentials(
             url,
             endpoint.username,
@@ -464,18 +514,28 @@ def _direct_camera_source_candidates(camera: models.Camera) -> list[str | int]:
             _append_unique(candidates, url)
 
     if camera.stream_url:
-        if camera.stream_url.isdigit():
-            _append_unique(candidates, int(camera.stream_url))
-        elif camera.stream_url.lower().startswith("rtsp://"):
-            for url in _with_rtsp_fallbacks(camera.stream_url):
+        try:
+            stream_url = validate_camera_stream_source(camera.stream_url)
+        except ValueError:
+            stream_url = None
+        if stream_url and stream_url.isdigit():
+            _append_unique(candidates, int(stream_url))
+        elif stream_url and stream_url.lower().startswith("rtsp://"):
+            for url in _with_rtsp_fallbacks(stream_url):
                 _append_unique(candidates, url)
-        else:
-            _append_unique(candidates, camera.stream_url)
+        elif stream_url:
+            _append_unique(candidates, stream_url)
     if camera.ip_address:
+        try:
+            ip_address = validate_camera_host(camera.ip_address)
+        except ValueError:
+            ip_address = None
+        if not ip_address:
+            return candidates
         for url in (
-            f"rtsp://{camera.ip_address}:554/stream",
-            f"rtsp://{camera.ip_address}:554/stream1",
-            f"rtsp://{camera.ip_address}:554/stream2",
+            f"rtsp://{ip_address}:554/stream",
+            f"rtsp://{ip_address}:554/stream1",
+            f"rtsp://{ip_address}:554/stream2",
         ):
             _append_unique(candidates, url)
     return candidates
@@ -498,22 +558,12 @@ async def _open_first_direct_capture_checked(camera: models.Camera) -> tuple[cv2
 
 
 def _open_direct_capture(source: str | int) -> cv2.VideoCapture:
-    if isinstance(source, str) and source.lower().startswith("rtsp://"):
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|buffer_size;102400"
-            "|analyzeduration;0|probesize;32768|flush_packets;1"
-        )
-        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-    else:
-        cap = cv2.VideoCapture(source)
-    for prop, value in (
-        (getattr(cv2, "CAP_PROP_BUFFERSIZE", None), 1),
-        (getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None), 2500),
-        (getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None), 1500),
-    ):
-        if prop is not None:
-            cap.set(prop, value)
-    return cap
+    return open_video_capture(
+        source,
+        open_timeout_ms=2500,
+        read_timeout_ms=1500,
+        buffer_size=1,
+    )
 
 
 def _read_direct_jpeg(cap: cv2.VideoCapture) -> bytes | None:

@@ -10,10 +10,10 @@ passlib[bcrypt]==1.7.4
 PyJWT[crypto]==2.13.0
 alembic==1.14.0
 pyotp==2.9.0
-numpy>=1.24,<2
-opencv-python-headless>=4.8,<4.13
-imageio-ffmpeg>=0.6.0,<0.7
-onnxruntime>=1.15.1,<1.16
+numpy>=2,<2.3
+opencv-python-headless>=4.13,<4.14
+imageio-ffmpeg>=0.6.0,<0.7; platform_system == "Windows"
+onnxruntime>=1.23.2,<1.24
 pillow==12.2.0
 bcrypt==4.0.1
 reportlab>=4.0

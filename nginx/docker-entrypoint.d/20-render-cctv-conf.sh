@@ -3,11 +3,14 @@ set -eu
 
 domain="${DOMAIN:-localhost}"
 https_enabled="${NGINX_HTTPS_ENABLED:-false}"
+http_proxy_enabled="${NGINX_HTTP_PROXY_ENABLED:-false}"
 cert_path="/etc/letsencrypt/live/${domain}/fullchain.pem"
 key_path="/etc/letsencrypt/live/${domain}/privkey.pem"
 
 if [ "${https_enabled}" = "true" ] && [ -f "${cert_path}" ] && [ -f "${key_path}" ]; then
     template="/etc/cctv-nginx/templates/https.conf.template"
+elif [ "${http_proxy_enabled}" = "false" ]; then
+    template="/etc/cctv-nginx/templates/http-acme-only.conf.template"
 else
     template="/etc/cctv-nginx/templates/http.conf.template"
 fi

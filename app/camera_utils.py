@@ -2,6 +2,7 @@ from typing import Union
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from app import models
+from app.network_policy import validate_camera_endpoint_url, validate_camera_host, validate_camera_stream_source
 from app.security import decrypt_secret
 
 
@@ -30,19 +31,35 @@ def resolve_source(cam: models.Camera) -> Union[int, str]:
         url = getattr(endpoint, "endpoint_url", None)
         if not url:
             continue
+        try:
+            url = validate_camera_endpoint_url(getattr(endpoint, "endpoint_kind", ""), url)
+        except ValueError:
+            continue
+        if not url:
+            continue
         password = getattr(endpoint, "password_secret", None)
         return _inject_credentials(url, getattr(endpoint, "username", None), decrypt_secret(password) if password else None)
 
     if cam.stream_url:
-        if cam.stream_url.startswith("local"):
-            parts = cam.stream_url.split(":")
+        try:
+            stream_url = validate_camera_stream_source(cam.stream_url)
+        except ValueError:
+            stream_url = None
+        if not stream_url:
+            return 0
+        if stream_url.startswith("local"):
+            parts = stream_url.split(":")
             if len(parts) == 1 or parts[1] == "":
                 return 0
             try:
                 return int(parts[1])
             except ValueError:
-                return cam.stream_url
-        return cam.stream_url
+                return stream_url
+        return stream_url
     if cam.ip_address:
+        try:
+            validate_camera_host(cam.ip_address)
+        except ValueError:
+            return 0
         return cam.ip_address
     return 0  # fallback to default laptop webcam

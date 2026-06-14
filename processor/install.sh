@@ -70,6 +70,7 @@ echo ""
 
 # ── Create .env if not exists ─────────────────────────────
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
+    umask 077
     cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
     echo "Created .env from template."
     echo ""
@@ -80,7 +81,8 @@ if [ ! -f "$SCRIPT_DIR/.env" ]; then
         sed -i "s|BACKEND_URL=.*|BACKEND_URL=$BACKEND_URL|" "$SCRIPT_DIR/.env"
     fi
 
-    read -p "API key: " API_KEY_VAL
+    read -s -p "API key: " API_KEY_VAL
+    echo ""
     if [ -n "$API_KEY_VAL" ]; then
         sed -i "s|API_KEY=.*|API_KEY=$API_KEY_VAL|" "$SCRIPT_DIR/.env"
     fi
@@ -91,6 +93,7 @@ if [ ! -f "$SCRIPT_DIR/.env" ]; then
     sed -i "s|PROCESSOR_NAME=.*|PROCESSOR_NAME=$PROC_NAME|" "$SCRIPT_DIR/.env"
 
     echo ""
+    chmod 600 "$SCRIPT_DIR/.env"
 fi
 
 # ── Create run.sh ─────────────────────────────────────────

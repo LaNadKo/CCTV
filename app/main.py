@@ -13,6 +13,7 @@ from app.routers import auth, groups, cameras, admin, detections, api_keys, reco
 from app.routers import processors as processors_router
 from app.routers import persons as persons_router
 from app.routers import reports as reports_router
+from app.request_limits import ScopedRequestBodyLimitMiddleware
 
 # Person face-enrollment router requires torch/facenet, so keep import optional.
 try:
@@ -28,6 +29,16 @@ app = FastAPI(
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
     openapi_url="/openapi.json" if settings.docs_enabled else None,
+)
+
+app.add_middleware(
+    ScopedRequestBodyLimitMiddleware,
+    max_bytes=256 * 1024,
+    path_patterns=(
+        r"/processors/connect",
+        r"/processors/register",
+        r"/processors/\d+/heartbeat",
+    ),
 )
 
 if settings.allowed_hosts != ["*"]:
@@ -48,10 +59,28 @@ if not audit_logger.handlers:
     handler.setFormatter(fmt)
     audit_logger.addHandler(handler)
 audit_logger.setLevel(logging.INFO)
+_MAX_PROCESSOR_COMMAND_RESULT_BODY_BYTES = 256 * 1024
+
+
+def _is_processor_command_result_path(path: str) -> bool:
+    return path.startswith("/processors/") and "/commands/" in path and path.endswith("/result")
 
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    if request.method == "POST" and _is_processor_command_result_path(request.url.path):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > _MAX_PROCESSOR_COMMAND_RESULT_BODY_BYTES:
+                    from fastapi.responses import JSONResponse
+
+                    return JSONResponse(
+                        {"detail": "Processor command result body is too large"},
+                        status_code=413,
+                    )
+            except ValueError:
+                pass
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -59,7 +88,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.url.path.startswith(("/auth", "/admin", "/api-keys", "/cameras", "/detections", "/recordings", "/processors", "/persons", "/reports", "/system")):
+    if request.url.path.startswith(("/auth", "/admin", "/api-keys", "/cameras", "/detections", "/face", "/groups", "/recordings", "/processors", "/persons", "/reports", "/system")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -180,7 +209,7 @@ async def _seed_default_admin():
         elif settings.allow_default_admin:
             password = "admin"
             login = "admin"
-            must_change = False
+            must_change = True
         else:
             await session.commit()
             logging.getLogger(__name__).warning("No users exist and default admin bootstrap is disabled")

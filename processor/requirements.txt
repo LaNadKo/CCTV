@@ -1,5 +1,5 @@
 httpx>=0.25
-opencv-python-headless>=4.8,<4.13
+opencv-python-headless>=4.13,<4.14
 onnxruntime-gpu>=1.23.2,<1.24; platform_system == "Windows"
 onnxruntime>=1.23.2,<1.24; platform_system != "Windows"
 mmdeploy-runtime-gpu==1.3.1; platform_system == "Windows"
@@ -13,7 +13,7 @@ nvidia-cuda-runtime-cu12>=12,<13; platform_system == "Windows"
 nvidia-cublas-cu12>=12,<13; platform_system == "Windows"
 nvidia-cufft-cu12>=11,<12; platform_system == "Windows"
 nvidia-cudnn-cu12>=9,<10; platform_system == "Windows"
-numpy>=1.24,<2
+numpy>=2,<2.3
 Pillow>=10.0
 scipy>=1.11
 filterpy>=1.4
@@ -21,4 +21,4 @@ pydantic>=2.0
 pydantic-settings>=2.0
 psutil>=5.9
 pynvml>=11.5
-pyinstaller>=6.0
+pyinstaller>=6.0; platform_system == "Windows"
